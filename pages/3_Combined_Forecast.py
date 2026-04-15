@@ -6,8 +6,8 @@ from engine.keyword_engine import run_keyword_forecast
 from engine.combined_engine import run_combined_forecast
 from engine.revenue_engine import add_revenue, CURRENCY_SYMBOLS
 from utils.data_loader import load_keywords, load_traffic
-from utils.chart_builder import combined_forecast_chart, revenue_projection_chart
-from utils.export import to_csv, to_html_report
+from utils.chart_builder import combined_forecast_chart, combined_scenario_chart, revenue_projection_chart
+from utils.export import to_csv, to_html_report, keyword_template_csv, traffic_template_csv
 from engine.constants import SITE_PRESETS, CTR_MODELS, FORECAST_SCENARIOS
 
 st.header("Combined Forecast")
@@ -88,6 +88,17 @@ cvr = st.sidebar.number_input("Conversion Rate (%)", 0.1, 100.0, 2.5, step=0.1, 
 aov = st.sidebar.number_input("Average Order Value", 1.0, 100000.0, 100.0, step=10.0, key="comb_aov", disabled=not enable_revenue)
 currency = st.sidebar.selectbox("Currency", list(CURRENCY_SYMBOLS.keys()), key="comb_cur", disabled=not enable_revenue)
 
+st.sidebar.divider()
+st.sidebar.subheader("Scenario Comparison")
+enable_scenarios = st.sidebar.checkbox("Compare Multiple Cadences", key="comb_scenarios")
+cadence_options = st.sidebar.multiselect(
+    "Cadences to compare",
+    [1, 2, 4, 6, 8, 12],
+    default=[2, 4, 8],
+    key="comb_cadence_opts",
+    disabled=not enable_scenarios,
+)
+
 # ── Upload ───────────────────────────────────────────────────────────────────
 st.subheader("Upload Data")
 
@@ -95,9 +106,23 @@ col1, col2 = st.columns(2)
 with col1:
     st.markdown("**Keywords CSV** (keyword, volume, kd)")
     kw_file = st.file_uploader("Upload keywords CSV", type=["csv"], key="comb_kw")
+    st.download_button(
+        "Download Keywords Template",
+        keyword_template_csv(),
+        "keyword-template.csv",
+        "text/csv",
+        key="comb_kw_template_dl",
+    )
 with col2:
     st.markdown("**Historical Traffic CSV** (date, traffic)")
     traffic_file = st.file_uploader("Upload traffic CSV", type=["csv"], key="comb_traffic")
+    st.download_button(
+        "Download Traffic Template",
+        traffic_template_csv(),
+        "traffic-template.csv",
+        "text/csv",
+        key="comb_traffic_template_dl",
+    )
 
 use_sample = st.checkbox("Use sample data for both", key="comb_sample")
 
@@ -132,10 +157,26 @@ if kw_df is not None and traffic_df is not None:
             )
             combined_df = run_combined_forecast(keyword_df, monthly_kw_df, traffic_df, months)
 
+            # Run scenarios if enabled
+            scenarios = {}
+            if enable_scenarios and cadence_options:
+                for c in cadence_options:
+                    _, s_monthly = run_keyword_forecast(
+                        kw_df, da, c, months, seed,
+                        ctr_model=ctr_model,
+                        traffic_multiplier=traffic_multiplier,
+                        exclude_informational=exclude_informational,
+                        informational_ctr_penalty=informational_ctr_penalty,
+                    )
+                    s_combined = run_combined_forecast(keyword_df, s_monthly, traffic_df, months)
+                    scenarios[c] = s_combined
+
             st.session_state["comb_results"] = {
                 "keyword_df": keyword_df,
                 "combined_df": combined_df,
                 "enable_revenue": enable_revenue,
+                "enable_scenarios": enable_scenarios,
+                "scenarios": scenarios,
                 "currency": currency,
                 "cvr": cvr,
                 "aov": aov,
@@ -154,6 +195,8 @@ if "comb_results" in st.session_state:
     tab_names = ["\U0001f4ca Combined Chart", "\U0001f4cb Uplift Table"]
     if r["enable_revenue"]:
         tab_names.append("\U0001f4b0 Revenue Analysis")
+    if r.get("enable_scenarios") and r.get("scenarios"):
+        tab_names.append("\U0001f504 Scenario Comparison")
     tab_names.append("\U0001f4e5 Export")
 
     tabs = st.tabs(tab_names)
@@ -231,6 +274,34 @@ if "comb_results" in st.session_state:
             fig_rev = revenue_projection_chart(rev_df, sym)
             st.plotly_chart(fig_rev, use_container_width=True)
             st.caption("Revenue projection from incremental new content traffic only.")
+
+    # ── Tab: Scenario Comparison ─────────────────────────────────────────
+    if r.get("enable_scenarios") and r.get("scenarios"):
+        with tabs[tab_idx]:
+            tab_idx += 1
+
+            # Comparison table
+            rows = []
+            for c_val, s_df in sorted(r["scenarios"].items()):
+                s_forecast = s_df[s_df["is_forecast"]]
+                kw_covered = min(len(r["keyword_df"]), c_val * r.get("months", 18))
+                peak_combined = int(s_forecast["combined"].max())
+                total_incremental = int(s_forecast["new_content"].sum())
+                baseline_end = int(s_forecast["baseline"].iloc[-1])
+                combined_end = int(s_forecast["combined"].iloc[-1])
+                uplift = round((combined_end - baseline_end) / baseline_end * 100, 1) if baseline_end > 0 else 0
+                rows.append({
+                    "Cadence (posts/mo)": c_val,
+                    "Keywords Covered": kw_covered,
+                    "Peak Combined Traffic": f"{peak_combined:,}",
+                    "Total Incremental Visits": f"{total_incremental:,}",
+                    "End Uplift %": f"{uplift}%",
+                })
+            st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+            fig_sc = combined_scenario_chart(r["scenarios"])
+            st.plotly_chart(fig_sc, use_container_width=True)
+            st.caption("Combined traffic projection under different content production cadences.")
 
     # ── Tab: Export ──────────────────────────────────────────────────────
     with tabs[tab_idx]:

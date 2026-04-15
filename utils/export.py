@@ -10,6 +10,26 @@ def to_csv(df, filename: str = "export.csv") -> bytes:
     return buffer.getvalue()
 
 
+def keyword_template_csv() -> str:
+    """Return a CSV template string with example keyword rows."""
+    return (
+        "keyword,volume,kd\n"
+        "example keyword 1,1000,25\n"
+        "example keyword 2,5000,45\n"
+        "example keyword 3,500,15\n"
+    )
+
+
+def traffic_template_csv() -> str:
+    """Return a CSV template string with example traffic rows."""
+    return (
+        "date,traffic\n"
+        "2025-01-01,10000\n"
+        "2025-02-01,10500\n"
+        "2025-03-01,11000\n"
+    )
+
+
 def to_html_report(
     figures: list[go.Figure],
     summary_stats: dict[str, str],

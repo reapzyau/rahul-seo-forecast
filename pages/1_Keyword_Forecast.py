@@ -11,8 +11,9 @@ from utils.chart_builder import (
     scenario_comparison_chart,
     revenue_projection_chart,
 )
-from utils.export import to_csv, to_html_report
+from utils.export import to_csv, to_html_report, keyword_template_csv
 from engine.constants import TIER_COLORS, SITE_PRESETS, CTR_MODELS, FORECAST_SCENARIOS
+from engine.ai_engine import get_bifrost_client, cluster_keywords, check_cannibalization, generate_content_roadmap
 
 st.header("Keyword Forecast")
 st.caption("Project traffic from target keywords — no historical data needed.")
@@ -107,11 +108,19 @@ cadence_options = st.sidebar.multiselect(
 st.subheader("Upload Keywords CSV")
 st.caption("Required columns: keyword, volume, kd")
 
-col1, col2 = st.columns(2)
+col1, col2, col3 = st.columns([3, 2, 2])
 with col1:
     uploaded_file = st.file_uploader("Upload your CSV", type=["csv"], key="kw_upload")
 with col2:
     use_sample = st.checkbox("Use sample data to explore the tool", key="kw_sample")
+with col3:
+    st.download_button(
+        "Download CSV Template",
+        keyword_template_csv(),
+        "keyword-template.csv",
+        "text/csv",
+        key="kw_template_dl",
+    )
 
 df = None
 if uploaded_file is not None:
@@ -188,6 +197,7 @@ if "kw_results" in st.session_state:
         tab_names.append("\U0001f4b0 Revenue Analysis")
     if r["enable_scenarios"] and r["scenarios"]:
         tab_names.append("\U0001f504 Scenario Comparison")
+    tab_names.append("\U0001f916 AI Insights")
     tab_names.append("\U0001f4e5 Export")
 
     tabs = st.tabs(tab_names)
@@ -303,6 +313,94 @@ if "kw_results" in st.session_state:
             fig_sc = scenario_comparison_chart(r["scenarios"])
             st.plotly_chart(fig_sc, use_container_width=True)
             st.caption("Traffic projection under different content production cadences.")
+
+    # ── Tab: AI Insights ────────────────────────────────────────────────
+    with tabs[tab_idx]:
+        tab_idx += 1
+
+        client = get_bifrost_client(st.session_state.get("bifrost_api_key"))
+        ai_model = st.session_state.get("bifrost_model", "openai/gpt-4o-mini")
+
+        if client is None:
+            st.info("Set your Bi Frost API key in the sidebar (AI Settings) to enable AI-powered insights.")
+        else:
+            ai_col1, ai_col2 = st.columns(2)
+
+            with ai_col1:
+                st.subheader("Keyword Clusters")
+                if st.button("Generate Clusters", key="kw_cluster_btn"):
+                    with st.spinner("Clustering keywords..."):
+                        try:
+                            result = cluster_keywords(client, keyword_df["keyword"].tolist(), ai_model)
+                            clusters = result.get("clusters", [])
+                            for cluster in clusters:
+                                with st.expander(f"**{cluster.get('name', 'Cluster')}** — {cluster.get('suggested_title', '')}"):
+                                    for kw in cluster.get("keywords", []):
+                                        st.markdown(f"- {kw}")
+                        except Exception as e:
+                            st.error(f"Clustering failed: {e}")
+
+            with ai_col2:
+                st.subheader("Cannibalization Check")
+                existing_urls = st.text_area(
+                    "Paste existing URLs (one per line)",
+                    height=150,
+                    key="kw_existing_urls",
+                    placeholder="https://example.com/seo-guide\nhttps://example.com/keyword-research",
+                )
+                if st.button("Check Cannibalization", key="kw_cannibal_btn"):
+                    urls = [u.strip() for u in existing_urls.strip().split("\n") if u.strip()]
+                    if not urls:
+                        st.warning("Paste at least one existing URL to check against.")
+                    else:
+                        with st.spinner("Checking cannibalization..."):
+                            try:
+                                results = check_cannibalization(
+                                    client, keyword_df["keyword"].tolist(), urls, ai_model
+                                )
+                                risk_colors = {"high": "#EF4444", "medium": "#F97316", "low": "#EAB308", "none": "#22C55E"}
+                                risk_df = pd.DataFrame(results)
+                                st.dataframe(
+                                    risk_df.style.apply(
+                                        lambda row: [
+                                            f"background-color: {risk_colors.get(row.get('risk', ''), '')}20"
+                                            if col == "risk" else ""
+                                            for col in row.index
+                                        ],
+                                        axis=1,
+                                    ),
+                                    use_container_width=True,
+                                    hide_index=True,
+                                )
+                            except Exception as e:
+                                st.error(f"Cannibalization check failed: {e}")
+
+            st.divider()
+            st.subheader("AI Content Roadmap")
+            if st.button("Generate Roadmap", key="kw_roadmap_btn"):
+                with st.spinner("Generating content roadmap..."):
+                    try:
+                        months_val = r.get("months", 12) if "months" in r else 12
+                        roadmap = generate_content_roadmap(client, keyword_df, months_val, ai_model)
+                        for month_plan in roadmap:
+                            month_num = month_plan.get("month", "?")
+                            pieces = month_plan.get("content_pieces", [])
+                            with st.expander(f"**Month {month_num}** — {len(pieces)} content pieces"):
+                                for piece in pieces:
+                                    priority = piece.get("priority", "medium")
+                                    icon = {"high": "🔴", "medium": "🟡", "low": "🟢"}.get(priority, "⚪")
+                                    st.markdown(
+                                        f"{icon} **{piece.get('title', 'Untitled')}** "
+                                        f"(~{piece.get('estimated_traffic', 0):,} visits/mo)"
+                                    )
+                                    kws = piece.get("target_keywords", [])
+                                    if kws:
+                                        st.caption(f"Keywords: {', '.join(kws)}")
+                                    notes = piece.get("notes")
+                                    if notes:
+                                        st.caption(f"Note: {notes}")
+                    except Exception as e:
+                        st.error(f"Roadmap generation failed: {e}")
 
     # ── Tab: Export ──────────────────────────────────────────────────────
     with tabs[tab_idx]:

@@ -6,7 +6,7 @@ from engine.historical_engine import run_historical_forecast, calculate_growth_r
 from engine.revenue_engine import add_revenue, CURRENCY_SYMBOLS
 from utils.data_loader import load_traffic
 from utils.chart_builder import historical_comparison_chart, revenue_projection_chart
-from utils.export import to_csv, to_html_report
+from utils.export import to_csv, to_html_report, traffic_template_csv
 
 st.header("Historical Forecast")
 st.caption("Project traffic from your past organic data using statistical models.")
@@ -35,11 +35,19 @@ currency = st.sidebar.selectbox("Currency", list(CURRENCY_SYMBOLS.keys()), key="
 st.subheader("Upload Historical Traffic CSV")
 st.caption("Required columns: date, traffic")
 
-col1, col2 = st.columns(2)
+col1, col2, col3 = st.columns([3, 2, 2])
 with col1:
     uploaded_file = st.file_uploader("Upload your CSV", type=["csv"], key="hist_upload")
 with col2:
     use_sample = st.checkbox("Use sample data to explore the tool", key="hist_sample")
+with col3:
+    st.download_button(
+        "Download CSV Template",
+        traffic_template_csv(),
+        "traffic-template.csv",
+        "text/csv",
+        key="hist_template_dl",
+    )
 
 df = None
 if uploaded_file is not None:

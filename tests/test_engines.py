@@ -1,3 +1,5 @@
+import io
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -431,6 +433,26 @@ class TestPresets:
         for name, scenario in FORECAST_SCENARIOS.items():
             assert "traffic_multiplier" in scenario
             assert scenario["traffic_multiplier"] > 0
+
+
+class TestTemplates:
+    def test_keyword_template_is_valid_csv(self):
+        from utils.export import keyword_template_csv
+        df = pd.read_csv(io.StringIO(keyword_template_csv()))
+        assert list(df.columns) == ["keyword", "volume", "kd"]
+        assert len(df) == 3
+
+    def test_traffic_template_is_valid_csv(self):
+        from utils.export import traffic_template_csv
+        df = pd.read_csv(io.StringIO(traffic_template_csv()))
+        assert list(df.columns) == ["date", "traffic"]
+        assert len(df) == 3
+
+    def test_keyword_template_has_valid_data(self):
+        from utils.export import keyword_template_csv
+        df = pd.read_csv(io.StringIO(keyword_template_csv()))
+        assert (df["volume"] > 0).all()
+        assert (df["kd"] >= 0).all()
 
 
 class TestDataLoaderHelpers:
