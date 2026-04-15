@@ -3,7 +3,7 @@ import streamlit as st
 import pandas as pd
 
 from engine.historical_engine import run_historical_forecast, calculate_growth_rates
-from engine.revenue_engine import add_revenue, CURRENCY_SYMBOLS
+from engine.revenue_engine import add_revenue, build_full_metrics_table, CURRENCY_SYMBOLS
 from utils.data_loader import load_traffic
 from utils.chart_builder import historical_comparison_chart, revenue_projection_chart
 from utils.export import to_csv, to_html_report, traffic_template_csv
@@ -32,12 +32,12 @@ aov = st.sidebar.number_input("Average Order Value", 1.0, 100000.0, 100.0, step=
 currency = st.sidebar.selectbox("Currency", list(CURRENCY_SYMBOLS.keys()), key="hist_cur", disabled=not enable_revenue)
 
 # ── Upload ───────────────────────────────────────────────────────────────────
-st.subheader("Upload Historical Traffic CSV")
-st.caption("Required columns: date, traffic")
+st.subheader("Upload Historical Data")
+st.caption("Required: date, traffic. Optional: revenue, transactions, aov, cr% — supports CSV and Excel.")
 
 col1, col2, col3 = st.columns([3, 2, 2])
 with col1:
-    uploaded_file = st.file_uploader("Upload your CSV", type=["csv"], key="hist_upload")
+    uploaded_file = st.file_uploader("Upload your file", type=["csv", "xlsx", "xls"], key="hist_upload")
 with col2:
     use_sample = st.checkbox("Use sample data to explore the tool", key="hist_sample")
 with col3:
@@ -57,11 +57,16 @@ elif use_sample:
     df = load_traffic(sample_path)
 
 if df is not None:
-    st.markdown(
-        f"**{len(df)} months of data** | "
-        f"Range: {df['date'].min().strftime('%b %Y')} – {df['date'].max().strftime('%b %Y')} | "
-        f"Avg traffic: {df['traffic'].mean():,.0f}"
-    )
+    # Build summary line
+    summary_parts = [
+        f"**{len(df)} months of data**",
+        f"Range: {df['date'].min().strftime('%b %Y')} – {df['date'].max().strftime('%b %Y')}",
+        f"Avg traffic: {df['traffic'].mean():,.0f}",
+    ]
+    optional_cols = [c for c in ["revenue", "transactions", "aov", "cr"] if c in df.columns]
+    if optional_cols:
+        summary_parts.append(f"Extra metrics: {', '.join(optional_cols)}")
+    st.markdown(" | ".join(summary_parts))
     st.dataframe(df, use_container_width=True, hide_index=True)
 
 # ── Run Forecast ─────────────────────────────────────────────────────────────
@@ -91,6 +96,10 @@ if "hist_results" in st.session_state:
     growth = r["growth"]
 
     tab_names = ["\U0001f4ca Forecast Chart", "\U0001f4cb Data Table"]
+    # Check if we have extended metrics
+    has_extended = any(c in result.columns for c in ["revenue_forecast", "transactions_forecast", "aov_forecast", "cr_forecast"])
+    if has_extended:
+        tab_names.append("\U0001f4c8 Full Metrics")
     if r["enable_revenue"]:
         tab_names.append("\U0001f4b0 Revenue Analysis")
     tab_names.append("\U0001f4e5 Export")
@@ -125,6 +134,26 @@ if "hist_results" in st.session_state:
             f"{growth['latest_yoy']:.1f}%" if growth['latest_yoy'] != 0 else "N/A",
         )
 
+        # Extra KPI cards for extended metrics
+        if has_extended:
+            ext_cols = st.columns(4)
+            col_idx = 0
+            if "revenue_forecast" in result.columns:
+                end_rev = forecast_rows["revenue_forecast"].iloc[-1]
+                ext_cols[col_idx].metric("Projected Revenue", f"${end_rev:,.0f}")
+                col_idx += 1
+            if "transactions_forecast" in result.columns:
+                end_trans = forecast_rows["transactions_forecast"].iloc[-1]
+                ext_cols[col_idx].metric("Projected Transactions", f"{int(end_trans):,}")
+                col_idx += 1
+            if "aov_forecast" in result.columns:
+                end_aov = forecast_rows["aov_forecast"].iloc[-1]
+                ext_cols[col_idx].metric("Projected AOV", f"${end_aov:,.2f}")
+                col_idx += 1
+            if "cr_forecast" in result.columns:
+                end_cr = forecast_rows["cr_forecast"].iloc[-1]
+                ext_cols[col_idx].metric("Projected CR%", f"{end_cr:.2f}%")
+
         fig = historical_comparison_chart(result, r["methods"])
         st.plotly_chart(fig, use_container_width=True)
         st.caption("Historical data (solid) with forecast projections (dashed). Shaded area shows confidence band.")
@@ -153,6 +182,33 @@ if "hist_results" in st.session_state:
         display_df = display_df.rename(columns=col_rename)
         st.dataframe(display_df, use_container_width=True, hide_index=True, height=500)
 
+    # ── Tab: Full Metrics ────────────────────────────────────────────────
+    if has_extended:
+        with tabs[tab_idx]:
+            tab_idx += 1
+
+            traffic_col = "linear" if "linear" in result.columns else (
+                "exponential_smoothing" if "exponential_smoothing" in result.columns else "sma"
+            )
+            metrics_df = build_full_metrics_table(result, traffic_col)
+
+            st.subheader("Complete Metrics Dashboard")
+            st.caption("All available metrics with YoY comparisons. Forecasted values fill in where actuals are unavailable.")
+
+            # Format for display
+            display_metrics = metrics_df.drop(columns=["is_forecast"], errors="ignore").copy()
+            display_metrics["Month"] = pd.to_datetime(display_metrics["Month"]).dt.strftime("%b %Y")
+            st.dataframe(display_metrics, use_container_width=True, hide_index=True, height=600)
+
+            # Download full metrics
+            st.download_button(
+                "Download Full Metrics CSV",
+                to_csv(metrics_df.drop(columns=["is_forecast"], errors="ignore")),
+                "full-metrics.csv",
+                "text/csv",
+                key="hist_full_metrics_dl",
+            )
+
     # ── Tab: Revenue Analysis ────────────────────────────────────────────
     if r["enable_revenue"]:
         with tabs[tab_idx]:
@@ -170,12 +226,12 @@ if "hist_results" in st.session_state:
 
             peak_rev = forecast_only["revenue"].max()
             total_rev = forecast_only["revenue"].sum()
-            total_leads = forecast_only["leads"].sum()
+            total_trans = forecast_only["transactions"].sum()
 
             c1, c2, c3 = st.columns(3)
             c1.metric("Peak Monthly Revenue", f"{sym}{peak_rev:,.2f}")
             c2.metric("Total Revenue (Forecast Period)", f"{sym}{total_rev:,.2f}")
-            c3.metric("Total Leads", f"{total_leads:,}")
+            c3.metric("Total Transactions", f"{total_trans:,}")
 
             fig_rev = revenue_projection_chart(forecast_only, sym)
             st.plotly_chart(fig_rev, use_container_width=True)

@@ -23,6 +23,24 @@ TRAFFIC_COL_ALIASES = {
     "visits": "traffic", "clicks": "traffic", "organic sessions": "traffic",
     "organic_traffic": "traffic",
 }
+REVENUE_COL_ALIASES = {
+    "revenue": "revenue", "organic revenue": "revenue", "organic_revenue": "revenue",
+    "total revenue": "revenue",
+}
+TRANSACTIONS_COL_ALIASES = {
+    "transactions": "transactions", "organic transactions": "transactions",
+    "organic_transactions": "transactions", "orders": "transactions",
+    "conversions": "transactions",
+}
+AOV_COL_ALIASES = {
+    "aov": "aov", "average order value": "aov", "avg order value": "aov",
+    "avg_order_value": "aov",
+}
+CR_COL_ALIASES = {
+    "cr": "cr", "cr%": "cr", "cr %": "cr", "conversion rate": "cr",
+    "organic cr": "cr", "organic cr %": "cr", "organic cr%": "cr",
+    "conversion_rate": "cr", "cvr": "cr",
+}
 
 
 def _match_column(df_columns: list[str], aliases: dict[str, str]) -> str | None:
@@ -34,6 +52,23 @@ def _match_column(df_columns: list[str], aliases: dict[str, str]) -> str | None:
     return None
 
 
+def _read_file(file) -> pd.DataFrame | None:
+    """Read a CSV or Excel file, return DataFrame or None."""
+    try:
+        if isinstance(file, str):
+            if file.endswith((".xlsx", ".xls")):
+                return pd.read_excel(file)
+            return pd.read_csv(file)
+        # Uploaded file object
+        name = getattr(file, "name", "").lower()
+        if name.endswith((".xlsx", ".xls")):
+            return pd.read_excel(file)
+        return pd.read_csv(file)
+    except Exception as e:
+        st.error(f"Could not read file: {e}")
+        return None
+
+
 def load_keywords(file) -> pd.DataFrame | None:
     """Load and validate a keywords CSV.
 
@@ -42,14 +77,9 @@ def load_keywords(file) -> pd.DataFrame | None:
     Returns:
         Validated DataFrame with standardised column names, or None on failure.
     """
-    try:
-        df = pd.read_csv(file)
-    except Exception as e:
-        st.error(f"Could not read CSV file: {e}")
-        return None
-
-    if df.empty:
-        st.warning("No valid rows found in your CSV")
+    df = _read_file(file)
+    if df is None or df.empty:
+        st.warning("No valid rows found in your file")
         return None
 
     # Match columns
@@ -65,7 +95,7 @@ def load_keywords(file) -> pd.DataFrame | None:
             missing.append("volume")
         if not kd_col:
             missing.append("kd")
-        st.error(f"Your CSV needs columns: {', '.join(missing)}")
+        st.error(f"Your file needs columns: {', '.join(missing)}")
         return None
 
     # Rename to standard names
@@ -93,7 +123,7 @@ def load_keywords(file) -> pd.DataFrame | None:
         st.info(f"Skipped {n_skipped} rows with invalid data")
 
     if df.empty:
-        st.warning("No valid rows found in your CSV")
+        st.warning("No valid rows found in your file")
         return None
 
     df["volume"] = df["volume"].astype(int)
@@ -104,24 +134,20 @@ def load_keywords(file) -> pd.DataFrame | None:
 
 
 def load_traffic(file) -> pd.DataFrame | None:
-    """Load and validate a historical traffic CSV.
+    """Load and validate a historical traffic CSV/Excel.
 
-    Expected columns: date + traffic (flexible name matching).
+    Required columns: date, traffic (flexible name matching).
+    Optional columns: revenue, transactions, aov, cr (auto-detected).
 
     Returns:
         Validated DataFrame sorted chronologically, or None on failure.
     """
-    try:
-        df = pd.read_csv(file)
-    except Exception as e:
-        st.error(f"Could not read CSV file: {e}")
+    df = _read_file(file)
+    if df is None or df.empty:
+        st.warning("No valid rows found in your file")
         return None
 
-    if df.empty:
-        st.warning("No valid rows found in your CSV")
-        return None
-
-    # Match columns
+    # Match required columns
     date_col = _match_column(df.columns.tolist(), DATE_COL_ALIASES)
     traffic_col = _match_column(df.columns.tolist(), TRAFFIC_COL_ALIASES)
 
@@ -131,30 +157,64 @@ def load_traffic(file) -> pd.DataFrame | None:
             missing.append("date")
         if not traffic_col:
             missing.append("traffic")
-        st.error(f"Your CSV needs columns: {', '.join(missing)}")
+        st.error(f"Your file needs columns: {', '.join(missing)}")
         return None
 
-    # Rename to standard names
-    df = df.rename(columns={date_col: "date", traffic_col: "traffic"})
-    df = df[["date", "traffic"]].copy()
+    # Match optional columns
+    rev_col = _match_column(df.columns.tolist(), REVENUE_COL_ALIASES)
+    trans_col = _match_column(df.columns.tolist(), TRANSACTIONS_COL_ALIASES)
+    aov_col = _match_column(df.columns.tolist(), AOV_COL_ALIASES)
+    cr_col = _match_column(df.columns.tolist(), CR_COL_ALIASES)
+
+    # Build rename map and select columns
+    rename_map = {date_col: "date", traffic_col: "traffic"}
+    keep_cols = ["date", "traffic"]
+
+    if rev_col:
+        rename_map[rev_col] = "revenue"
+        keep_cols.append("revenue")
+    if trans_col:
+        rename_map[trans_col] = "transactions"
+        keep_cols.append("transactions")
+    if aov_col:
+        rename_map[aov_col] = "aov"
+        keep_cols.append("aov")
+    if cr_col:
+        rename_map[cr_col] = "cr"
+        keep_cols.append("cr")
+
+    df = df.rename(columns=rename_map)
+    df = df[keep_cols].copy()
 
     # Parse dates
     df["date"] = pd.to_datetime(df["date"], errors="coerce")
     df["traffic"] = pd.to_numeric(df["traffic"], errors="coerce")
 
-    # Drop invalid
+    # Coerce optional numeric columns
+    for col in ["revenue", "transactions", "aov", "cr"]:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    # Drop rows with invalid required data
     n_before = len(df)
-    df = df.dropna()
+    df = df.dropna(subset=["date", "traffic"])
     n_skipped = n_before - len(df)
     if n_skipped > 0:
         st.info(f"Skipped {n_skipped} rows with invalid data")
 
     if df.empty:
-        st.warning("No valid rows found in your CSV")
+        st.warning("No valid rows found in your file")
         return None
 
     df["traffic"] = df["traffic"].astype(int)
+    if "transactions" in df.columns:
+        df["transactions"] = df["transactions"].fillna(0).astype(int)
     df = df.sort_values("date").reset_index(drop=True)
+
+    # Report detected columns
+    optional = [c for c in ["revenue", "transactions", "aov", "cr"] if c in df.columns]
+    if optional:
+        st.info(f"Detected additional columns: {', '.join(optional)}")
 
     if len(df) < 6:
         st.warning("Fewer than 6 months of data. Forecasts may be unreliable.")

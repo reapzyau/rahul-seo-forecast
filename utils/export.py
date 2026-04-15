@@ -21,12 +21,15 @@ def keyword_template_csv() -> str:
 
 
 def traffic_template_csv() -> str:
-    """Return a CSV template string with example traffic rows."""
+    """Return a CSV template string with example traffic rows.
+
+    Includes optional columns: revenue, transactions, aov, cr.
+    """
     return (
-        "date,traffic\n"
-        "2025-01-01,10000\n"
-        "2025-02-01,10500\n"
-        "2025-03-01,11000\n"
+        "date,traffic,revenue,transactions,aov,cr\n"
+        "2025-01-01,10000,25000,250,100,2.5\n"
+        "2025-02-01,10500,27300,260,105,2.48\n"
+        "2025-03-01,11000,29700,270,110,2.45\n"
     )
 
 

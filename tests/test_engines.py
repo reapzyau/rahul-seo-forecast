@@ -435,6 +435,84 @@ class TestPresets:
             assert scenario["traffic_multiplier"] > 0
 
 
+class TestForecastSeries:
+    def test_forecast_series_length(self):
+        from engine.historical_engine import forecast_series
+        series = pd.Series([100, 110, 120, 130, 140])
+        result = forecast_series(series, future_months=3)
+        assert len(result) == 8  # 5 historical + 3 forecast
+
+    def test_forecast_series_upward_trend(self):
+        from engine.historical_engine import forecast_series
+        series = pd.Series([100, 200, 300, 400, 500])
+        result = forecast_series(series, future_months=3)
+        assert result[-1] > result[4]  # Forecast continues upward
+
+
+class TestExtendedHistoricalForecast:
+    def test_with_optional_metrics(self):
+        df = pd.DataFrame({
+            "date": pd.date_range("2023-01-01", periods=12, freq="MS"),
+            "traffic": [1000 + i * 50 for i in range(12)],
+            "revenue": [5000 + i * 200 for i in range(12)],
+            "transactions": [50 + i * 3 for i in range(12)],
+            "aov": [100 + i * 0.5 for i in range(12)],
+            "cr": [5.0 - i * 0.05 for i in range(12)],
+        })
+        result = run_historical_forecast(df, months=6, methods=["Linear Regression"])
+        assert "revenue_forecast" in result.columns
+        assert "transactions_forecast" in result.columns
+        assert "aov_forecast" in result.columns
+        assert "cr_forecast" in result.columns
+        assert len(result) == 18  # 12 historical + 6 forecast
+
+    def test_without_optional_metrics(self):
+        df = pd.DataFrame({
+            "date": pd.date_range("2023-01-01", periods=12, freq="MS"),
+            "traffic": [1000 + i * 50 for i in range(12)],
+        })
+        result = run_historical_forecast(df, months=6, methods=["Linear Regression"])
+        assert "revenue_forecast" not in result.columns
+        assert "aov_forecast" not in result.columns
+
+
+class TestBuildFullMetrics:
+    def test_full_metrics_table(self):
+        from engine.revenue_engine import build_full_metrics_table
+        df = pd.DataFrame({
+            "date": pd.date_range("2023-01-01", periods=18, freq="MS"),
+            "traffic": [1000 + i * 50 for i in range(18)],
+            "revenue": [5000 + i * 200 for i in range(18)],
+            "transactions": [50 + i * 3 for i in range(18)],
+            "aov": [100 + i * 0.5 for i in range(18)],
+            "cr": [5.0 - i * 0.05 for i in range(18)],
+        })
+        result = run_historical_forecast(df, months=6, methods=["Linear Regression"])
+        metrics = build_full_metrics_table(result)
+        assert "Month" in metrics.columns
+        assert "Organic Sessions" in metrics.columns
+        assert "Organic Sessions Forecasted" in metrics.columns
+        # YoY columns should exist for sessions at minimum
+        yoy_cols = [c for c in metrics.columns if "YoY" in c]
+        assert len(yoy_cols) > 0
+
+
+class TestAddDynamicRevenue:
+    def test_static_values(self):
+        from engine.revenue_engine import add_dynamic_revenue
+        df = pd.DataFrame({"month": [1, 2, 3], "traffic": [1000, 2000, 3000]})
+        result = add_dynamic_revenue(df, cvr_series=5.0, aov_series=100.0)
+        assert result["transactions"].iloc[0] == 50  # 1000 * 0.05
+        assert result["revenue"].iloc[0] == 5000.0  # 50 * 100
+
+    def test_dynamic_aov(self):
+        from engine.revenue_engine import add_dynamic_revenue
+        df = pd.DataFrame({"month": [1, 2, 3], "traffic": [1000, 1000, 1000]})
+        result = add_dynamic_revenue(df, cvr_series=10.0, aov_series=[50, 100, 150])
+        assert result["revenue"].iloc[0] == 5000.0   # 100 * 50
+        assert result["revenue"].iloc[2] == 15000.0   # 100 * 150
+
+
 class TestTemplates:
     def test_keyword_template_is_valid_csv(self):
         from utils.export import keyword_template_csv
@@ -445,8 +523,12 @@ class TestTemplates:
     def test_traffic_template_is_valid_csv(self):
         from utils.export import traffic_template_csv
         df = pd.read_csv(io.StringIO(traffic_template_csv()))
-        assert list(df.columns) == ["date", "traffic"]
+        assert "date" in df.columns
+        assert "traffic" in df.columns
         assert len(df) == 3
+        # Optional metric columns
+        for col in ["revenue", "transactions", "aov", "cr"]:
+            assert col in df.columns
 
     def test_keyword_template_has_valid_data(self):
         from utils.export import keyword_template_csv
