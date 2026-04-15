@@ -1,9 +1,11 @@
+import re
+
 import numpy as np
 import pandas as pd
 
 from engine.constants import (
     CTR_BY_POSITION, CTR_11_14, CTR_15_20,
-    DIFFICULTY_TIERS, TIME_TO_RANK,
+    DIFFICULTY_TIERS, TIME_TO_RANK, INTENT_PATTERNS,
 )
 
 
@@ -46,14 +48,68 @@ def expected_position(da: int, kd: int, seed: int) -> int:
     return int(rng.randint(low, high + 1))
 
 
-def get_ctr(position: int) -> float:
-    """Return CTR percentage for a given SERP position."""
-    if position in CTR_BY_POSITION:
-        return CTR_BY_POSITION[position]
+def classify_intent(keyword: str) -> str:
+    """Classify keyword search intent based on pattern matching.
+
+    Returns one of: informational, transactional, commercial, navigational.
+    Defaults to commercial if no patterns match.
+    """
+    kw = keyword.lower().strip()
+
+    # Check transactional first (highest commercial value)
+    patterns = INTENT_PATTERNS["transactional"]
+    for term in patterns["contains"]:
+        if term in kw:
+            return "transactional"
+
+    # Check navigational
+    patterns = INTENT_PATTERNS["navigational"]
+    for term in patterns["contains"]:
+        if term in kw:
+            return "navigational"
+
+    # Check informational (question words + info patterns)
+    patterns = INTENT_PATTERNS["informational"]
+    for prefix in patterns["starts_with"]:
+        if kw.startswith(prefix):
+            return "informational"
+    for term in patterns["contains"]:
+        if term in kw:
+            return "informational"
+
+    # Check commercial
+    patterns = INTENT_PATTERNS["commercial"]
+    for term in patterns["contains"]:
+        if term in kw:
+            return "commercial"
+
+    # Default to commercial (safe assumption for SEO keyword lists)
+    return "commercial"
+
+
+def get_ctr(position: int, ctr_model: dict | None = None) -> float:
+    """Return CTR percentage for a given SERP position.
+
+    Args:
+        position: SERP position (1-20+).
+        ctr_model: Optional dict with keys 'ctr_by_position', 'ctr_11_14', 'ctr_15_20'.
+                   Defaults to the standard CTR model.
+    """
+    if ctr_model is not None:
+        ctr_table = ctr_model["ctr_by_position"]
+        ctr_11_14 = ctr_model["ctr_11_14"]
+        ctr_15_20 = ctr_model["ctr_15_20"]
+    else:
+        ctr_table = CTR_BY_POSITION
+        ctr_11_14 = CTR_11_14
+        ctr_15_20 = CTR_15_20
+
+    if position in ctr_table:
+        return ctr_table[position]
     if position <= 14:
-        return CTR_11_14
+        return ctr_11_14
     if position <= 20:
-        return CTR_15_20
+        return ctr_15_20
     return 0.0
 
 
@@ -79,15 +135,39 @@ def run_keyword_forecast(
     cadence: int,
     months: int,
     seed: int = 42,
+    ctr_model: dict | None = None,
+    traffic_multiplier: float = 1.0,
+    exclude_informational: bool = False,
+    informational_ctr_penalty: float = 0.0,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Run the full keyword forecast pipeline.
+
+    Args:
+        df: DataFrame with columns keyword, volume, kd.
+        da: Domain authority (1-100).
+        cadence: Keywords published per month.
+        months: Forecast horizon in months.
+        seed: Random seed for reproducibility.
+        ctr_model: Optional CTR model dict (from CTR_MODELS).
+        traffic_multiplier: Multiplier for traffic estimates (e.g. 0.7 conservative).
+        exclude_informational: If True, drop informational-intent keywords.
+        informational_ctr_penalty: Percentage CTR reduction for informational keywords (0-100).
 
     Returns:
         keyword_df: Per-keyword results with all computed fields.
         monthly_df: Month-by-month traffic projection.
     """
-    # Step 1: Calculate efficiency score and sort
+    # Step 0: Classify intent (always computed for visibility)
     df = df.copy()
+    df["intent"] = df["keyword"].apply(classify_intent)
+
+    # Step 0b: Optionally exclude informational keywords
+    n_excluded = 0
+    if exclude_informational:
+        n_excluded = (df["intent"] == "informational").sum()
+        df = df[df["intent"] != "informational"].reset_index(drop=True)
+
+    # Step 1: Calculate efficiency score and sort
     df["efficiency_score"] = df.apply(
         lambda r: efficiency_score(r["volume"], r["kd"]), axis=1
     )
@@ -120,8 +200,11 @@ def run_keyword_forecast(
     for i, row in df.iterrows():
         if row["will_rank"]:
             pos = expected_position(da, row["kd"], seed + i + 2000)
-            ctr = get_ctr(pos)
-            traffic = round(row["volume"] * ctr / 100)
+            ctr = get_ctr(pos, ctr_model)
+            # Apply informational CTR penalty
+            if informational_ctr_penalty > 0 and row["intent"] == "informational":
+                ctr = ctr * (1 - informational_ctr_penalty / 100)
+            traffic = round(row["volume"] * ctr / 100 * traffic_multiplier)
         else:
             pos = None
             ctr = 0.0
@@ -163,5 +246,8 @@ def run_keyword_forecast(
 
     # Add rank column (1-indexed ordering)
     df.insert(0, "rank", range(1, len(df) + 1))
+
+    # Store metadata for UI display
+    df.attrs["n_excluded_informational"] = n_excluded
 
     return df, monthly_df

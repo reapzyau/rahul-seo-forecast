@@ -8,6 +8,7 @@ from engine.revenue_engine import add_revenue, CURRENCY_SYMBOLS
 from utils.data_loader import load_keywords, load_traffic
 from utils.chart_builder import combined_forecast_chart, revenue_projection_chart
 from utils.export import to_csv, to_html_report
+from engine.constants import SITE_PRESETS, CTR_MODELS, FORECAST_SCENARIOS
 
 st.header("Combined Forecast")
 st.caption("Layer new content projections onto your existing traffic baseline.")
@@ -15,10 +16,70 @@ st.caption("Layer new content projections onto your existing traffic baseline.")
 # ── Sidebar ──────────────────────────────────────────────────────────────────
 st.sidebar.header("Combined Forecast Settings")
 
-da = st.sidebar.slider("Domain Authority (DA)", 1, 100, 30, key="comb_da")
-cadence = st.sidebar.number_input("Monthly Content Production", 1, 50, 4, key="comb_cadence")
-months = st.sidebar.slider("Forecast Horizon (months)", 6, 36, 18, key="comb_months")
+# Site Profile Presets
+st.sidebar.subheader("Site Profile")
+preset_name = st.sidebar.selectbox(
+    "Site Profile Preset",
+    list(SITE_PRESETS.keys()),
+    key="comb_preset",
+    help="Select a preset to auto-fill DA, cadence, and horizon.",
+)
+preset = SITE_PRESETS[preset_name]
+
+da = st.sidebar.slider("Domain Authority (DA)", 1, 100, preset["da"], key="comb_da")
+cadence = st.sidebar.number_input("Monthly Content Production", 1, 50, preset["cadence"], key="comb_cadence")
+months = st.sidebar.slider("Forecast Horizon (months)", 6, 36, preset["months"], key="comb_months")
 seed = st.sidebar.number_input("Random Seed", value=42, step=1, key="comb_seed")
+
+st.sidebar.divider()
+
+# CTR Model & Forecast Scenario
+st.sidebar.subheader("Forecast Model")
+ctr_model_name = st.sidebar.selectbox(
+    "CTR Model",
+    list(CTR_MODELS.keys()),
+    key="comb_ctr_model",
+    help="Standard = traditional CTR. AI-Adjusted = lower CTR reflecting AI Overviews impact.",
+)
+scenario_name = st.sidebar.selectbox(
+    "Forecast Scenario",
+    list(FORECAST_SCENARIOS.keys()),
+    index=1,  # Default to Moderate
+    key="comb_scenario",
+    help="Conservative (0.7x), Moderate (1.0x), or Aggressive (1.3x) traffic multiplier.",
+)
+
+ctr_model = CTR_MODELS[ctr_model_name]
+traffic_multiplier = FORECAST_SCENARIOS[scenario_name]["traffic_multiplier"]
+
+st.sidebar.divider()
+
+# AI Traffic Adjustment
+st.sidebar.subheader("AI Traffic Adjustment")
+filter_informational = st.sidebar.checkbox(
+    "Filter Informational Keywords",
+    key="comb_filter_info",
+    help="Reduce impact of informational keywords that are losing CTR to AI Overviews.",
+)
+
+exclude_informational = False
+informational_ctr_penalty = 0.0
+
+if filter_informational:
+    filter_mode = st.sidebar.radio(
+        "Filter Mode",
+        ["Exclude from forecast entirely", "Apply CTR penalty"],
+        key="comb_filter_mode",
+    )
+    if filter_mode == "Exclude from forecast entirely":
+        exclude_informational = True
+    else:
+        informational_ctr_penalty = st.sidebar.slider(
+            "CTR Penalty (%)",
+            10, 80, 40,
+            key="comb_ctr_penalty",
+            help="Reduce informational keyword CTR by this percentage.",
+        )
 
 st.sidebar.divider()
 st.sidebar.subheader("Revenue Settings")
@@ -62,7 +123,13 @@ if traffic_df is not None:
 if kw_df is not None and traffic_df is not None:
     if st.button("Generate Combined Forecast", type="primary", key="comb_run"):
         with st.spinner("Running combined forecast..."):
-            keyword_df, monthly_kw_df = run_keyword_forecast(kw_df, da, cadence, months, seed)
+            keyword_df, monthly_kw_df = run_keyword_forecast(
+                kw_df, da, cadence, months, seed,
+                ctr_model=ctr_model,
+                traffic_multiplier=traffic_multiplier,
+                exclude_informational=exclude_informational,
+                informational_ctr_penalty=informational_ctr_penalty,
+            )
             combined_df = run_combined_forecast(keyword_df, monthly_kw_df, traffic_df, months)
 
             st.session_state["comb_results"] = {
@@ -72,6 +139,9 @@ if kw_df is not None and traffic_df is not None:
                 "currency": currency,
                 "cvr": cvr,
                 "aov": aov,
+                "cadence": cadence,
+                "da": da,
+                "months": months,
             }
 elif kw_df is None and traffic_df is None and not use_sample:
     st.info("Upload both a keywords CSV and a historical traffic CSV to get started, or use sample data.")
@@ -81,10 +151,10 @@ if "comb_results" in st.session_state:
     r = st.session_state["comb_results"]
     combined_df = r["combined_df"]
 
-    tab_names = ["Combined Chart", "Uplift Table"]
+    tab_names = ["\U0001f4ca Combined Chart", "\U0001f4cb Uplift Table"]
     if r["enable_revenue"]:
-        tab_names.append("Revenue Analysis")
-    tab_names.append("Export")
+        tab_names.append("\U0001f4b0 Revenue Analysis")
+    tab_names.append("\U0001f4e5 Export")
 
     tabs = st.tabs(tab_names)
     tab_idx = 0
