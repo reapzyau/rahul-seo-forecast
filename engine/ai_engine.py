@@ -13,7 +13,8 @@ def get_bifrost_client(api_key: str | None = None) -> "OpenAI | None":
     """Get Bi Frost OpenAI-compatible client.
 
     Args:
-        api_key: Bi Frost virtual key. Falls back to BIFROST_API_KEY env var.
+        api_key: Bi Frost virtual key. Falls back to Streamlit secrets,
+                 then BIFROST_API_KEY env var.
 
     Returns:
         OpenAI client configured for Bi Frost, or None if unavailable.
@@ -21,6 +22,13 @@ def get_bifrost_client(api_key: str | None = None) -> "OpenAI | None":
     if OpenAI is None:
         return None
     key = api_key or os.environ.get("BIFROST_API_KEY")
+    # Also check Streamlit secrets
+    if not key:
+        try:
+            import streamlit as st
+            key = st.secrets.get("BIFROST_API_KEY")
+        except Exception:
+            pass
     if not key:
         return None
     return OpenAI(base_url="https://bifrost.pattern.com", api_key=key)
