@@ -227,6 +227,26 @@ def scenario_comparison_chart(scenarios_dict: dict[int, pd.DataFrame]) -> go.Fig
     return _apply_layout(fig, "Scenario Comparison: Content Cadence", "Month", "Estimated Monthly Visits")
 
 
+def combined_scenario_chart(scenarios_dict: dict[int, pd.DataFrame]) -> go.Figure:
+    """Multi-line overlay comparing combined traffic at different cadences."""
+    fig = go.Figure()
+    colors = ["#2563EB", "#8B5CF6", "#F97316", "#22C55E", "#EF4444", "#EAB308"]
+
+    for i, (cadence, df) in enumerate(sorted(scenarios_dict.items())):
+        color = colors[i % len(colors)]
+        forecast = df[df["is_forecast"]]
+        fig.add_trace(go.Scatter(
+            x=forecast["date"],
+            y=forecast["combined"],
+            mode="lines",
+            name=f"{cadence} posts/month",
+            line=dict(color=color, width=2),
+            hovertemplate=f"{cadence}/mo — %{{x|%b %Y}}<br>Combined: %{{y:,.0f}}<extra></extra>",
+        ))
+
+    return _apply_layout(fig, "Scenario Comparison: Combined Traffic by Cadence", "Date", "Monthly Traffic")
+
+
 def revenue_projection_chart(monthly_df: pd.DataFrame, currency_symbol: str = "$") -> go.Figure:
     """Line chart for monthly revenue projection."""
     fig = go.Figure()

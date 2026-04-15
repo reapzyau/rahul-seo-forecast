@@ -6,3 +6,4 @@ venv/
 .pytest_cache/
 .vscode/
 .idea/
+.streamlit/secrets.toml
