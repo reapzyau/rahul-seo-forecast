@@ -2,9 +2,13 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from engine.constants import CTR_BY_POSITION, CTR_11_14, CTR_15_20
+from engine.constants import (
+    CTR_BY_POSITION, CTR_11_14, CTR_15_20,
+    SITE_PRESETS, CTR_MODELS, FORECAST_SCENARIOS, INTENT_PATTERNS,
+)
 from engine.keyword_engine import (
     classify_difficulty,
+    classify_intent,
     ranking_probability,
     expected_position,
     get_ctr,
@@ -87,6 +91,32 @@ class TestExpectedPosition:
         assert len(positions) > 1  # Not all the same
 
 
+class TestClassifyIntent:
+    def test_informational_keywords(self):
+        assert classify_intent("how to do seo") == "informational"
+        assert classify_intent("what is keyword difficulty") == "informational"
+        assert classify_intent("why does seo matter") == "informational"
+        assert classify_intent("seo tutorial for beginners") == "informational"
+        assert classify_intent("link building guide") == "informational"
+
+    def test_commercial_keywords(self):
+        assert classify_intent("best seo tool") == "commercial"
+        assert classify_intent("seo tool review") == "commercial"
+        assert classify_intent("ahrefs alternative") == "commercial"
+
+    def test_transactional_keywords(self):
+        assert classify_intent("buy seo software") == "transactional"
+        assert classify_intent("seo tool pricing") == "transactional"
+        assert classify_intent("ahrefs discount code") == "transactional"
+
+    def test_navigational_keywords(self):
+        assert classify_intent("google search console login") == "navigational"
+
+    def test_default_classification(self):
+        # Generic keywords with no clear signals default to commercial
+        assert classify_intent("seo audit") == "commercial"
+
+
 class TestGetCtr:
     def test_top_10(self):
         for pos, expected in CTR_BY_POSITION.items():
@@ -103,6 +133,16 @@ class TestGetCtr:
     def test_beyond_20(self):
         assert get_ctr(21) == 0.0
         assert get_ctr(50) == 0.0
+
+    def test_ai_adjusted_model(self):
+        model = CTR_MODELS["AI-Adjusted"]
+        assert get_ctr(1, model) == 16.0
+        assert get_ctr(1, model) < get_ctr(1)  # AI-Adjusted < Standard
+
+    def test_standard_model_matches_default(self):
+        model = CTR_MODELS["Standard"]
+        for pos in range(1, 21):
+            assert get_ctr(pos, model) == get_ctr(pos)
 
 
 class TestTimeToRank:
@@ -298,6 +338,99 @@ class TestKeywordRevenueTable:
 
 
 # ── Data Loader (unit-testable parts) ──────────────────────────────────────
+
+
+class TestKeywordForecastFiltering:
+    @pytest.fixture
+    def mixed_intent_df(self):
+        return pd.DataFrame({
+            "keyword": [
+                "how to do seo",          # informational
+                "best seo tool",          # commercial
+                "buy seo software",       # transactional
+                "seo tutorial",           # informational
+                "seo agency",             # commercial
+            ],
+            "volume": [5000, 3000, 2000, 4000, 1000],
+            "kd": [15, 40, 30, 20, 50],
+        })
+
+    def test_intent_column_always_present(self, mixed_intent_df):
+        kw_df, _ = run_keyword_forecast(mixed_intent_df, da=50, cadence=2, months=12, seed=42)
+        assert "intent" in kw_df.columns
+
+    def test_exclude_informational(self, mixed_intent_df):
+        kw_df, _ = run_keyword_forecast(
+            mixed_intent_df, da=50, cadence=2, months=12, seed=42,
+            exclude_informational=True,
+        )
+        assert "informational" not in kw_df["intent"].values
+        assert len(kw_df) == 3  # 2 informational removed from 5
+
+    def test_ctr_penalty_reduces_traffic(self, mixed_intent_df):
+        kw_base, _ = run_keyword_forecast(
+            mixed_intent_df, da=50, cadence=2, months=12, seed=42,
+        )
+        kw_penalty, _ = run_keyword_forecast(
+            mixed_intent_df, da=50, cadence=2, months=12, seed=42,
+            informational_ctr_penalty=50.0,
+        )
+        # Informational keywords should have less or equal traffic with penalty
+        base_info = kw_base[kw_base["intent"] == "informational"]["estimated_monthly_traffic"].sum()
+        penalty_info = kw_penalty[kw_penalty["intent"] == "informational"]["estimated_monthly_traffic"].sum()
+        assert penalty_info <= base_info
+
+    def test_ctr_model_affects_traffic(self, mixed_intent_df):
+        _, monthly_std = run_keyword_forecast(
+            mixed_intent_df, da=50, cadence=2, months=12, seed=42,
+            ctr_model=CTR_MODELS["Standard"],
+        )
+        _, monthly_ai = run_keyword_forecast(
+            mixed_intent_df, da=50, cadence=2, months=12, seed=42,
+            ctr_model=CTR_MODELS["AI-Adjusted"],
+        )
+        # AI-Adjusted should produce less or equal total traffic
+        assert monthly_ai["traffic"].sum() <= monthly_std["traffic"].sum()
+
+    def test_traffic_multiplier(self, mixed_intent_df):
+        _, monthly_base = run_keyword_forecast(
+            mixed_intent_df, da=50, cadence=2, months=12, seed=42,
+            traffic_multiplier=1.0,
+        )
+        _, monthly_conservative = run_keyword_forecast(
+            mixed_intent_df, da=50, cadence=2, months=12, seed=42,
+            traffic_multiplier=0.7,
+        )
+        _, monthly_aggressive = run_keyword_forecast(
+            mixed_intent_df, da=50, cadence=2, months=12, seed=42,
+            traffic_multiplier=1.3,
+        )
+        base_total = monthly_base["traffic"].sum()
+        assert monthly_conservative["traffic"].sum() <= base_total
+        assert monthly_aggressive["traffic"].sum() >= base_total
+
+
+class TestPresets:
+    def test_site_preset_values_valid(self):
+        for name, preset in SITE_PRESETS.items():
+            assert "da" in preset
+            assert "cadence" in preset
+            assert "months" in preset
+            assert 1 <= preset["da"] <= 100
+            assert preset["cadence"] >= 1
+            assert preset["months"] >= 6
+
+    def test_ctr_models_have_required_keys(self):
+        for name, model in CTR_MODELS.items():
+            assert "ctr_by_position" in model
+            assert "ctr_11_14" in model
+            assert "ctr_15_20" in model
+            assert "label" in model
+
+    def test_forecast_scenarios_have_multiplier(self):
+        for name, scenario in FORECAST_SCENARIOS.items():
+            assert "traffic_multiplier" in scenario
+            assert scenario["traffic_multiplier"] > 0
 
 
 class TestDataLoaderHelpers:

@@ -179,6 +179,49 @@ revenue = leads * average_order_value
 
 ---
 
+## Search Intent Classification
+
+Keywords are automatically classified by search intent using pattern matching:
+
+| Intent | Signals | Example |
+|--------|---------|---------|
+| Informational | Question words (how, what, why), guide, tutorial, tips, definition | "how to improve site speed" |
+| Transactional | buy, purchase, price, pricing, cost, discount, download, subscribe | "buy SEO tool subscription" |
+| Commercial | best, top, review, comparison, alternative, tool, software, vs | "best SEO tools 2025" |
+| Navigational | login, sign in, sign up, official, website | "google search console login" |
+
+Keywords that match no pattern default to **commercial** (a safe assumption for SEO keyword lists).
+
+### AI Traffic Adjustment
+
+AI Overviews (Google's AI-generated answers) are increasingly answering informational queries directly in the SERP, reducing organic click-through rates for those keywords. The tool offers two ways to account for this:
+
+1. **Exclude informational keywords** — removes them from the forecast entirely, modelling a strategy that avoids AI-vulnerable keywords.
+2. **CTR penalty** — reduces CTR for informational keywords by a configurable percentage (e.g. 40% penalty means their CTR is multiplied by 0.6). This models partial traffic loss to AI Overviews.
+
+### CTR Model Versions
+
+Two CTR models are available:
+
+| Model | Position 1 CTR | Position 5 CTR | Position 10 CTR | Positions 11-14 | Positions 15-20 |
+|-------|---------------|---------------|----------------|-----------------|-----------------|
+| Standard | 22.0% | 4.5% | 1.3% | 0.8% | 0.3% |
+| AI-Adjusted | 16.0% | 3.5% | 1.0% | 0.5% | 0.2% |
+
+The **AI-Adjusted** model reduces CTR by approximately 25-30% across all positions, reflecting the aggregate impact of AI Overviews, featured snippets, and other SERP features that reduce organic clicks.
+
+### Forecast Scenarios
+
+Three scenario multipliers adjust overall traffic estimates:
+
+| Scenario | Multiplier | Use When |
+|----------|-----------|----------|
+| Conservative | 0.7x | Competitive niche, new domain, uncertain rankings |
+| Moderate | 1.0x | Typical conditions (recommended default) |
+| Aggressive | 1.3x | Strong domain, low competition, proven content track record |
+
+---
+
 ## Assumptions and Limitations
 
 1. **CTR data is based on industry averages** — actual CTR varies by industry, SERP features, and brand recognition.

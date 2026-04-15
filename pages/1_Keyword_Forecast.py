@@ -12,7 +12,7 @@ from utils.chart_builder import (
     revenue_projection_chart,
 )
 from utils.export import to_csv, to_html_report
-from engine.constants import TIER_COLORS
+from engine.constants import TIER_COLORS, SITE_PRESETS, CTR_MODELS, FORECAST_SCENARIOS
 
 st.header("Keyword Forecast")
 st.caption("Project traffic from target keywords — no historical data needed.")
@@ -20,25 +20,86 @@ st.caption("Project traffic from target keywords — no historical data needed."
 # ── Sidebar ──────────────────────────────────────────────────────────────────
 st.sidebar.header("Keyword Forecast Settings")
 
-da = st.sidebar.slider("Domain Authority (DA)", 1, 100, 30)
-cadence = st.sidebar.number_input("Monthly Content Production", 1, 50, 4)
-months = st.sidebar.slider("Forecast Horizon (months)", 6, 36, 18)
-seed = st.sidebar.number_input("Random Seed", value=42, step=1)
+# Site Profile Presets
+st.sidebar.subheader("Site Profile")
+preset_name = st.sidebar.selectbox(
+    "Site Profile Preset",
+    list(SITE_PRESETS.keys()),
+    key="kw_preset",
+    help="Select a preset to auto-fill DA, cadence, and horizon.",
+)
+preset = SITE_PRESETS[preset_name]
+
+da = st.sidebar.slider("Domain Authority (DA)", 1, 100, preset["da"], key="kw_da")
+cadence = st.sidebar.number_input("Monthly Content Production", 1, 50, preset["cadence"], key="kw_cadence")
+months = st.sidebar.slider("Forecast Horizon (months)", 6, 36, preset["months"], key="kw_months")
+seed = st.sidebar.number_input("Random Seed", value=42, step=1, key="kw_seed")
+
+st.sidebar.divider()
+
+# CTR Model & Forecast Scenario
+st.sidebar.subheader("Forecast Model")
+ctr_model_name = st.sidebar.selectbox(
+    "CTR Model",
+    list(CTR_MODELS.keys()),
+    key="kw_ctr_model",
+    help="Standard = traditional CTR. AI-Adjusted = lower CTR reflecting AI Overviews impact.",
+)
+scenario_name = st.sidebar.selectbox(
+    "Forecast Scenario",
+    list(FORECAST_SCENARIOS.keys()),
+    index=1,  # Default to Moderate
+    key="kw_scenario",
+    help="Conservative (0.7x), Moderate (1.0x), or Aggressive (1.3x) traffic multiplier.",
+)
+
+ctr_model = CTR_MODELS[ctr_model_name]
+traffic_multiplier = FORECAST_SCENARIOS[scenario_name]["traffic_multiplier"]
+
+st.sidebar.divider()
+
+# AI Traffic Adjustment
+st.sidebar.subheader("AI Traffic Adjustment")
+filter_informational = st.sidebar.checkbox(
+    "Filter Informational Keywords",
+    key="kw_filter_info",
+    help="Reduce impact of informational keywords that are losing CTR to AI Overviews.",
+)
+
+exclude_informational = False
+informational_ctr_penalty = 0.0
+
+if filter_informational:
+    filter_mode = st.sidebar.radio(
+        "Filter Mode",
+        ["Exclude from forecast entirely", "Apply CTR penalty"],
+        key="kw_filter_mode",
+    )
+    if filter_mode == "Exclude from forecast entirely":
+        exclude_informational = True
+    else:
+        informational_ctr_penalty = st.sidebar.slider(
+            "CTR Penalty (%)",
+            10, 80, 40,
+            key="kw_ctr_penalty",
+            help="Reduce informational keyword CTR by this percentage.",
+        )
 
 st.sidebar.divider()
 st.sidebar.subheader("Revenue Settings")
-enable_revenue = st.sidebar.checkbox("Enable Revenue Projection")
-cvr = st.sidebar.number_input("Conversion Rate (%)", 0.1, 100.0, 2.5, step=0.1, disabled=not enable_revenue)
-aov = st.sidebar.number_input("Average Order Value", 1.0, 100000.0, 100.0, step=10.0, disabled=not enable_revenue)
-currency = st.sidebar.selectbox("Currency", list(CURRENCY_SYMBOLS.keys()), disabled=not enable_revenue)
+enable_revenue = st.sidebar.checkbox("Enable Revenue Projection", key="kw_rev")
+cvr = st.sidebar.number_input("Conversion Rate (%)", 0.1, 100.0, 2.5, step=0.1, key="kw_cvr", disabled=not enable_revenue)
+aov = st.sidebar.number_input("Average Order Value", 1.0, 100000.0, 100.0, step=10.0, key="kw_aov", disabled=not enable_revenue)
+currency = st.sidebar.selectbox("Currency", list(CURRENCY_SYMBOLS.keys()), key="kw_cur", disabled=not enable_revenue)
 
 st.sidebar.divider()
 st.sidebar.subheader("Scenario Comparison")
-enable_scenarios = st.sidebar.checkbox("Compare Multiple Cadences")
+enable_scenarios = st.sidebar.checkbox("Compare Multiple Cadences", key="kw_scenarios")
 cadence_options = st.sidebar.multiselect(
     "Cadences to compare",
     [1, 2, 4, 6, 8, 12],
     default=[2, 4, 8],
+    key="kw_cadence_opts",
     disabled=not enable_scenarios,
 )
 
@@ -48,9 +109,9 @@ st.caption("Required columns: keyword, volume, kd")
 
 col1, col2 = st.columns(2)
 with col1:
-    uploaded_file = st.file_uploader("Upload your CSV", type=["csv"])
+    uploaded_file = st.file_uploader("Upload your CSV", type=["csv"], key="kw_upload")
 with col2:
-    use_sample = st.checkbox("Use sample data to explore the tool")
+    use_sample = st.checkbox("Use sample data to explore the tool", key="kw_sample")
 
 df = None
 if uploaded_file is not None:
@@ -70,15 +131,27 @@ if df is not None:
 
 # ── Run Forecast ─────────────────────────────────────────────────────────────
 if df is not None:
-    if st.button("Generate Forecast", type="primary"):
+    if st.button("Generate Forecast", type="primary", key="kw_run"):
         with st.spinner("Running keyword forecast..."):
-            keyword_df, monthly_df = run_keyword_forecast(df, da, cadence, months, seed)
+            keyword_df, monthly_df = run_keyword_forecast(
+                df, da, cadence, months, seed,
+                ctr_model=ctr_model,
+                traffic_multiplier=traffic_multiplier,
+                exclude_informational=exclude_informational,
+                informational_ctr_penalty=informational_ctr_penalty,
+            )
 
             # Run scenarios if enabled
             scenarios = {}
             if enable_scenarios and cadence_options:
                 for c in cadence_options:
-                    _, s_monthly = run_keyword_forecast(df, da, c, months, seed)
+                    _, s_monthly = run_keyword_forecast(
+                        df, da, c, months, seed,
+                        ctr_model=ctr_model,
+                        traffic_multiplier=traffic_multiplier,
+                        exclude_informational=exclude_informational,
+                        informational_ctr_penalty=informational_ctr_penalty,
+                    )
                     scenarios[c] = s_monthly
 
             # Revenue
@@ -98,6 +171,10 @@ if df is not None:
                 "currency": currency,
                 "cvr": cvr,
                 "aov": aov,
+                "ctr_model_name": ctr_model_name,
+                "scenario_name": scenario_name,
+                "exclude_informational": exclude_informational,
+                "informational_ctr_penalty": informational_ctr_penalty,
             }
 
 # ── Results ──────────────────────────────────────────────────────────────────
@@ -106,12 +183,12 @@ if "kw_results" in st.session_state:
     keyword_df = r["keyword_df"]
     monthly_df = r["monthly_df"]
 
-    tab_names = ["Traffic Projection", "Keyword Schedule"]
+    tab_names = ["\U0001f4ca Traffic Projection", "\U0001f4cb Keyword Schedule"]
     if r["enable_revenue"]:
-        tab_names.append("Revenue Analysis")
+        tab_names.append("\U0001f4b0 Revenue Analysis")
     if r["enable_scenarios"] and r["scenarios"]:
-        tab_names.append("Scenario Comparison")
-    tab_names.append("Export")
+        tab_names.append("\U0001f504 Scenario Comparison")
+    tab_names.append("\U0001f4e5 Export")
 
     tabs = st.tabs(tab_names)
     tab_idx = 0
@@ -141,8 +218,13 @@ if "kw_results" in st.session_state:
     with tabs[tab_idx]:
         tab_idx += 1
 
+        # Show informational exclusion callout
+        n_excluded = keyword_df.attrs.get("n_excluded_informational", 0)
+        if n_excluded > 0:
+            st.info(f"**{n_excluded} informational keywords** were excluded from this forecast.")
+
         display_cols = [
-            "rank", "keyword", "volume", "kd", "tier", "efficiency_score",
+            "rank", "keyword", "volume", "kd", "tier", "intent", "efficiency_score",
             "publish_month", "expected_position", "ctr", "estimated_monthly_traffic",
             "time_to_rank", "traffic_starts_month",
         ]

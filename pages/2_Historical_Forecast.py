@@ -82,10 +82,10 @@ if "hist_results" in st.session_state:
     result = r["result"]
     growth = r["growth"]
 
-    tab_names = ["Forecast Chart", "Data Table"]
+    tab_names = ["\U0001f4ca Forecast Chart", "\U0001f4cb Data Table"]
     if r["enable_revenue"]:
-        tab_names.append("Revenue Analysis")
-    tab_names.append("Export")
+        tab_names.append("\U0001f4b0 Revenue Analysis")
+    tab_names.append("\U0001f4e5 Export")
 
     tabs = st.tabs(tab_names)
     tab_idx = 0
