@@ -30,7 +30,10 @@ Choose a forecasting mode from the sidebar:
 - **Keyword Forecast** — Project traffic from target keywords (no historical data needed)
 - **Historical Forecast** — Project traffic from your past organic data
 - **Combined Forecast** — Layer new content projections onto your existing traffic baseline
+- **Seasonality** — Apply monthly modifiers and campaign events to your forecast
 - **Content Roadmap** — AI-powered content planning and prioritization
+- **Keyword Pipeline** — Track keyword distribution across SERP pages over time
+- **Budget Roadmap** — SEO task allocation and monthly budget planning
 - **Methodology** — How the models work
 """)
 

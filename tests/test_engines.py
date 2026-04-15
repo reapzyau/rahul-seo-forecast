@@ -513,6 +513,91 @@ class TestAddDynamicRevenue:
         assert result["revenue"].iloc[2] == 15000.0   # 100 * 150
 
 
+class TestSeasonality:
+    def test_apply_seasonality_modifies_traffic(self):
+        from engine.seasonality_engine import apply_seasonality
+        df = pd.DataFrame({"month": [1, 2, 3], "traffic": [1000, 1000, 1000]})
+        result = apply_seasonality(df)
+        # Seasonality should change at least some months
+        assert not (result["traffic"] == 1000).all()
+        assert "traffic_base" in result.columns
+        assert "season_label" in result.columns
+
+    def test_campaign_boost_adds_to_modifier(self):
+        from engine.seasonality_engine import apply_seasonality
+        df = pd.DataFrame({"month": [11], "traffic": [1000]})
+        campaigns = [{"name": "Test Sale", "month": 11, "traffic_boost": 0.50}]
+        result = apply_seasonality(df, campaigns=campaigns)
+        # November default is 0.25, plus campaign 0.50 = 0.75 total
+        assert result["traffic"].iloc[0] > 1500
+
+    def test_build_campaign_list(self):
+        from engine.seasonality_engine import build_campaign_list
+        text = "GAZFRENZY | 11 | 0.20 | 0.10 | -0.05\nFather's Day | 9 | 0.15"
+        campaigns = build_campaign_list(text)
+        assert len(campaigns) == 2
+        assert campaigns[0]["name"] == "GAZFRENZY"
+        assert campaigns[0]["month"] == 11
+        assert campaigns[1]["traffic_boost"] == 0.15
+
+
+class TestKeywordPipeline:
+    def test_classify_serp_page(self):
+        from engine.keyword_pipeline_engine import classify_serp_page
+        assert classify_serp_page(1) == "Page 1"
+        assert classify_serp_page(10) == "Page 1"
+        assert classify_serp_page(11) == "Page 2"
+        assert classify_serp_page(25) == "Page 3"
+        assert classify_serp_page(50) == "Pages 4-10"
+        assert classify_serp_page(None) == "Not Ranking"
+
+    def test_pipeline_snapshot(self):
+        from engine.keyword_pipeline_engine import build_pipeline_snapshot
+        kw_df = pd.DataFrame({"expected_position": [1, 5, 15, 25, None]})
+        snapshot = build_pipeline_snapshot(kw_df)
+        assert snapshot["Page 1"] == 2
+        assert snapshot["Page 2"] == 1
+        assert snapshot["Page 3"] == 1
+        assert snapshot["Not Ranking"] == 1
+
+    def test_pipeline_over_time(self):
+        from engine.keyword_pipeline_engine import build_pipeline_over_time
+        kw_df = pd.DataFrame({
+            "keyword": ["kw1", "kw2"],
+            "expected_position": [3, 15],
+            "publish_month": [1, 1],
+            "will_rank": [True, True],
+            "traffic_starts_month": [4, 6],
+            "time_to_rank": [3, 5],
+        })
+        result = build_pipeline_over_time(kw_df, months=12)
+        assert len(result) == 12
+        assert "page_1" in result.columns
+        assert "page_1_mom_change" in result.columns
+
+
+class TestBudgetEngine:
+    def test_build_budget_roadmap(self):
+        from engine.budget_engine import build_budget_roadmap
+        task_df, summary = build_budget_roadmap(hourly_rate=200.0, months=12)
+        assert len(task_df) > 0
+        assert summary["hourly_rate"] == 200.0
+        assert summary["total_monthly_cost"] > 0
+        assert summary["total_annual_cost"] == summary["total_monthly_cost"] * 12
+
+    def test_custom_tasks(self):
+        from engine.budget_engine import build_budget_roadmap
+        tasks = [{"category": "Test", "task": "Test Task", "hours_per_month": 10.0}]
+        task_df, summary = build_budget_roadmap(tasks, hourly_rate=100.0)
+        assert summary["total_monthly_cost"] == 1000.0
+
+    def test_monthly_timeline(self):
+        from engine.budget_engine import build_monthly_budget_timeline
+        timeline = build_monthly_budget_timeline(months=6)
+        assert len(timeline) == 6
+        assert "Total" in timeline.columns
+
+
 class TestTemplates:
     def test_keyword_template_is_valid_csv(self):
         from utils.export import keyword_template_csv
