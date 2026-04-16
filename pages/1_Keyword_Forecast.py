@@ -110,7 +110,7 @@ st.caption("Required columns: keyword, volume, kd")
 
 col1, col2, col3 = st.columns([3, 2, 2])
 with col1:
-    uploaded_file = st.file_uploader("Upload your CSV", type=["csv"], key="kw_upload")
+    uploaded_file = st.file_uploader("Upload your file", type=["csv", "xlsx", "xls"], key="kw_upload")
 with col2:
     use_sample = st.checkbox("Use sample data to explore the tool", key="kw_sample")
 with col3:

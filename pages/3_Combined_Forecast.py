@@ -105,7 +105,7 @@ st.subheader("Upload Data")
 col1, col2 = st.columns(2)
 with col1:
     st.markdown("**Keywords CSV** (keyword, volume, kd)")
-    kw_file = st.file_uploader("Upload keywords CSV", type=["csv"], key="comb_kw")
+    kw_file = st.file_uploader("Upload keywords file", type=["csv", "xlsx", "xls"], key="comb_kw")
     st.download_button(
         "Download Keywords Template",
         keyword_template_csv(),
@@ -115,7 +115,7 @@ with col1:
     )
 with col2:
     st.markdown("**Historical Traffic CSV** (date, traffic)")
-    traffic_file = st.file_uploader("Upload traffic CSV", type=["csv"], key="comb_traffic")
+    traffic_file = st.file_uploader("Upload traffic file", type=["csv", "xlsx", "xls"], key="comb_traffic")
     st.download_button(
         "Download Traffic Template",
         traffic_template_csv(),

@@ -21,7 +21,7 @@ if client is None:
 # ── Upload existing roadmap (optional) ───────────────────────────────────────
 st.subheader("Existing Roadmap (Optional)")
 st.caption("Upload your current content roadmap to provide context for AI recommendations.")
-roadmap_file = st.file_uploader("Upload roadmap CSV", type=["csv"], key="roadmap_upload")
+roadmap_file = st.file_uploader("Upload roadmap file", type=["csv", "xlsx", "xls"], key="roadmap_upload")
 
 existing_roadmap = None
 if roadmap_file is not None:
