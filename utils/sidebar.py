@@ -1,15 +1,22 @@
+import os
 import streamlit as st
 
 
 def init_api_key_from_secrets() -> None:
-    """Pre-populate bifrost_api_key session state from Streamlit secrets if not already set."""
+    """Pre-populate bifrost_api_key session state from secrets or env var if not already set."""
     if st.session_state.get("bifrost_api_key"):
         return
+    # 1. Check Streamlit secrets (Streamlit Cloud dashboard or local secrets.toml)
     try:
         if "BIFROST_API_KEY" in st.secrets and st.secrets["BIFROST_API_KEY"]:
             st.session_state["bifrost_api_key"] = st.secrets["BIFROST_API_KEY"]
+            return
     except Exception:
         pass
+    # 2. Fall back to environment variable
+    env_key = os.environ.get("BIFROST_API_KEY")
+    if env_key:
+        st.session_state["bifrost_api_key"] = env_key
 
 
 def render_ai_settings() -> None:
