@@ -37,7 +37,14 @@ def render_ai_settings() -> None:
             st.caption("No key set — AI features will be disabled.")
         st.selectbox(
             "AI Model",
-            ["openai/gpt-4o-mini", "openai/gpt-4o", "openai/gpt-5.4-nano", "anthropic/claude-sonnet-4-5-20250929"],
+            [
+                "openai/gpt-5.4-mini",               # recommended: smart + fast
+                "openai/gpt-5.4-nano",               # fastest / cheapest
+                "anthropic/claude-haiku-4-5-20251001",  # smart alternative
+                "bedrock/us.amazon.nova-micro-v1:0", # fastest / cheapest (Bedrock)
+                "openai/gpt-4o-mini",
+                "openai/gpt-4o",
+            ],
             key="bifrost_model",
-            help="Model used for keyword clustering, cannibalization checks, and content roadmap.",
+            help="Model for AI features. gpt-5.4-mini is a good default. Use nano/nova-micro for speed.",
         )

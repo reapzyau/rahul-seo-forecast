@@ -75,7 +75,7 @@ def _call_bifrost(client: "OpenAI", model: str, instructions: str, user_input: s
 def cluster_keywords(
     client: "OpenAI",
     keywords: list[str],
-    model: str = "openai/gpt-4o-mini",
+    model: str = "openai/gpt-5.4-mini",
 ) -> dict:
     """Group keywords into topical clusters using AI."""
     kw_list = "\n".join(f"- {kw}" for kw in keywords[:200])
@@ -102,7 +102,7 @@ def check_cannibalization(
     client: "OpenAI",
     keywords: list[str],
     existing_urls: list[str],
-    model: str = "openai/gpt-4o-mini",
+    model: str = "openai/gpt-5.4-mini",
 ) -> list[dict]:
     """Check if proposed keywords conflict with existing URLs."""
     kw_list = "\n".join(f"- {kw}" for kw in keywords[:100])
@@ -132,7 +132,7 @@ def generate_content_roadmap(
     client: "OpenAI",
     keyword_df: pd.DataFrame,
     months: int,
-    model: str = "openai/gpt-4o-mini",
+    model: str = "openai/gpt-5.4-mini",
 ) -> list[dict]:
     """Generate an AI-powered content roadmap from keyword forecast data."""
     cols = ["keyword", "volume", "kd", "tier", "intent", "efficiency_score",
@@ -203,7 +203,7 @@ def transform_data(
     client: "OpenAI",
     df: pd.DataFrame,
     target_format: str,
-    model: str = "openai/gpt-4o-mini",
+    model: str = "openai/gpt-5.4-mini",
 ) -> str:
     """Use AI to generate Python code that transforms uploaded data into the target format.
 
