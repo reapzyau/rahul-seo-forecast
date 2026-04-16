@@ -9,9 +9,12 @@ from utils.data_loader import load_keywords, load_traffic
 from utils.chart_builder import combined_forecast_chart, combined_scenario_chart, revenue_projection_chart
 from utils.export import to_csv, to_html_report, keyword_template_csv, traffic_template_csv
 from engine.constants import SITE_PRESETS, CTR_MODELS, FORECAST_SCENARIOS
+from utils.sidebar import render_ai_settings
 
 st.header("Combined Forecast")
 st.caption("Layer new content projections onto your existing traffic baseline.")
+
+render_ai_settings()
 
 # ── Sidebar ──────────────────────────────────────────────────────────────────
 st.sidebar.header("Combined Forecast Settings")

@@ -7,9 +7,12 @@ from engine.revenue_engine import add_revenue, build_full_metrics_table, CURRENC
 from utils.data_loader import load_traffic
 from utils.chart_builder import historical_comparison_chart, revenue_projection_chart
 from utils.export import to_csv, to_html_report, traffic_template_csv
+from utils.sidebar import render_ai_settings
 
 st.header("Historical Forecast")
 st.caption("Project traffic from your past organic data using statistical models.")
+
+render_ai_settings()
 
 # ── Sidebar ──────────────────────────────────────────────────────────────────
 st.sidebar.header("Historical Forecast Settings")

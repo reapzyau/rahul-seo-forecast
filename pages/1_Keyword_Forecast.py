@@ -14,9 +14,12 @@ from utils.chart_builder import (
 from utils.export import to_csv, to_html_report, keyword_template_csv
 from engine.constants import TIER_COLORS, SITE_PRESETS, CTR_MODELS, FORECAST_SCENARIOS
 from engine.ai_engine import get_bifrost_client, cluster_keywords, check_cannibalization, generate_content_roadmap
+from utils.sidebar import render_ai_settings
 
 st.header("Keyword Forecast")
 st.caption("Project traffic from target keywords — no historical data needed.")
+
+render_ai_settings()
 
 # ── Sidebar ──────────────────────────────────────────────────────────────────
 st.sidebar.header("Keyword Forecast Settings")
