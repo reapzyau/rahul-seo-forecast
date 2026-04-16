@@ -1,4 +1,5 @@
 import streamlit as st
+from utils.sidebar import render_ai_settings
 
 st.set_page_config(
     page_title="SEO Traffic Forecast",
@@ -9,28 +10,7 @@ st.set_page_config(
 
 st.title("SEO Traffic & Revenue Forecasting Engine")
 
-# ── Pre-populate API key from secrets if not already entered ──────────────
-if not st.session_state.get("bifrost_api_key"):
-    try:
-        if "BIFROST_API_KEY" in st.secrets and st.secrets["BIFROST_API_KEY"]:
-            st.session_state["bifrost_api_key"] = st.secrets["BIFROST_API_KEY"]
-    except Exception:
-        pass
-
-# ── AI Settings (global, persisted in session state) ─────────────────────
-with st.sidebar.expander("AI Settings (Bi Frost)", expanded=False):
-    st.text_input(
-        "Bi Frost API Key",
-        type="password",
-        key="bifrost_api_key",
-        help="Enter your Bi Frost virtual key (sk-bf-...) to enable AI-powered features.",
-    )
-    st.selectbox(
-        "AI Model",
-        ["openai/gpt-4o-mini", "openai/gpt-4o", "anthropic/claude-sonnet-4-5-20250929"],
-        key="bifrost_model",
-        help="Model used for keyword clustering, cannibalization checks, and content roadmap.",
-    )
+render_ai_settings()
 
 st.markdown("""
 Choose a forecasting mode from the sidebar:

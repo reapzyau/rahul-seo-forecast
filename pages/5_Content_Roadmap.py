@@ -3,9 +3,12 @@ import pandas as pd
 
 from engine.ai_engine import get_bifrost_client, generate_content_roadmap, cluster_keywords
 from utils.export import to_csv
+from utils.sidebar import render_ai_settings
 
 st.header("Content Roadmap")
 st.caption("AI-powered content planning and prioritization using your keyword forecast data.")
+
+render_ai_settings()
 
 # ── Check prerequisites ──────────────────────────────────────────────────────
 client = get_bifrost_client(st.session_state.get("bifrost_api_key"))
