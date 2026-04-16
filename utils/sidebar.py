@@ -37,7 +37,7 @@ def render_ai_settings() -> None:
             st.caption("No key set — AI features will be disabled.")
         st.selectbox(
             "AI Model",
-            ["openai/gpt-4o-mini", "openai/gpt-4o", "anthropic/claude-sonnet-4-5-20250929"],
+            ["openai/gpt-4o-mini", "openai/gpt-4o", "openai/gpt-5.4-nano", "anthropic/claude-sonnet-4-5-20250929"],
             key="bifrost_model",
             help="Model used for keyword clustering, cannibalization checks, and content roadmap.",
         )
