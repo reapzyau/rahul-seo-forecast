@@ -34,7 +34,7 @@ def get_bifrost_client(api_key: str | None = None) -> "OpenAI | None":
         key = os.environ.get("BIFROST_API_KEY")
     if not key:
         return None
-    return OpenAI(base_url="https://bifrost.pattern.com", api_key=key)
+    return OpenAI(base_url="https://bifrost.pattern.com/v1/", api_key=key)
 
 
 def _parse_llm_json(text: str):
