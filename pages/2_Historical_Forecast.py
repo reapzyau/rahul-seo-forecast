@@ -33,11 +33,11 @@ currency = st.sidebar.selectbox("Currency", list(CURRENCY_SYMBOLS.keys()), key="
 
 # ── Upload ───────────────────────────────────────────────────────────────────
 st.subheader("Upload Historical Data")
-st.caption("Required: date, traffic. Optional: revenue, transactions, aov, cr% — supports CSV and Excel.")
+st.caption("Required: date, traffic. Optional: revenue, transactions, aov, cr% — supports CSV, TSV, and Excel.")
 
 col1, col2, col3 = st.columns([3, 2, 2])
 with col1:
-    uploaded_file = st.file_uploader("Upload your file", type=["csv", "xlsx", "xls"], key="hist_upload")
+    uploaded_file = st.file_uploader("Upload your file", type=["csv", "tsv", "xlsx", "xls"], key="hist_upload")
 with col2:
     use_sample = st.checkbox("Use sample data to explore the tool", key="hist_sample")
 with col3:

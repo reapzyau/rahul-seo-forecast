@@ -106,11 +106,11 @@ cadence_options = st.sidebar.multiselect(
 
 # ── Upload ───────────────────────────────────────────────────────────────────
 st.subheader("Upload Keywords CSV")
-st.caption("Required columns: keyword, volume, kd")
+st.caption("Required columns: keyword, volume, kd — supports CSV, TSV, Excel")
 
 col1, col2, col3 = st.columns([3, 2, 2])
 with col1:
-    uploaded_file = st.file_uploader("Upload your file", type=["csv", "xlsx", "xls"], key="kw_upload")
+    uploaded_file = st.file_uploader("Upload your file", type=["csv", "tsv", "xlsx", "xls"], key="kw_upload")
 with col2:
     use_sample = st.checkbox("Use sample data to explore the tool", key="kw_sample")
 with col3:
@@ -180,6 +180,7 @@ if df is not None:
                 "currency": currency,
                 "cvr": cvr,
                 "aov": aov,
+                "months": months,
                 "ctr_model_name": ctr_model_name,
                 "scenario_name": scenario_name,
                 "exclude_informational": exclude_informational,
@@ -275,13 +276,13 @@ if "kw_results" in st.session_state:
             peak_rev = monthly_df["revenue"].max()
             total_rev = monthly_df["revenue"].sum()
             total_leads = monthly_df["leads"].sum()
-            annual_rev = peak_rev * 12
+            avg_monthly_rev = monthly_df["revenue"].mean()
 
             c1, c2, c3, c4 = st.columns(4)
-            c1.metric("Monthly Revenue at Peak", f"{sym}{peak_rev:,.2f}")
-            c2.metric("Annualised Revenue", f"{sym}{annual_rev:,.2f}")
-            c3.metric("Total Leads", f"{total_leads:,}")
-            c4.metric("Total Revenue", f"{sym}{total_rev:,.2f}")
+            c1.metric("Peak Monthly Revenue", f"{sym}{peak_rev:,.2f}")
+            c2.metric("Avg Monthly Revenue", f"{sym}{avg_monthly_rev:,.2f}")
+            c3.metric("Total Revenue (Period)", f"{sym}{total_rev:,.2f}")
+            c4.metric("Total Leads", f"{total_leads:,}")
 
             if r["rev_table"] is not None and not r["rev_table"].empty:
                 st.subheader("Per-Keyword Revenue Breakdown")
@@ -380,7 +381,7 @@ if "kw_results" in st.session_state:
             if st.button("Generate Roadmap", key="kw_roadmap_btn"):
                 with st.spinner("Generating content roadmap..."):
                     try:
-                        months_val = r.get("months", 12) if "months" in r else 12
+                        months_val = r.get("months", 12)
                         roadmap = generate_content_roadmap(client, keyword_df, months_val, ai_model)
                         for month_plan in roadmap:
                             month_num = month_plan.get("month", "?")
