@@ -1,6 +1,7 @@
 import json
 import os
 
+import numpy as np
 import pandas as pd
 
 try:
@@ -34,17 +35,35 @@ def get_bifrost_client(api_key: str | None = None) -> "OpenAI | None":
     return OpenAI(base_url="https://bifrost.pattern.com", api_key=key)
 
 
+def _parse_llm_json(text: str):
+    """Strip markdown fences and parse JSON from LLM output."""
+    text = text.strip()
+    if text.startswith("```"):
+        text = text.split("\n", 1)[1] if "\n" in text else text[3:]
+        if text.endswith("```"):
+            text = text[:-3]
+        text = text.strip()
+    return json.loads(text)
+
+
+def _strip_code_fences(text: str) -> str:
+    """Strip markdown code fences from LLM output."""
+    text = text.strip()
+    if text.startswith("```"):
+        text = text.split("\n", 1)[1] if "\n" in text else text[3:]
+        if text.endswith("```"):
+            text = text[:-3]
+        text = text.strip()
+    return text
+
+
 def cluster_keywords(
     client: "OpenAI",
     keywords: list[str],
     model: str = "openai/gpt-4o-mini",
 ) -> dict:
-    """Group keywords into topical clusters using AI.
-
-    Returns:
-        Dict with 'clusters' key containing list of cluster objects.
-    """
-    kw_list = "\n".join(f"- {kw}" for kw in keywords[:200])  # Cap at 200
+    """Group keywords into topical clusters using AI."""
+    kw_list = "\n".join(f"- {kw}" for kw in keywords[:200])
 
     response = client.chat.completions.create(
         model=model,
@@ -70,15 +89,7 @@ def cluster_keywords(
         max_tokens=4000,
     )
 
-    text = response.choices[0].message.content.strip()
-    # Strip markdown fences if present
-    if text.startswith("```"):
-        text = text.split("\n", 1)[1] if "\n" in text else text[3:]
-        if text.endswith("```"):
-            text = text[:-3]
-        text = text.strip()
-
-    return json.loads(text)
+    return _parse_llm_json(response.choices[0].message.content)
 
 
 def check_cannibalization(
@@ -87,11 +98,7 @@ def check_cannibalization(
     existing_urls: list[str],
     model: str = "openai/gpt-4o-mini",
 ) -> list[dict]:
-    """Check if proposed keywords conflict with existing URLs.
-
-    Returns:
-        List of dicts with keyword, conflicting_url, risk, recommendation.
-    """
+    """Check if proposed keywords conflict with existing URLs."""
     kw_list = "\n".join(f"- {kw}" for kw in keywords[:100])
     url_list = "\n".join(f"- {url}" for url in existing_urls[:100])
 
@@ -121,14 +128,7 @@ def check_cannibalization(
         max_tokens=4000,
     )
 
-    text = response.choices[0].message.content.strip()
-    if text.startswith("```"):
-        text = text.split("\n", 1)[1] if "\n" in text else text[3:]
-        if text.endswith("```"):
-            text = text[:-3]
-        text = text.strip()
-
-    return json.loads(text)
+    return _parse_llm_json(response.choices[0].message.content)
 
 
 def generate_content_roadmap(
@@ -137,12 +137,7 @@ def generate_content_roadmap(
     months: int,
     model: str = "openai/gpt-4o-mini",
 ) -> list[dict]:
-    """Generate an AI-powered content roadmap from keyword forecast data.
-
-    Returns:
-        List of monthly content plans.
-    """
-    # Prepare summary data for the LLM
+    """Generate an AI-powered content roadmap from keyword forecast data."""
     cols = ["keyword", "volume", "kd", "tier", "intent", "efficiency_score",
             "estimated_monthly_traffic", "publish_month"]
     available = [c for c in cols if c in keyword_df.columns]
@@ -176,11 +171,116 @@ def generate_content_roadmap(
         max_tokens=4000,
     )
 
-    text = response.choices[0].message.content.strip()
-    if text.startswith("```"):
-        text = text.split("\n", 1)[1] if "\n" in text else text[3:]
-        if text.endswith("```"):
-            text = text[:-3]
-        text = text.strip()
+    return _parse_llm_json(response.choices[0].message.content)
 
-    return json.loads(text)
+
+# ── AI Data Transformation ──────────────────────────────────────────────────
+
+
+TRAFFIC_TARGET_FORMAT = """
+Required columns (exact names):
+- date: datetime (YYYY-MM-DD format, first of each month)
+- traffic: integer (total organic sessions per month)
+
+Optional columns:
+- revenue: float (total organic revenue per month)
+- transactions: integer (total organic transactions per month)
+- aov: float (average order value per month)
+- cr: float (conversion rate as percentage, e.g. 2.5)
+
+Rules:
+- Aggregate all organic channels (Organic Search, Organic Shopping, Organic Video, etc.) into a single row per month
+- If data has financial year columns (e.g. FY24, FY25), convert "Year month" like "Jan 2024" to date 2024-01-01
+- Sum sessions/traffic per month across all organic channel types
+- If revenue and transactions exist on separate sheets or columns, include them
+- Calculate aov = revenue / transactions and cr = (transactions / traffic) * 100 where possible
+- Sort by date ascending
+- One row per month
+"""
+
+KEYWORDS_TARGET_FORMAT = """
+Required columns (exact names):
+- keyword: string (the search term)
+- volume: integer (monthly search volume, must be > 0)
+- kd: integer (keyword difficulty 0-100)
+
+Rules:
+- Remove any rows where volume is 0 or missing
+- Remove duplicate keywords (keep first occurrence)
+- If difficulty is a percentage string like "45%", convert to integer 45
+"""
+
+
+def transform_data(
+    client: "OpenAI",
+    df: pd.DataFrame,
+    target_format: str,
+    model: str = "openai/gpt-4o-mini",
+) -> str:
+    """Use AI to generate Python code that transforms uploaded data into the target format.
+
+    Args:
+        client: Bi Frost OpenAI client.
+        df: The uploaded DataFrame.
+        target_format: Description of the target format.
+        model: Model to use.
+
+    Returns:
+        Python code string that transforms variable 'df' into the target format.
+    """
+    sample = df.head(15).to_csv(index=False)
+    col_info = f"Columns: {list(df.columns)}\nShape: {df.shape}\nDtypes:\n{df.dtypes.to_string()}"
+
+    response = client.chat.completions.create(
+        model=model,
+        messages=[
+            {
+                "role": "system",
+                "content": (
+                    "You are a data engineering expert. Given a sample of uploaded data, "
+                    "write Python/pandas code to transform it into the required format. "
+                    "The code should operate on a variable called 'df' (a pandas DataFrame) "
+                    "and produce a variable called 'result' (the transformed DataFrame). "
+                    "Return ONLY the Python code, no explanations, no markdown fences. "
+                    "Import only pandas (already available as pd). numpy is available as np. "
+                    "Handle edge cases like missing values gracefully."
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    f"## Source data\n{col_info}\n\nSample rows:\n{sample}\n\n"
+                    f"## Target format\n{target_format}\n\n"
+                    "Write Python code to transform 'df' into 'result'."
+                ),
+            },
+        ],
+        temperature=0.1,
+        max_tokens=2000,
+    )
+
+    code = response.choices[0].message.content.strip()
+    return _strip_code_fences(code)
+
+
+def execute_transform(df: pd.DataFrame, code: str) -> pd.DataFrame:
+    """Safely execute AI-generated transform code.
+
+    Args:
+        df: Source DataFrame.
+        code: Python code that transforms 'df' into 'result'.
+
+    Returns:
+        Transformed DataFrame.
+
+    Raises:
+        Exception: If code execution fails.
+    """
+    namespace = {"df": df.copy(), "pd": pd, "np": np}
+    exec(code, namespace)
+    result = namespace.get("result")
+    if result is None:
+        raise ValueError("Transform code did not produce a 'result' variable")
+    if not isinstance(result, pd.DataFrame):
+        raise ValueError(f"Expected DataFrame, got {type(result).__name__}")
+    return result

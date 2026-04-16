@@ -1,6 +1,14 @@
 import pandas as pd
 import streamlit as st
 
+from engine.ai_engine import (
+    get_bifrost_client,
+    transform_data,
+    execute_transform,
+    TRAFFIC_TARGET_FORMAT,
+    KEYWORDS_TARGET_FORMAT,
+)
+
 
 # Common column name mappings
 KEYWORD_COL_ALIASES = {
@@ -88,6 +96,10 @@ def load_keywords(file) -> pd.DataFrame | None:
     kd_col = _match_column(df.columns.tolist(), KD_COL_ALIASES)
 
     if not all([kw_col, vol_col, kd_col]):
+        # Try AI transform before giving up
+        ai_result = _try_ai_transform(df, KEYWORDS_TARGET_FORMAT, "keywords")
+        if ai_result is not None and "keyword" in ai_result.columns:
+            return ai_result.reset_index(drop=True)
         missing = []
         if not kw_col:
             missing.append("keyword")
@@ -133,6 +145,80 @@ def load_keywords(file) -> pd.DataFrame | None:
     return df.reset_index(drop=True)
 
 
+def _try_ai_transform(raw_df: pd.DataFrame, target_format: str, data_type: str) -> pd.DataFrame | None:
+    """Attempt to transform data using AI when standard column matching fails.
+
+    Args:
+        raw_df: The raw uploaded DataFrame.
+        target_format: Description of the target format.
+        data_type: "traffic" or "keywords" for user messaging.
+
+    Returns:
+        Transformed DataFrame, or None if AI is unavailable or transform fails.
+    """
+    client = get_bifrost_client(st.session_state.get("bifrost_api_key"))
+    if client is None:
+        return None
+
+    model = st.session_state.get("bifrost_model", "openai/gpt-4o-mini")
+
+    st.info(f"Data format doesn't match expected columns. Using AI to transform your {data_type} data...")
+
+    try:
+        with st.spinner("AI is analyzing your data format..."):
+            code = transform_data(client, raw_df, target_format, model)
+
+        with st.expander("AI-generated transform code", expanded=False):
+            st.code(code, language="python")
+
+        result = execute_transform(raw_df, code)
+        st.success(f"AI successfully transformed your data ({len(result)} rows)")
+        return result
+
+    except Exception as e:
+        st.error(f"AI transform failed: {e}")
+        st.caption("Try reformatting your data to match the template, or adjust your Bi Frost API key.")
+        return None
+
+
+def _validate_traffic_df(df: pd.DataFrame) -> pd.DataFrame | None:
+    """Validate and clean a traffic DataFrame (used after AI transform or normal load)."""
+    if "date" not in df.columns or "traffic" not in df.columns:
+        st.error("Transformed data is missing required columns: date, traffic")
+        return None
+
+    df["date"] = pd.to_datetime(df["date"], errors="coerce")
+    df["traffic"] = pd.to_numeric(df["traffic"], errors="coerce")
+
+    for col in ["revenue", "transactions", "aov", "cr"]:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    n_before = len(df)
+    df = df.dropna(subset=["date", "traffic"])
+    n_skipped = n_before - len(df)
+    if n_skipped > 0:
+        st.info(f"Skipped {n_skipped} rows with invalid data")
+
+    if df.empty:
+        st.warning("No valid rows after transformation")
+        return None
+
+    df["traffic"] = df["traffic"].astype(int)
+    if "transactions" in df.columns:
+        df["transactions"] = df["transactions"].fillna(0).astype(int)
+    df = df.sort_values("date").reset_index(drop=True)
+
+    optional = [c for c in ["revenue", "transactions", "aov", "cr"] if c in df.columns]
+    if optional:
+        st.info(f"Detected additional columns: {', '.join(optional)}")
+
+    if len(df) < 6:
+        st.warning("Fewer than 6 months of data. Forecasts may be unreliable.")
+
+    return df
+
+
 def load_traffic(file) -> pd.DataFrame | None:
     """Load and validate a historical traffic CSV/Excel.
 
@@ -152,6 +238,10 @@ def load_traffic(file) -> pd.DataFrame | None:
     traffic_col = _match_column(df.columns.tolist(), TRAFFIC_COL_ALIASES)
 
     if not all([date_col, traffic_col]):
+        # Try AI transform before giving up
+        ai_result = _try_ai_transform(df, TRAFFIC_TARGET_FORMAT, "traffic")
+        if ai_result is not None:
+            return _validate_traffic_df(ai_result)
         missing = []
         if not date_col:
             missing.append("date")
