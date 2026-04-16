@@ -61,17 +61,24 @@ def _match_column(df_columns: list[str], aliases: dict[str, str]) -> str | None:
 
 
 def _read_file(file) -> pd.DataFrame | None:
-    """Read a CSV or Excel file, return DataFrame or None."""
+    """Read a CSV, TSV, or Excel file, return DataFrame or None."""
     try:
         if isinstance(file, str):
             if file.endswith((".xlsx", ".xls")):
                 return pd.read_excel(file)
-            return pd.read_csv(file)
+            if file.endswith(".tsv"):
+                return pd.read_csv(file, sep="\t")
+            df = pd.read_csv(file, sep=None, engine="python")
+            return df
         # Uploaded file object
         name = getattr(file, "name", "").lower()
         if name.endswith((".xlsx", ".xls")):
             return pd.read_excel(file)
-        return pd.read_csv(file)
+        if name.endswith(".tsv"):
+            return pd.read_csv(file, sep="\t")
+        # Auto-detect separator (handles CSV and TSV)
+        df = pd.read_csv(file, sep=None, engine="python")
+        return df
     except Exception as e:
         st.error(f"Could not read file: {e}")
         return None

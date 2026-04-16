@@ -9,6 +9,14 @@ st.set_page_config(
 
 st.title("SEO Traffic & Revenue Forecasting Engine")
 
+# ── Pre-populate API key from secrets if not already entered ──────────────
+if not st.session_state.get("bifrost_api_key"):
+    try:
+        if "BIFROST_API_KEY" in st.secrets and st.secrets["BIFROST_API_KEY"]:
+            st.session_state["bifrost_api_key"] = st.secrets["BIFROST_API_KEY"]
+    except Exception:
+        pass
+
 # ── AI Settings (global, persisted in session state) ─────────────────────
 with st.sidebar.expander("AI Settings (Bi Frost)", expanded=False):
     st.text_input(

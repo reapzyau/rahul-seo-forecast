@@ -22,14 +22,16 @@ def get_bifrost_client(api_key: str | None = None) -> "OpenAI | None":
     """
     if OpenAI is None:
         return None
-    key = api_key or os.environ.get("BIFROST_API_KEY")
-    # Also check Streamlit secrets
+    key = api_key if api_key else None
     if not key:
         try:
             import streamlit as st
-            key = st.secrets.get("BIFROST_API_KEY")
+            if "BIFROST_API_KEY" in st.secrets:
+                key = st.secrets["BIFROST_API_KEY"] or None
         except Exception:
             pass
+    if not key:
+        key = os.environ.get("BIFROST_API_KEY")
     if not key:
         return None
     return OpenAI(base_url="https://bifrost.pattern.com", api_key=key)
