@@ -761,6 +761,105 @@ class TestPositionalForecast:
             assert (qw["position"] <= 20).all()
 
 
+# ── Monte Carlo + Attention Curve ──────────────────────────────────────────
+
+
+class TestPositionalMonteCarlo:
+    @pytest.fixture
+    def mc_sample(self):
+        return pd.DataFrame({
+            "keyword": [f"kw_{i}" for i in range(30)],
+            "position": [10] * 30,
+            "volume": [1000] * 30,
+            "kd": [30] * 30,
+            "current_traffic": [100] * 30,
+            "primary_intent": ["commercial"] * 30,
+            "has_aio": [False] * 30,
+        })
+
+    def test_bands_ordered(self, mc_sample):
+        from engine.positional_engine import run_positional_forecast_mc
+        _, monthly = run_positional_forecast_mc(mc_sample, months=12, n_trials=200)
+        assert (monthly["uplift_p10"] <= monthly["uplift_p50"]).all()
+        assert (monthly["uplift_p50"] <= monthly["uplift_p90"]).all()
+
+    def test_band_width_meaningful(self):
+        from engine.positional_engine import run_positional_forecast_mc
+        df = pd.DataFrame({
+            "keyword": [f"kw_{i}" for i in range(50)],
+            "position": [15] * 50,
+            "volume": [1000] * 50,
+            "kd": [40] * 50,
+            "current_traffic": [80] * 50,
+            "primary_intent": ["commercial"] * 50,
+            "has_aio": [False] * 50,
+        })
+        _, monthly = run_positional_forecast_mc(df, months=12, n_trials=500)
+        m12 = monthly.iloc[-1]
+        spread = m12["uplift_p90"] - m12["uplift_p10"]
+        assert spread > m12["uplift_p50"] * 0.1
+
+    def test_deterministic_with_seed(self, mc_sample):
+        from engine.positional_engine import run_positional_forecast_mc
+        _, m1 = run_positional_forecast_mc(mc_sample, months=12, n_trials=200, seed=42)
+        _, m2 = run_positional_forecast_mc(mc_sample, months=12, n_trials=200, seed=42)
+        pd.testing.assert_frame_equal(m1, m2)
+
+    def test_backward_compat_columns(self, mc_sample):
+        from engine.positional_engine import run_positional_forecast_mc
+        _, monthly = run_positional_forecast_mc(mc_sample, months=12, n_trials=200)
+        assert "uplift" in monthly.columns
+        assert "traffic" in monthly.columns
+        assert (monthly["uplift"] == monthly["uplift_p50"]).all()
+
+
+class TestAttentionCurve:
+    def test_top_keywords_get_full_weight(self):
+        from engine.positional_engine import attention_weight
+        assert attention_weight(0.01) == 1.00
+        assert attention_weight(0.04) == 1.00
+
+    def test_long_tail_gets_minimal_weight(self):
+        from engine.positional_engine import attention_weight
+        assert attention_weight(0.99) == 0.05
+
+    def test_weights_decrease_monotonically(self):
+        from engine.positional_engine import attention_weight
+        weights = [attention_weight(p) for p in [0.01, 0.1, 0.3, 0.8]]
+        for i in range(1, len(weights)):
+            assert weights[i] <= weights[i - 1]
+
+    def test_apply_attention_curve_assigns_weights(self):
+        from engine.positional_engine import apply_attention_curve
+        df = pd.DataFrame({
+            "keyword": [f"kw_{i}" for i in range(100)],
+            "volume": list(range(100, 0, -1)),
+            "kd": [30] * 100,
+        })
+        result = apply_attention_curve(df)
+        assert (result.head(5)["attention_weight"] == 1.00).all()
+        assert (result.tail(50)["attention_weight"] == 0.05).all()
+
+    def test_attention_reduces_aggregate_uplift(self):
+        from engine.positional_engine import run_positional_forecast_mc
+        df = pd.DataFrame({
+            "keyword": [f"kw_{i}" for i in range(200)],
+            "position": [15] * 200,
+            "volume": [1000] * 200,
+            "kd": [35] * 200,
+            "current_traffic": [80] * 200,
+            "primary_intent": ["commercial"] * 200,
+            "has_aio": [False] * 200,
+        })
+        _, with_attn = run_positional_forecast_mc(
+            df, months=12, n_trials=200, use_attention_curve=True, seed=99
+        )
+        _, no_attn = run_positional_forecast_mc(
+            df, months=12, n_trials=200, use_attention_curve=False, seed=99
+        )
+        assert with_attn.iloc[-1]["uplift_p50"] < no_attn.iloc[-1]["uplift_p50"]
+
+
 # ── AIO Risk Engine ────────────────────────────────────────────────────────
 
 
