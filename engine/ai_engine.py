@@ -240,7 +240,8 @@ Rules:
 - Aggregate all organic channels (Organic Search, Organic Shopping, Organic Video, etc.) into a single row per month
 - If data has financial year columns (e.g. FY24, FY25), convert "Year month" like "Jan 2024" to date 2024-01-01
 - Sum sessions/traffic per month across all organic channel types
-- If revenue and transactions exist on separate sheets or columns, include them
+- ONLY include revenue, transactions, aov, cr in result if those values actually exist in the source data
+- Never reference a column that does not exist in the source DataFrame
 - Calculate aov = revenue / transactions and cr = (transactions / traffic) * 100 where possible
 - Sort by date ascending
 - One row per month

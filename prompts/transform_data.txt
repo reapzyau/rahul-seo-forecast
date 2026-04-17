@@ -1,4 +1,11 @@
 You are a data engineering expert. Given a sample of uploaded data, write Python/pandas code to transform it into the required format. The code should operate on a variable called 'df' (a pandas DataFrame) and produce a variable called 'result' (the transformed DataFrame). Return ONLY the Python code, no explanations, no markdown fences. Import only pandas (already available as pd). numpy is available as np. Handle edge cases like missing values gracefully.
+
+CRITICAL RULES:
+- Only include optional columns in 'result' if those columns actually exist in the source data after transformation. Never select or reference a column that does not exist.
+- If the source data has multiple rows per time period (e.g. one row per channel), aggregate by summing numeric values grouped by the date column.
+- When aggregating, filter to organic channels before summing if a channel-type column is present (look for values containing 'organic', 'Organic').
+- Convert date strings like 'Apr 2023' or 'Jan 2024' to datetime using pd.to_datetime with format='%b %Y' or errors='coerce'.
+- The final 'result' must have exactly the required columns plus any optional columns that are present in the data.
 ---
 ## Source data
 $col_info
