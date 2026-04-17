@@ -16,9 +16,10 @@ st.caption("Apply monthly seasonal patterns and campaign events to your traffic 
 # ── Check for forecast data ──────────────────────────────────────────────────
 kw_results = st.session_state.get("kw_results")
 hist_results = st.session_state.get("hist_results")
+comb_results = st.session_state.get("comb_results")
 
-if kw_results is None and hist_results is None:
-    st.info("Run a **Keyword Forecast** or **Historical Forecast** first to generate base traffic data.")
+if kw_results is None and hist_results is None and comb_results is None:
+    st.info("Run a **Keyword Forecast**, **Historical Forecast**, or **Combined Forecast** first to generate base traffic data.")
     st.stop()
 
 # ── Source selection ─────────────────────────────────────────────────────────
@@ -27,6 +28,8 @@ if kw_results:
     sources.append("Keyword Forecast")
 if hist_results:
     sources.append("Historical Forecast")
+if comb_results:
+    sources.append("Combined Forecast")
 
 source = st.selectbox("Traffic Source", sources, key="season_source")
 
@@ -39,6 +42,11 @@ elif source == "Historical Forecast" and hist_results:
         "exponential_smoothing" if "exponential_smoothing" in result.columns else "sma"
     )
     monthly_df = forecast_only[["date", best_col]].rename(columns={best_col: "traffic"}).copy()
+    monthly_df["month"] = range(1, len(monthly_df) + 1)
+elif source == "Combined Forecast" and comb_results:
+    combined_df = comb_results["combined_df"]
+    forecast_only = combined_df[combined_df["is_forecast"]].copy()
+    monthly_df = forecast_only[["date", "combined"]].rename(columns={"combined": "traffic"}).copy()
     monthly_df["month"] = range(1, len(monthly_df) + 1)
 else:
     st.error("No forecast data available.")

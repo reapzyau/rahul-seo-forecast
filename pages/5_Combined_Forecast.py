@@ -2,19 +2,27 @@ import os
 import streamlit as st
 import pandas as pd
 
-from engine.keyword_engine import run_keyword_forecast
+from engine.new_content_engine import run_new_content_forecast
 from engine.combined_engine import run_combined_forecast
 from engine.revenue_engine import add_revenue, CURRENCY_SYMBOLS
 from utils.data_loader import load_keywords, load_traffic
-from utils.chart_builder import combined_forecast_chart, combined_scenario_chart, revenue_projection_chart
+from utils.chart_builder import combined_three_stream_chart, combined_scenario_chart, revenue_projection_chart
 from utils.export import to_csv, to_html_report, keyword_template_csv, traffic_template_csv
 from engine.constants import SITE_PRESETS, CTR_MODELS, FORECAST_SCENARIOS
 from utils.sidebar import render_ai_settings
 
 st.header("Combined Forecast")
-st.caption("Layer new content projections onto your existing traffic baseline.")
+st.caption("Layer historical baseline + positional uplift + new content into a single projection.")
 
 render_ai_settings()
+
+# Pre-populate revenue inputs from file data on the run after upload
+if st.session_state.get("_comb_update_revenue"):
+    metrics = st.session_state.pop("_comb_update_revenue")
+    if "aov" in metrics:
+        st.session_state["comb_aov"] = metrics["aov"]
+    if "cvr" in metrics:
+        st.session_state["comb_cvr"] = metrics["cvr"]
 
 # ── Sidebar ──────────────────────────────────────────────────────────────────
 st.sidebar.header("Combined Forecast Settings")
@@ -141,6 +149,18 @@ else:
         kw_df = load_keywords(kw_file)
     if traffic_file is not None:
         traffic_df = load_traffic(traffic_file)
+        if traffic_df is not None:
+            metrics = {}
+            if "aov" in traffic_df.columns:
+                avg_aov = round(float(traffic_df["aov"].dropna().mean()), 2)
+                if avg_aov > 0:
+                    metrics["aov"] = avg_aov
+            if "transactions" in traffic_df.columns and traffic_df["traffic"].sum() > 0:
+                cvr = round((traffic_df["transactions"].sum() / traffic_df["traffic"].sum()) * 100, 2)
+                metrics["cvr"] = cvr
+            if metrics:
+                st.session_state["_comb_update_revenue"] = metrics
+                st.rerun()
 
 if kw_df is not None:
     st.success(f"Keywords: {len(kw_df)} loaded")
@@ -151,27 +171,40 @@ if traffic_df is not None:
 if kw_df is not None and traffic_df is not None:
     if st.button("Generate Combined Forecast", type="primary", key="comb_run"):
         with st.spinner("Running combined forecast..."):
-            keyword_df, monthly_kw_df = run_keyword_forecast(
+            keyword_df, monthly_kw_df = run_new_content_forecast(
                 kw_df, da, cadence, months, seed,
                 ctr_model=ctr_model,
                 traffic_multiplier=traffic_multiplier,
-                exclude_informational=exclude_informational,
-                informational_ctr_penalty=informational_ctr_penalty,
+                include_informational=not exclude_informational,
+                ai_overview_ctr_penalty=informational_ctr_penalty,
             )
-            combined_df = run_combined_forecast(keyword_df, monthly_kw_df, traffic_df, months)
+
+            pos_monthly = st.session_state.get("pos_result", {}).get("monthly")
+
+            combined_df = run_combined_forecast(
+                historical_df=traffic_df,
+                positional_monthly=pos_monthly,
+                new_content_monthly=monthly_kw_df,
+                months=months,
+            )
 
             # Run scenarios if enabled
             scenarios = {}
             if enable_scenarios and cadence_options:
                 for c in cadence_options:
-                    _, s_monthly = run_keyword_forecast(
+                    _, s_monthly = run_new_content_forecast(
                         kw_df, da, c, months, seed,
                         ctr_model=ctr_model,
                         traffic_multiplier=traffic_multiplier,
-                        exclude_informational=exclude_informational,
-                        informational_ctr_penalty=informational_ctr_penalty,
+                        include_informational=not exclude_informational,
+                        ai_overview_ctr_penalty=informational_ctr_penalty,
                     )
-                    s_combined = run_combined_forecast(keyword_df, s_monthly, traffic_df, months)
+                    s_combined = run_combined_forecast(
+                        historical_df=traffic_df,
+                        positional_monthly=pos_monthly,
+                        new_content_monthly=s_monthly,
+                        months=months,
+                    )
                     scenarios[c] = s_combined
 
             st.session_state["comb_results"] = {
@@ -215,7 +248,8 @@ if "comb_results" in st.session_state:
         # KPI cards
         baseline_end = int(forecast_df["baseline"].iloc[-1])
         combined_end = int(forecast_df["combined"].iloc[-1])
-        incremental_total = int(forecast_df["new_content"].sum())
+        pos_total = int(forecast_df["positional_uplift"].sum())
+        nc_total = int(forecast_df["new_content_uplift"].sum())
         uplift_end = (
             round((combined_end - baseline_end) / baseline_end * 100, 1)
             if baseline_end > 0 else 0
@@ -224,32 +258,34 @@ if "comb_results" in st.session_state:
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("Baseline (End)", f"{baseline_end:,}")
         c2.metric("Combined (End)", f"{combined_end:,}")
-        c3.metric("Incremental Visits", f"{incremental_total:,}")
+        c3.metric("Positional Uplift", f"{pos_total:,}")
         c4.metric("Uplift at End", f"{uplift_end}%")
 
-        fig = combined_forecast_chart(combined_df)
+        fig = combined_three_stream_chart(combined_df)
         st.plotly_chart(fig, use_container_width=True)
-        st.caption("Solid line = actual + combined projection. Dashed grey = baseline without new content. Shaded area = incremental uplift from content.")
+        st.caption("Stacked streams: baseline (grey) + positional uplift (blue) + new content (green). Historical actuals shown as solid black line.")
 
         # What if we do nothing?
         st.divider()
         st.subheader("What if we do nothing?")
         st.info(
-            f"Without new content, your traffic is projected to reach **{baseline_end:,}** visits/month.\n\n"
-            f"With new content at {r.get('cadence', 4)} posts/month, you could reach **{combined_end:,}** visits/month — "
-            f"an uplift of **{uplift_end}%** ({incremental_total:,} incremental visits over the forecast period)."
+            f"Without SEO work, your traffic is projected to reach **{baseline_end:,}** visits/month.\n\n"
+            f"With positional improvements (**{pos_total:,}** incremental) and new content at "
+            f"{r.get('cadence', 4)} posts/month (**{nc_total:,}** incremental), you could reach "
+            f"**{combined_end:,}** visits/month — an uplift of **{uplift_end}%**."
         )
 
     # ── Tab: Uplift Table ────────────────────────────────────────────────
     with tabs[tab_idx]:
         tab_idx += 1
 
-        display_df = forecast_df[["date", "baseline", "new_content", "combined", "uplift_pct"]].copy()
+        display_df = forecast_df[["date", "baseline", "positional_uplift", "new_content_uplift", "combined", "uplift_pct"]].copy()
         display_df["date"] = display_df["date"].dt.strftime("%b %Y")
         display_df = display_df.rename(columns={
             "date": "Month",
             "baseline": "Baseline",
-            "new_content": "New Content",
+            "positional_uplift": "Positional",
+            "new_content_uplift": "New Content",
             "combined": "Combined",
             "uplift_pct": "Uplift %",
         })
@@ -262,7 +298,7 @@ if "comb_results" in st.session_state:
             sym = CURRENCY_SYMBOLS.get(r["currency"], "$")
 
             rev_df = forecast_df.copy()
-            rev_df = rev_df.rename(columns={"new_content": "traffic"})
+            rev_df["traffic"] = rev_df["positional_uplift"] + rev_df["new_content_uplift"]
             rev_df = add_revenue(rev_df, r["cvr"], r["aov"], r["currency"])
 
             new_content_rev = rev_df["revenue"].sum()
@@ -289,7 +325,7 @@ if "comb_results" in st.session_state:
                 s_forecast = s_df[s_df["is_forecast"]]
                 kw_covered = min(len(r["keyword_df"]), c_val * r.get("months", 18))
                 peak_combined = int(s_forecast["combined"].max())
-                total_incremental = int(s_forecast["new_content"].sum())
+                total_incremental = int(s_forecast["positional_uplift"].sum() + s_forecast["new_content_uplift"].sum())
                 baseline_end = int(s_forecast["baseline"].iloc[-1])
                 combined_end = int(s_forecast["combined"].iloc[-1])
                 uplift = round((combined_end - baseline_end) / baseline_end * 100, 1) if baseline_end > 0 else 0
@@ -322,7 +358,7 @@ if "comb_results" in st.session_state:
                 "Combined (End)": f"{combined_end:,}",
                 "Uplift": f"{uplift_end}%",
             }
-            figs = [combined_forecast_chart(combined_df)]
+            figs = [combined_three_stream_chart(combined_df)]
             html = to_html_report(figs, summary, "Combined Forecast Report")
             st.download_button(
                 "Download HTML Report",

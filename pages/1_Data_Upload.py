@@ -1,0 +1,181 @@
+import os
+import streamlit as st
+import pandas as pd
+import plotly.graph_objects as go
+
+from utils.ga4_loader import load_ga4_organic
+from utils.keyword_loader import load_keyword_portfolio, split_existing_vs_new
+from utils.chart_builder import _apply_layout
+from utils.sidebar import render_ai_settings
+
+st.header("Data Upload")
+st.caption("Upload GA4 organic traffic and SEMrush keyword exports. Data flows to all downstream pages.")
+
+render_ai_settings()
+
+# ── Tabs ────────────────────────────────────────────────────────────────────
+tab_ga4, tab_semrush = st.tabs(["📊 GA4 Organic Traffic", "🔑 SEMrush Keywords"])
+
+# ── GA4 Tab ─────────────────────────────────────────────────────────────────
+with tab_ga4:
+    uploaded_ga4 = st.file_uploader(
+        "Upload GA4 organic export",
+        type=["xlsx", "xls"],
+        key="ga4_upload",
+    )
+    use_ga4_sample = st.checkbox("Use sample data (Cable Melbourne)", key="ga4_sample")
+
+    ga4_df = None
+    if uploaded_ga4 is not None:
+        ga4_df = load_ga4_organic(uploaded_ga4)
+    elif use_ga4_sample:
+        sample_path = os.path.join(
+            os.path.dirname(os.path.dirname(__file__)), "assets", "sample-ga4-organic.xlsx"
+        )
+        ga4_df = load_ga4_organic(sample_path)
+
+    if ga4_df is not None:
+        st.session_state["ga4_df"] = ga4_df
+
+        date_min = ga4_df["date"].min()
+        date_max = ga4_df["date"].max()
+        st.success(
+            f"{len(ga4_df)} months loaded ({date_min.strftime('%b %Y')} – {date_max.strftime('%b %Y')})"
+        )
+
+        # KPI cards
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Total Months", f"{len(ga4_df)}")
+        c2.metric("Latest Traffic", f"{ga4_df['traffic'].iloc[-1]:,}")
+        c3.metric("Avg Traffic", f"{ga4_df['traffic'].mean():,.0f}")
+        c4.metric("Date Range", f"{date_min.strftime('%b %Y')} – {date_max.strftime('%b %Y')}")
+
+        # Revenue / transactions KPIs if present
+        has_revenue = "revenue" in ga4_df.columns
+        has_transactions = "transactions" in ga4_df.columns
+        if has_revenue or has_transactions:
+            extra_cols = st.columns(4)
+            col_idx = 0
+            if has_revenue:
+                extra_cols[col_idx].metric(
+                    "Total Revenue", f"${ga4_df['revenue'].sum():,.2f}"
+                )
+                col_idx += 1
+                extra_cols[col_idx].metric(
+                    "Avg Monthly Revenue", f"${ga4_df['revenue'].mean():,.2f}"
+                )
+                col_idx += 1
+            if has_transactions:
+                extra_cols[col_idx].metric(
+                    "Total Transactions", f"{ga4_df['transactions'].sum():,}"
+                )
+                col_idx += 1
+
+        # Traffic line chart
+        fig = go.Figure()
+        fig.add_trace(
+            go.Scatter(
+                x=ga4_df["date"],
+                y=ga4_df["traffic"],
+                mode="lines+markers",
+                name="Organic Traffic",
+                line=dict(color="#2563EB", width=3),
+                hovertemplate="%{x|%b %Y}<br>Traffic: %{y:,.0f}<extra></extra>",
+            )
+        )
+        fig = _apply_layout(fig, "Monthly Organic Traffic", "Date", "Sessions")
+        st.plotly_chart(fig, use_container_width=True)
+
+    elif uploaded_ga4 is not None:
+        st.error("Could not parse the uploaded GA4 file. Please check the format.")
+
+# ── SEMrush Tab ─────────────────────────────────────────────────────────────
+with tab_semrush:
+    uploaded_semrush = st.file_uploader(
+        "Upload SEMrush organic positions export",
+        type=["csv", "tsv", "xlsx", "xls"],
+        key="semrush_upload",
+    )
+    use_semrush_sample = st.checkbox("Use sample data (Cable Melbourne)", key="semrush_sample")
+
+    kw_df = None
+    if uploaded_semrush is not None:
+        kw_df = load_keyword_portfolio(uploaded_semrush)
+    elif use_semrush_sample:
+        sample_path = os.path.join(
+            os.path.dirname(os.path.dirname(__file__)), "assets", "sample-semrush-export.xlsx"
+        )
+        kw_df = load_keyword_portfolio(sample_path)
+
+    if kw_df is not None:
+        existing_df, new_df = split_existing_vs_new(kw_df)
+
+        st.session_state["kw_df"] = kw_df
+        st.session_state["kw_existing"] = existing_df
+        st.session_state["kw_new"] = new_df
+
+        # KPI cards
+        avg_pos = existing_df["position"].mean() if not existing_df.empty else 0
+        aio_count = int(kw_df["has_aio"].sum()) if "has_aio" in kw_df.columns else 0
+
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Total Keywords", f"{len(kw_df):,}")
+        c2.metric("Currently Ranking", f"{len(existing_df):,}")
+        c3.metric("Avg Position", f"{avg_pos:.1f}")
+        c4.metric("AIO-Affected", f"{aio_count:,}")
+
+        # Position distribution bar chart
+        if not existing_df.empty and "position" in existing_df.columns:
+            buckets = [
+                ("1-3", 1, 3),
+                ("4-10", 4, 10),
+                ("11-20", 11, 20),
+                ("21-50", 21, 50),
+                ("51-100", 51, 100),
+            ]
+            bucket_labels = []
+            bucket_counts = []
+            for label, lo, hi in buckets:
+                count = int(
+                    ((existing_df["position"] >= lo) & (existing_df["position"] <= hi)).sum()
+                )
+                bucket_labels.append(label)
+                bucket_counts.append(count)
+
+            fig_pos = go.Figure()
+            fig_pos.add_trace(
+                go.Bar(
+                    x=bucket_labels,
+                    y=bucket_counts,
+                    marker_color="#2563EB",
+                    hovertemplate="Position %{x}<br>Keywords: %{y}<extra></extra>",
+                )
+            )
+            fig_pos = _apply_layout(
+                fig_pos, "Position Distribution", "Position Bucket", "Keyword Count"
+            )
+            st.plotly_chart(fig_pos, use_container_width=True)
+
+        # Show first 20 rows
+        st.subheader("Keyword Preview")
+        st.dataframe(kw_df.head(20), use_container_width=True, hide_index=True)
+
+    elif uploaded_semrush is not None:
+        st.error("Could not parse the uploaded SEMrush file. Please check the format.")
+
+# ── Data Status Footer ──────────────────────────────────────────────────────
+st.divider()
+st.subheader("Data Status")
+col1, col2 = st.columns(2)
+with col1:
+    if "ga4_df" in st.session_state:
+        ga4 = st.session_state["ga4_df"]
+        st.success(f"GA4: {len(ga4)} months loaded ({ga4['date'].min().strftime('%b %Y')} – {ga4['date'].max().strftime('%b %Y')})")
+    else:
+        st.info("GA4: Not loaded")
+with col2:
+    if "kw_df" in st.session_state:
+        kw = st.session_state["kw_df"]
+        st.success(f"Keywords: {len(kw)} loaded ({len(st.session_state.get('kw_existing', []))} ranking)")
+    else:
+        st.info("Keywords: Not loaded")

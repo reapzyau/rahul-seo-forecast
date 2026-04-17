@@ -268,3 +268,72 @@ def revenue_projection_chart(monthly_df: pd.DataFrame, currency_symbol: str = "$
     ))
 
     return _apply_layout(fig, "Monthly Revenue Projection", x_col.title(), f"Revenue ({currency_symbol})")
+
+
+def positional_uplift_chart(monthly_df: pd.DataFrame) -> go.Figure:
+    """Baseline vs. uplifted traffic for positional forecast."""
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=monthly_df["month"], y=monthly_df["baseline"],
+        mode="lines", name="Baseline",
+        line=dict(color="#94A3B8", dash="dash", width=2),
+        fill="tozeroy", fillcolor="rgba(148,163,184,0.1)",
+    ))
+    fig.add_trace(go.Scatter(
+        x=monthly_df["month"], y=monthly_df["traffic"],
+        mode="lines+markers", name="With positional uplift",
+        line=dict(color="#2563EB", width=3),
+        fill="tonexty", fillcolor="rgba(37,99,235,0.15)",
+    ))
+    return _apply_layout(fig, "Positional Uplift Over Time", "Month", "Monthly Organic Sessions")
+
+
+def combined_three_stream_chart(combined_df: pd.DataFrame) -> go.Figure:
+    """Historical actuals + stacked baseline / positional / new-content forecast."""
+    fig = go.Figure()
+
+    actual_mask = combined_df["actual"].notna()
+    fig.add_trace(go.Scatter(
+        x=combined_df.loc[actual_mask, "date"],
+        y=combined_df.loc[actual_mask, "actual"],
+        mode="lines+markers", name="Historical actual",
+        line=dict(color="#0F172A", width=3),
+    ))
+
+    fmask = combined_df["is_forecast"]
+    fig.add_trace(go.Scatter(
+        x=combined_df.loc[fmask, "date"], y=combined_df.loc[fmask, "baseline"],
+        mode="lines", name="Baseline",
+        line=dict(color="#94A3B8", dash="dash", width=2),
+        stackgroup="stream", fillcolor="rgba(148,163,184,0.3)",
+    ))
+    fig.add_trace(go.Scatter(
+        x=combined_df.loc[fmask, "date"], y=combined_df.loc[fmask, "positional_uplift"],
+        mode="lines", name="Positional uplift",
+        line=dict(color="#2563EB", width=2),
+        stackgroup="stream", fillcolor="rgba(37,99,235,0.4)",
+    ))
+    fig.add_trace(go.Scatter(
+        x=combined_df.loc[fmask, "date"], y=combined_df.loc[fmask, "new_content_uplift"],
+        mode="lines", name="New content",
+        line=dict(color="#22C55E", width=2),
+        stackgroup="stream", fillcolor="rgba(34,197,94,0.4)",
+    ))
+    return _apply_layout(fig, "Combined Traffic Forecast", "Date", "Monthly Organic Sessions")
+
+
+def aio_risk_chart(intent_breakdown: pd.DataFrame, ctr_penalty: float) -> go.Figure:
+    """Grouped bar: traffic at risk vs projected loss by intent."""
+    fig = go.Figure()
+    fig.add_trace(go.Bar(
+        name="Traffic at risk",
+        x=intent_breakdown["intent"], y=intent_breakdown["traffic"],
+        marker_color="#EF4444",
+    ))
+    fig.add_trace(go.Bar(
+        name=f"Projected loss ({ctr_penalty:.0f}%)",
+        x=intent_breakdown["intent"], y=intent_breakdown["traffic_loss"],
+        marker_color="#991B1B",
+    ))
+    fig.update_layout(barmode="group")
+    return _apply_layout(fig, "AIO Impact by Keyword Intent", "Intent", "Sessions / month")

@@ -1,5 +1,3 @@
-import re
-
 import numpy as np
 import pandas as pd
 
@@ -129,7 +127,7 @@ def efficiency_score(volume: int, kd: int) -> float:
     return volume / (kd + 1)
 
 
-def run_keyword_forecast(
+def run_new_content_forecast(
     df: pd.DataFrame,
     da: int,
     cadence: int,
@@ -137,10 +135,12 @@ def run_keyword_forecast(
     seed: int = 42,
     ctr_model: dict | None = None,
     traffic_multiplier: float = 1.0,
-    exclude_informational: bool = False,
-    informational_ctr_penalty: float = 0.0,
+    include_informational: bool = True,
+    ai_overview_ctr_penalty: float = 0.0,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Run the full keyword forecast pipeline.
+    """Run the full new-content keyword forecast pipeline.
+
+    Projects traffic from publishing new content targeting keywords you don't yet rank for.
 
     Args:
         df: DataFrame with columns keyword, volume, kd.
@@ -150,8 +150,8 @@ def run_keyword_forecast(
         seed: Random seed for reproducibility.
         ctr_model: Optional CTR model dict (from CTR_MODELS).
         traffic_multiplier: Multiplier for traffic estimates (e.g. 0.7 conservative).
-        exclude_informational: If True, drop informational-intent keywords.
-        informational_ctr_penalty: Percentage CTR reduction for informational keywords (0-100).
+        include_informational: If False, drop informational-intent keywords.
+        ai_overview_ctr_penalty: Percentage CTR reduction for informational keywords (0-100).
 
     Returns:
         keyword_df: Per-keyword results with all computed fields.
@@ -163,7 +163,7 @@ def run_keyword_forecast(
 
     # Step 0b: Optionally exclude informational keywords
     n_excluded = 0
-    if exclude_informational:
+    if not include_informational:
         n_excluded = (df["intent"] == "informational").sum()
         df = df[df["intent"] != "informational"].reset_index(drop=True)
 
@@ -201,9 +201,9 @@ def run_keyword_forecast(
         if row["will_rank"]:
             pos = expected_position(da, row["kd"], seed + i + 2000)
             ctr = get_ctr(pos, ctr_model)
-            # Apply informational CTR penalty
-            if informational_ctr_penalty > 0 and row["intent"] == "informational":
-                ctr = ctr * (1 - informational_ctr_penalty / 100)
+            # Apply AI Overview CTR penalty to informational keywords
+            if ai_overview_ctr_penalty > 0 and row["intent"] == "informational":
+                ctr = ctr * (1 - ai_overview_ctr_penalty / 100)
             traffic = round(row["volume"] * ctr / 100 * traffic_multiplier)
         else:
             pos = None

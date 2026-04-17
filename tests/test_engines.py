@@ -8,7 +8,7 @@ from engine.constants import (
     CTR_BY_POSITION, CTR_11_14, CTR_15_20,
     SITE_PRESETS, CTR_MODELS, FORECAST_SCENARIOS, INTENT_PATTERNS,
 )
-from engine.keyword_engine import (
+from engine.new_content_engine import (
     classify_difficulty,
     classify_intent,
     ranking_probability,
@@ -16,7 +16,7 @@ from engine.keyword_engine import (
     get_ctr,
     time_to_rank_months,
     efficiency_score,
-    run_keyword_forecast,
+    run_new_content_forecast,
 )
 from engine.historical_engine import (
     linear_forecast,
@@ -171,7 +171,7 @@ class TestEfficiencyScore:
         assert efficiency_score(100, 99) == 1.0
 
 
-class TestRunKeywordForecast:
+class TestRunNewContentForecast:
     @pytest.fixture
     def sample_df(self):
         return pd.DataFrame({
@@ -181,27 +181,27 @@ class TestRunKeywordForecast:
         })
 
     def test_returns_two_dataframes(self, sample_df):
-        kw_df, monthly_df = run_keyword_forecast(sample_df, da=50, cadence=2, months=12, seed=42)
+        kw_df, monthly_df = run_new_content_forecast(sample_df, da=50, cadence=2, months=12, seed=42)
         assert isinstance(kw_df, pd.DataFrame)
         assert isinstance(monthly_df, pd.DataFrame)
 
     def test_sorted_by_efficiency(self, sample_df):
-        kw_df, _ = run_keyword_forecast(sample_df, da=50, cadence=2, months=12, seed=42)
+        kw_df, _ = run_new_content_forecast(sample_df, da=50, cadence=2, months=12, seed=42)
         scores = kw_df["efficiency_score"].tolist()
         assert scores == sorted(scores, reverse=True)
 
     def test_monthly_df_has_correct_length(self, sample_df):
-        _, monthly_df = run_keyword_forecast(sample_df, da=50, cadence=2, months=12, seed=42)
+        _, monthly_df = run_new_content_forecast(sample_df, da=50, cadence=2, months=12, seed=42)
         assert len(monthly_df) == 12
 
     def test_seed_reproducibility(self, sample_df):
-        kw1, m1 = run_keyword_forecast(sample_df, da=50, cadence=2, months=12, seed=42)
-        kw2, m2 = run_keyword_forecast(sample_df, da=50, cadence=2, months=12, seed=42)
+        kw1, m1 = run_new_content_forecast(sample_df, da=50, cadence=2, months=12, seed=42)
+        kw2, m2 = run_new_content_forecast(sample_df, da=50, cadence=2, months=12, seed=42)
         pd.testing.assert_frame_equal(kw1, kw2)
         pd.testing.assert_frame_equal(m1, m2)
 
     def test_traffic_monotonically_nondecreasing(self, sample_df):
-        _, monthly_df = run_keyword_forecast(sample_df, da=50, cadence=2, months=18, seed=42)
+        _, monthly_df = run_new_content_forecast(sample_df, da=50, cadence=2, months=18, seed=42)
         traffic = monthly_df["traffic"].tolist()
         for i in range(1, len(traffic)):
             assert traffic[i] >= traffic[i - 1]
@@ -307,25 +307,44 @@ class TestRunHistoricalForecast:
 
 
 class TestCombinedForecast:
-    def test_combined_equals_baseline_plus_incremental(self):
+    def test_combined_equals_baseline_plus_uplifts(self):
         kw_df = pd.DataFrame({
             "keyword": ["test kw"],
             "volume": [5000],
             "kd": [20],
         })
-        keyword_df, monthly_kw_df = run_keyword_forecast(kw_df, da=60, cadence=1, months=12, seed=42)
+        _, new_content_monthly = run_new_content_forecast(kw_df, da=60, cadence=1, months=12, seed=42)
 
         historical_df = pd.DataFrame({
             "date": pd.date_range("2023-01-01", periods=12, freq="MS"),
             "traffic": [10000 + i * 200 for i in range(12)],
         })
 
-        combined = run_combined_forecast(keyword_df, monthly_kw_df, historical_df, months=12)
+        combined = run_combined_forecast(
+            historical_df=historical_df,
+            positional_monthly=None,
+            new_content_monthly=new_content_monthly,
+            months=12,
+        )
         forecast = combined[combined["is_forecast"]]
 
-        # Combined should equal baseline + new_content for each row
         for _, row in forecast.iterrows():
-            assert row["combined"] == row["baseline"] + row["new_content"]
+            assert row["combined"] == row["baseline"] + row["positional_uplift"] + row["new_content_uplift"]
+
+    def test_uplift_only_no_historical(self):
+        monthly = pd.DataFrame({
+            "month": range(1, 13),
+            "uplift": [100] * 12,
+            "traffic": [100] * 12,
+            "baseline": [0] * 12,
+        })
+        combined = run_combined_forecast(
+            historical_df=None,
+            positional_monthly=monthly,
+            new_content_monthly=None,
+            months=12,
+        )
+        assert (combined["baseline"] == 0).all()
 
 
 # ── Revenue Engine ──────────────────────────────────────────────────────────
@@ -360,7 +379,7 @@ class TestKeywordRevenueTable:
 # ── Data Loader (unit-testable parts) ──────────────────────────────────────
 
 
-class TestKeywordForecastFiltering:
+class TestNewContentForecastFiltering:
     @pytest.fixture
     def mixed_intent_df(self):
         return pd.DataFrame({
@@ -376,24 +395,24 @@ class TestKeywordForecastFiltering:
         })
 
     def test_intent_column_always_present(self, mixed_intent_df):
-        kw_df, _ = run_keyword_forecast(mixed_intent_df, da=50, cadence=2, months=12, seed=42)
+        kw_df, _ = run_new_content_forecast(mixed_intent_df, da=50, cadence=2, months=12, seed=42)
         assert "intent" in kw_df.columns
 
     def test_exclude_informational(self, mixed_intent_df):
-        kw_df, _ = run_keyword_forecast(
+        kw_df, _ = run_new_content_forecast(
             mixed_intent_df, da=50, cadence=2, months=12, seed=42,
-            exclude_informational=True,
+            include_informational=False,
         )
         assert "informational" not in kw_df["intent"].values
         assert len(kw_df) == 3  # 2 informational removed from 5
 
     def test_ctr_penalty_reduces_traffic(self, mixed_intent_df):
-        kw_base, _ = run_keyword_forecast(
+        kw_base, _ = run_new_content_forecast(
             mixed_intent_df, da=50, cadence=2, months=12, seed=42,
         )
-        kw_penalty, _ = run_keyword_forecast(
+        kw_penalty, _ = run_new_content_forecast(
             mixed_intent_df, da=50, cadence=2, months=12, seed=42,
-            informational_ctr_penalty=50.0,
+            ai_overview_ctr_penalty=50.0,
         )
         # Informational keywords should have less or equal traffic with penalty
         base_info = kw_base[kw_base["intent"] == "informational"]["estimated_monthly_traffic"].sum()
@@ -401,11 +420,11 @@ class TestKeywordForecastFiltering:
         assert penalty_info <= base_info
 
     def test_ctr_model_affects_traffic(self, mixed_intent_df):
-        _, monthly_std = run_keyword_forecast(
+        _, monthly_std = run_new_content_forecast(
             mixed_intent_df, da=50, cadence=2, months=12, seed=42,
             ctr_model=CTR_MODELS["Standard"],
         )
-        _, monthly_ai = run_keyword_forecast(
+        _, monthly_ai = run_new_content_forecast(
             mixed_intent_df, da=50, cadence=2, months=12, seed=42,
             ctr_model=CTR_MODELS["AI-Adjusted"],
         )
@@ -413,15 +432,15 @@ class TestKeywordForecastFiltering:
         assert monthly_ai["traffic"].sum() <= monthly_std["traffic"].sum()
 
     def test_traffic_multiplier(self, mixed_intent_df):
-        _, monthly_base = run_keyword_forecast(
+        _, monthly_base = run_new_content_forecast(
             mixed_intent_df, da=50, cadence=2, months=12, seed=42,
             traffic_multiplier=1.0,
         )
-        _, monthly_conservative = run_keyword_forecast(
+        _, monthly_conservative = run_new_content_forecast(
             mixed_intent_df, da=50, cadence=2, months=12, seed=42,
             traffic_multiplier=0.7,
         )
-        _, monthly_aggressive = run_keyword_forecast(
+        _, monthly_aggressive = run_new_content_forecast(
             mixed_intent_df, da=50, cadence=2, months=12, seed=42,
             traffic_multiplier=1.3,
         )
@@ -594,26 +613,33 @@ class TestKeywordPipeline:
         assert "page_1_mom_change" in result.columns
 
 
-class TestBudgetEngine:
-    def test_build_budget_roadmap(self):
-        from engine.budget_engine import build_budget_roadmap
-        task_df, summary = build_budget_roadmap(hourly_rate=200.0, months=12)
-        assert len(task_df) > 0
-        assert summary["hourly_rate"] == 200.0
-        assert summary["total_monthly_cost"] > 0
-        assert summary["total_annual_cost"] == summary["total_monthly_cost"] * 12
+class TestRoadmapEngine:
+    def test_build_roadmap_defaults(self):
+        from engine.roadmap_engine import build_roadmap
+        task_df, monthly_df, summary = build_roadmap(months=12)
+        assert summary["n_tasks"] > 0
+        assert summary["total_hours"] > 0
+        assert len(task_df) == summary["n_tasks"]
+        assert len(monthly_df) == summary["n_tasks"] + 1
 
-    def test_custom_tasks(self):
-        from engine.budget_engine import build_budget_roadmap
-        tasks = [{"category": "Test", "task": "Test Task", "hours_per_month": 10.0}]
-        task_df, summary = build_budget_roadmap(tasks, hourly_rate=100.0)
-        assert summary["total_monthly_cost"] == 1000.0
+    def test_quarterly_occurrence(self):
+        from engine.roadmap_engine import build_roadmap
+        task = [{"task": "Test Q", "focus": "Content", "occurrence": "Quarterly", "hours": 5.0}]
+        _, monthly_df, _ = build_roadmap(task, months=12)
+        task_row = monthly_df[monthly_df["Task"] == "Test Q"].iloc[0]
+        assert task_row["M1"] == 5.0
+        assert task_row["M2"] == 0.0
+        assert task_row["M4"] == 5.0
+        assert task_row["M7"] == 5.0
+        assert task_row["M10"] == 5.0
 
-    def test_monthly_timeline(self):
-        from engine.budget_engine import build_monthly_budget_timeline
-        timeline = build_monthly_budget_timeline(months=6)
-        assert len(timeline) == 6
-        assert "Total" in timeline.columns
+    def test_xlsx_export_buffer(self):
+        from engine.roadmap_engine import build_roadmap, build_roadmap_xlsx
+        _, monthly_df, summary = build_roadmap(months=12)
+        buf = build_roadmap_xlsx(monthly_df, summary, hourly_rate=200.0)
+        data = buf.read()
+        assert len(data) > 0
+        assert data[:2] == b"PK"
 
 
 class TestTemplates:
@@ -679,11 +705,108 @@ class TestPromptLoader:
 
 class TestDataLoaderHelpers:
     def test_efficiency_ordering_preserved(self):
-        """Verify the keyword engine sorts by efficiency."""
+        """Verify the new content engine sorts by efficiency."""
         df = pd.DataFrame({
             "keyword": ["low_eff", "high_eff"],
             "volume": [100, 10000],
             "kd": [90, 10],
         })
-        kw_df, _ = run_keyword_forecast(df, da=50, cadence=1, months=6, seed=42)
+        kw_df, _ = run_new_content_forecast(df, da=50, cadence=1, months=6, seed=42)
         assert kw_df.iloc[0]["keyword"] == "high_eff"
+
+
+# ── Positional Engine ──────────────────────────────────────────────────────
+
+
+class TestPositionalForecast:
+    @pytest.fixture
+    def sample_existing(self):
+        return pd.DataFrame({
+            "keyword": [f"kw_{i}" for i in range(50)],
+            "position": [3, 8, 15, 22] * 12 + [5, 12],
+            "volume": [1000] * 50,
+            "kd": [30] * 50,
+            "current_traffic": [100] * 50,
+            "primary_intent": ["commercial"] * 50,
+            "has_aio": [False] * 50,
+        })
+
+    def test_ga4_anchored_baseline(self, sample_existing):
+        from engine.positional_engine import run_positional_forecast
+        kw_df, monthly = run_positional_forecast(
+            sample_existing, months=12, effort="moderate", ga4_baseline=10000,
+        )
+        assert abs(monthly.iloc[0]["baseline"] - 10000) / 10000 < 0.01
+
+    def test_month_12_exceeds_baseline(self, sample_existing):
+        from engine.positional_engine import run_positional_forecast
+        _, monthly = run_positional_forecast(
+            sample_existing, months=12, effort="moderate", ga4_baseline=10000,
+        )
+        assert monthly.iloc[-1]["traffic"] > monthly.iloc[0]["baseline"]
+
+    def test_effort_levels_ordered(self, sample_existing):
+        from engine.positional_engine import run_positional_forecast
+        _, light = run_positional_forecast(sample_existing, months=12, effort="light")
+        _, moderate = run_positional_forecast(sample_existing, months=12, effort="moderate")
+        _, aggressive = run_positional_forecast(sample_existing, months=12, effort="aggressive")
+        assert aggressive.iloc[-1]["uplift"] >= moderate.iloc[-1]["uplift"] >= light.iloc[-1]["uplift"]
+
+    def test_quick_wins_filter(self, sample_existing):
+        from engine.positional_engine import run_positional_forecast, quick_wins
+        kw_df, _ = run_positional_forecast(sample_existing, months=12, effort="moderate")
+        qw = quick_wins(kw_df, top_n=20)
+        if not qw.empty:
+            assert (qw["position"] >= 4).all()
+            assert (qw["position"] <= 20).all()
+
+
+# ── AIO Risk Engine ────────────────────────────────────────────────────────
+
+
+class TestAioRiskEngine:
+    def test_zero_affected(self):
+        from engine.aio_risk_engine import calculate_aio_risk
+        df = pd.DataFrame({
+            "keyword": ["a", "b"], "has_aio": [False, False],
+            "volume": [100, 200], "current_traffic": [50, 100],
+            "primary_intent": ["commercial", "commercial"],
+        })
+        risk = calculate_aio_risk(df, ctr_penalty_pct=40.0)
+        assert risk["keywords_affected"] == 0
+        assert risk["traffic_at_risk"] == 0
+
+    def test_projected_loss_math(self):
+        from engine.aio_risk_engine import calculate_aio_risk
+        df = pd.DataFrame({
+            "keyword": ["a", "b", "c"],
+            "has_aio": [True, True, True],
+            "volume": [100, 200, 300],
+            "current_traffic": [400, 300, 300],
+            "primary_intent": ["informational", "commercial", "informational"],
+        })
+        risk = calculate_aio_risk(df, ctr_penalty_pct=40.0)
+        assert risk["traffic_at_risk"] == 1000
+        assert risk["projected_loss"] == 400
+
+    def test_intent_breakdown(self):
+        from engine.aio_risk_engine import calculate_aio_risk
+        df = pd.DataFrame({
+            "keyword": ["a", "b"],
+            "has_aio": [True, True],
+            "volume": [100, 200],
+            "current_traffic": [50, 100],
+            "primary_intent": ["informational", "commercial"],
+        })
+        risk = calculate_aio_risk(df, ctr_penalty_pct=40.0)
+        assert not risk["intent_breakdown"].empty
+
+    def test_recommendations_nonempty(self):
+        from engine.aio_risk_engine import calculate_aio_risk, aio_recommendations
+        df = pd.DataFrame({
+            "keyword": ["a"], "has_aio": [True],
+            "volume": [100], "current_traffic": [50],
+            "primary_intent": ["informational"],
+        })
+        risk = calculate_aio_risk(df)
+        assert len(aio_recommendations(risk)) > 0

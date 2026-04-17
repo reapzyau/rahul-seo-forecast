@@ -222,6 +222,47 @@ Three scenario multipliers adjust overall traffic estimates:
 
 ---
 
+## Mode 4: Positional Forecast
+
+The positional forecast projects traffic uplift from moving keywords you **already rank for** up the SERP. Unlike new content forecasting, it uses real current positions from SEMrush.
+
+### Step 1: Current position to target position
+
+For each keyword, the engine looks at its current position and chooses a target position based on effort level and keyword difficulty tier. "Moderate" effort at a moderate KD might move a keyword from position 14 to position 8.
+
+### Step 2: CTR lookup at target position
+
+Uses the same CTR tables as the new content forecast (Standard or AI-Adjusted), looking up the CTR at the target position.
+
+### Step 3: Traffic uplift calculation
+
+```
+baseline_traffic = volume * CTR_at_current_position / 100
+new_traffic = volume * CTR_at_target_position / 100
+uplift = new_traffic - baseline_traffic
+```
+
+Uplifts are summed across all keywords and distributed across months based on time-to-move (small moves for easy keywords start delivering in months 1-2; big moves on hard keywords ramp over 6-12 months).
+
+### GA4 anchoring
+
+When a GA4 baseline is provided, the engine rescales SEMrush's traffic estimates so the month-1 baseline equals real GA4 sessions. Without anchoring, SEMrush's traffic estimate is typically 20-40% higher than what GA4 actually reports.
+
+---
+
+## Mode 5: AI Overview Risk
+
+Uses SEMrush's Position Type column. Keywords flagged as "AI overview" are considered AIO-affected; their current traffic is multiplied by the CTR penalty (default 40%) to estimate projected loss.
+
+The analysis segments risk by keyword intent — informational keywords typically carry the highest AIO exposure because AIO summaries compete most directly with informational content.
+
+Recommendations are generated based on exposure percentage:
+- < 3%: low exposure, maintain with quarterly review
+- 3-10%: moderate, audit informational content for quick-answer optimisation
+- \> 10%: high, consider deprioritising informational content in favour of transactional/commercial keywords
+
+---
+
 ## Assumptions and Limitations
 
 1. **CTR data is based on industry averages** — actual CTR varies by industry, SERP features, and brand recognition.

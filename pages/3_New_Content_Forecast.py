@@ -2,7 +2,7 @@ import os
 import streamlit as st
 import pandas as pd
 
-from engine.keyword_engine import run_keyword_forecast
+from engine.new_content_engine import run_new_content_forecast
 from engine.revenue_engine import add_revenue, keyword_revenue_table, CURRENCY_SYMBOLS
 from utils.data_loader import load_keywords
 from utils.chart_builder import (
@@ -16,8 +16,8 @@ from engine.constants import TIER_COLORS, SITE_PRESETS, CTR_MODELS, FORECAST_SCE
 from engine.ai_engine import get_bifrost_client, cluster_keywords, check_cannibalization, generate_content_roadmap
 from utils.sidebar import render_ai_settings
 
-st.header("Keyword Forecast")
-st.caption("Project traffic from target keywords — no historical data needed.")
+st.header("New Content Forecast")
+st.caption("Project traffic from new content targeting keywords you don't yet rank for.")
 
 render_ai_settings()
 
@@ -145,19 +145,19 @@ if df is not None:
 if df is not None:
     if st.button("Generate Forecast", type="primary", key="kw_run"):
         with st.spinner("Running keyword forecast..."):
-            keyword_df, monthly_df = run_keyword_forecast(
+            keyword_df, monthly_df = run_new_content_forecast(
                 df, da, cadence, months, seed,
                 ctr_model=ctr_model,
                 traffic_multiplier=traffic_multiplier,
-                exclude_informational=exclude_informational,
-                informational_ctr_penalty=informational_ctr_penalty,
+                include_informational=not exclude_informational,
+                ai_overview_ctr_penalty=informational_ctr_penalty,
             )
 
             # Run scenarios if enabled
             scenarios = {}
             if enable_scenarios and cadence_options:
                 for c in cadence_options:
-                    _, s_monthly = run_keyword_forecast(
+                    _, s_monthly = run_new_content_forecast(
                         df, da, c, months, seed,
                         ctr_model=ctr_model,
                         traffic_multiplier=traffic_multiplier,

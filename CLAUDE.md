@@ -15,6 +15,38 @@ tests/                  # pytest unit tests (engine logic only, no Streamlit)
 
 Pages import from `engine/` and `utils/`. Engine modules never import from pages or utils.
 
+## Session state wiring
+
+The Data Upload page (1_Data_Upload.py) is the single source for uploaded data. It populates:
+
+- `st.session_state["ga4_df"]` — post-filter GA4 monthly traffic frame
+- `st.session_state["kw_df"]` — full SEMrush portfolio
+- `st.session_state["kw_existing"]` — keywords with position <= 100 (ranking)
+- `st.session_state["kw_new"]` — keywords not ranking (typically empty for SEMrush exports)
+
+Downstream pages (Positional, AIO Risk, Combined, Grid Export) read from these keys. If a page can't find the data, it should warn and `st.stop()` rather than prompting for re-upload.
+
+## GA4 anchoring
+
+The positional engine accepts a `ga4_baseline: int` parameter. When set, the engine rescales SEMrush's estimated traffic so that the month-1 baseline matches the real GA4 baseline. SEMrush traffic estimates are typically 20-40% higher than real GA4 organic sessions; anchoring keeps forecasts defensible.
+
+## Positional vs. New Content modes
+
+- **Positional** = for keywords that already rank (position 1-100). Projects uplift from moving them up the SERP. This is the default workflow because SEMrush exports only contain keywords you rank for.
+- **New Content** = for net-new keywords (gap analysis output, target keyword lists from a strategist). Uses probabilistic ranking based on DA vs. KD. Requires a separate upload — SEMrush alone can't populate this.
+
+## Known calibration concerns
+
+The positional engine's "moderate" effort level currently projects ~75% uplift over baseline at month 12 on the Cable Melbourne test data. This is on the aggressive end of realistic — a properly-run SEO engagement typically delivers 30-50% over 12 months. The tuning knob is `engine/positional_engine.py::estimate_target_position` (the `base_gain` per KD tier). Calibration against real campaign outcomes is pending.
+
+## The FY-date reconstruction gotcha
+
+The GA4 Revenue sheet ships with date values where the Financial Year is encoded as day-of-month ("day=23" means FY23). `utils/ga4_loader.py` detects this and reconstructs real dates using the AU financial year convention (FY24 = Jul 2023 – Jun 2024). When adding new GA4 sheet handling, remember this.
+
+## Forecast grid output format
+
+`utils/forecast_grid.py::build_seo_forecast_grid` produces an xlsx matching the SEO row of the Pattern multi-channel plan (GAZMAN-style): monthly columns grouped as Forecast / Actual / % Var, with rows for Traffic / Transactions / Revenue. The analyst pastes this directly into the plan template.
+
 ## Conventions
 
 ### Seeded randomness
