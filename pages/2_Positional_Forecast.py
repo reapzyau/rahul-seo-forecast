@@ -1,17 +1,24 @@
 import streamlit as st
 import pandas as pd
 
-from engine.positional_engine import run_positional_forecast, quick_wins
+from engine.positional_engine import run_positional_forecast, run_positional_forecast_mc, quick_wins
 from engine.revenue_engine import add_revenue, CURRENCY_SYMBOLS
 from utils.chart_builder import positional_uplift_chart, revenue_projection_chart
 from utils.export import to_csv, to_html_report
 from engine.constants import CTR_MODELS, FORECAST_SCENARIOS, TIER_COLORS
 from utils.sidebar import render_ai_settings
+from utils.assumptions_panel import render_assumptions_banner
+from engine.assumptions import initialise_assumptions, get_assumption
 
 st.header("Positional Forecast")
 st.caption("Project uplift from moving existing keywords up the SERP.")
 
 render_ai_settings()
+
+# ── Assumptions store ────────────────────────────────────────────────────────
+store = st.session_state.setdefault("assumptions", {})
+initialise_assumptions(store)
+render_assumptions_banner(store)
 
 # ── Data check ──────────────────────────────────────────────────────────────
 kw_existing = st.session_state.get("kw_existing")
@@ -25,10 +32,13 @@ ga4_df = st.session_state.get("ga4_df")
 st.sidebar.header("Positional Forecast Settings")
 
 months = st.sidebar.slider("Forecast Horizon (months)", 6, 36, 12, key="pos_months")
+_effort_options = ["light", "moderate", "aggressive"]
+_default_effort = str(get_assumption(store, "effort_level"))
+_effort_idx = _effort_options.index(_default_effort) if _default_effort in _effort_options else 1
 effort = st.sidebar.selectbox(
     "Effort Level",
-    ["light", "moderate", "aggressive"],
-    index=1,
+    _effort_options,
+    index=_effort_idx,
     key="pos_effort",
     help="How aggressively you plan to optimise existing content.",
 )
@@ -63,6 +73,12 @@ aio_penalty = st.sidebar.slider(
 )
 
 st.sidebar.divider()
+st.sidebar.subheader("Monte Carlo Settings")
+
+show_bands = st.sidebar.checkbox("Show P10/P50/P90 bands", value=True, key="pos_bands")
+use_attention_curve = st.sidebar.checkbox("Apply attention curve", value=True, key="pos_attn")
+
+st.sidebar.divider()
 st.sidebar.subheader("GA4 Anchoring")
 
 anchor_to_ga4 = False
@@ -77,16 +93,21 @@ st.sidebar.divider()
 st.sidebar.subheader("Revenue Settings")
 
 enable_revenue = st.sidebar.checkbox("Enable Revenue Projection", key="pos_rev")
+_default_cvr = float(get_assumption(store, "blended_cr_pct"))
+_default_aov = float(get_assumption(store, "aov"))
+_default_cur = str(get_assumption(store, "currency"))
 cvr = st.sidebar.number_input(
-    "Conversion Rate (%)", 0.1, 100.0, 2.5, step=0.1,
+    "Conversion Rate (%)", 0.1, 100.0, _default_cvr, step=0.1,
     key="pos_cvr", disabled=not enable_revenue,
 )
 aov = st.sidebar.number_input(
-    "Average Order Value", 1.0, 100000.0, 100.0, step=10.0,
+    "Average Order Value", 1.0, 100000.0, _default_aov, step=10.0,
     key="pos_aov", disabled=not enable_revenue,
 )
+_cur_options = list(CURRENCY_SYMBOLS.keys())
+_cur_idx = _cur_options.index(_default_cur) if _default_cur in _cur_options else 0
 currency = st.sidebar.selectbox(
-    "Currency", list(CURRENCY_SYMBOLS.keys()),
+    "Currency", _cur_options, index=_cur_idx,
     key="pos_cur", disabled=not enable_revenue,
 )
 
@@ -97,13 +118,14 @@ if st.button("Generate Forecast", type="primary", key="pos_run"):
         if anchor_to_ga4 and ga4_df is not None:
             ga4_baseline = int(ga4_df["traffic"].iloc[-1])
 
-        kw_df, monthly = run_positional_forecast(
+        kw_df, monthly = run_positional_forecast_mc(
             kw_existing,
             months=months,
             effort=effort,
             ga4_baseline=ga4_baseline,
             ctr_model=ctr_model,
             traffic_multiplier=traffic_multiplier,
+            use_attention_curve=use_attention_curve,
             seed=42,
         )
 
@@ -123,6 +145,7 @@ if st.button("Generate Forecast", type="primary", key="pos_run"):
             "ctr_model_name": ctr_model_name,
             "scenario_name": scenario_name,
             "aio_penalty": aio_penalty,
+            "show_bands": show_bands,
         }
 
 # ── Results ─────────────────────────────────────────────────────────────────
@@ -145,13 +168,36 @@ if "pos_result" in st.session_state:
         total_uplift = monthly["uplift"].iloc[-1]
         uplift_pct = (total_uplift / baseline * 100) if baseline > 0 else 0.0
 
+        # P10/P90 end-of-period values for band display
+        uplift_p10 = monthly["uplift_p10"].iloc[-1]
+        uplift_p90 = monthly["uplift_p90"].iloc[-1]
+
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("Baseline Traffic", f"{baseline:,.0f}")
         c2.metric("Projected End Traffic", f"{projected_end:,.0f}")
-        c3.metric("Total Uplift", f"{total_uplift:,.0f}")
+        c3.metric("P50 M12 Uplift", f"{total_uplift:,.0f}")
+        if show_bands:
+            c3.caption(f"(P10\u2013P90: {uplift_p10:,.0f}\u2013{uplift_p90:,.0f})")
         c4.metric("Uplift %", f"{uplift_pct:.1f}%")
 
         fig = positional_uplift_chart(monthly)
+
+        if show_bands:
+            import plotly.graph_objects as go
+            fig.add_trace(go.Scatter(
+                x=monthly["month"], y=monthly["traffic_p90"],
+                mode="lines", line=dict(width=0),
+                showlegend=False, hoverinfo="skip",
+            ))
+            fig.add_trace(go.Scatter(
+                x=monthly["month"], y=monthly["traffic_p10"],
+                mode="lines", line=dict(width=0),
+                fill="tonexty",
+                fillcolor="rgba(37, 99, 235, 0.10)",
+                name="P10\u2013P90 range",
+                hoverinfo="skip",
+            ))
+
         st.plotly_chart(fig, use_container_width=True)
 
         if r["enable_revenue"] and "revenue" in monthly.columns:

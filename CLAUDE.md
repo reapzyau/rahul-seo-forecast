@@ -35,9 +35,25 @@ The positional engine accepts a `ga4_baseline: int` parameter. When set, the eng
 - **Positional** = for keywords that already rank (position 1-100). Projects uplift from moving them up the SERP. This is the default workflow because SEMrush exports only contain keywords you rank for.
 - **New Content** = for net-new keywords (gap analysis output, target keyword lists from a strategist). Uses probabilistic ranking based on DA vs. KD. Requires a separate upload — SEMrush alone can't populate this.
 
-## Known calibration concerns
+## v3 architecture: forecasts are bands, not lines
 
-The positional engine's "moderate" effort level currently projects ~75% uplift over baseline at month 12 on the Cable Melbourne test data. This is on the aggressive end of realistic — a properly-run SEO engagement typically delivers 30-50% over 12 months. The tuning knob is `engine/positional_engine.py::estimate_target_position` (the `base_gain` per KD tier). Calibration against real campaign outcomes is pending.
+From v3, the positional engine returns P10/P50/P90 monthly data via Monte Carlo simulation (500 trials). Every downstream consumer handles bands. Pages that need a single number use P50 with a label saying "P50 (median scenario)".
+
+## Combined Forecast is the canonical hub
+
+Every downstream page (Seasonality, AIO Risk, SEO Roadmap, Forecast Grid Export, Variance) reads from Combined first. Fallback order: Combined → Positional → Historical → New Content → error. The Combined engine layers: `baseline + positional_uplift + new_content - decay - aio_erosion`.
+
+## Attention curve is on by default
+
+The portfolio attention curve (top 5% full effort, bottom 50% at 0.05 weight) is enabled by default. Can be disabled via sidebar toggle for raw forecasts. This addresses the v2 calibration concern: "moderate" effort now yields 30-50% uplift instead of 75%.
+
+## Snapshots are user-owned files
+
+Streamlit Community Cloud has no persistent storage. Forecast snapshots are downloadable JSON that the analyst keeps alongside the multi-channel plan. Upload back via the Variance page to grade forecasts. No server-side storage.
+
+## Seasonality is applied last
+
+Every engine produces un-seasoned forecasts. Seasonality multipliers apply to the Combined output as the final step.
 
 ## The FY-date reconstruction gotcha
 
@@ -113,3 +129,42 @@ Tests cover engine logic only. No Streamlit or network calls in tests.
 1. Create `engine/my_engine.py` — pure Python, no Streamlit imports
 2. Export from `engine/__init__.py` if needed
 3. Write tests in `tests/test_engines.py`
+
+## Assumptions store (v4)
+
+`engine/assumptions.py` is the single source of truth for all forecast parameters. It provides:
+
+- `ASSUMPTIONS` registry — 10 keyed entries (blended_cr_pct, aov, currency, effort_level, content_cadence, maintenance_coverage, aio_monthly_growth, aio_ctr_penalty_informational, decay_rate_top3, decay_rate_top10)
+- Provenance tracking: `"defaulted"` | `"detected"` | `"overridden"`
+- Session state API (all functions take an explicit `store: dict` parameter — no Streamlit import):
+  - `initialise_assumptions(store, force=False)` — populate with defaults; no-op if already done
+  - `run_detection(store, ga4_df=None, kw_df=None, roadmap_data=None)` — auto-detect values from data
+  - `override_assumption(store, key, value, source=...)` — explicit user override
+  - `clear_override(store, key)` — revert to default
+  - `get_assumption(store, key)` — current value
+  - `get_provenance(store, key)` — full provenance dict
+  - `assumptions_summary(store)` — list of all provenance dicts
+
+**In pages**, always use:
+```python
+store = st.session_state.setdefault("assumptions", {})
+initialise_assumptions(store)
+```
+Then read values with `get_assumption(store, "blended_cr_pct")` instead of hardcoding defaults.
+
+`utils/assumptions_panel.py` provides two Streamlit components:
+- `render_assumptions_banner(store)` — compact info bar with provenance counts; call after the page header
+- `render_assumptions_panel(store)` — full table with override widgets; shown at bottom of Data Upload page
+
+## Roadmap ingestion (v4)
+
+`utils/roadmap_loader.py` parses uploaded roadmap files and extracts three forecast parameters:
+- `content_cadence` (int) — posts per month
+- `effort_level` (str) — "light" | "moderate" | "aggressive"
+- `maintenance_coverage` (float 0–1) — fraction of portfolio actively maintained
+
+Supports two formats:
+1. **Task-table** (columns: Task, Focus, Occurrence, Hours) — the native GAZMAN xlsx from SEO Roadmap page
+2. **Param-table** (columns: cadence, effort_level, maintenance_coverage) — direct override CSV
+
+Use `load_roadmap(file_bytes_or_path)` as the single entry point. The Data Upload page (Roadmap tab) calls this and then passes the result to `run_detection(store, roadmap_data=...)` to wire values into the assumptions store.

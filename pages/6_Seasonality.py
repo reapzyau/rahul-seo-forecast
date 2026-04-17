@@ -22,16 +22,21 @@ if kw_results is None and hist_results is None and comb_results is None:
     st.info("Run a **Keyword Forecast**, **Historical Forecast**, or **Combined Forecast** first to generate base traffic data.")
     st.stop()
 
-# ── Source selection ─────────────────────────────────────────────────────────
+# ── Source selection (Combined first) ─────────────────────────────────────
 sources = []
+if comb_results:
+    sources.append("Combined Forecast")
 if kw_results:
     sources.append("Keyword Forecast")
 if hist_results:
     sources.append("Historical Forecast")
-if comb_results:
-    sources.append("Combined Forecast")
 
 source = st.selectbox("Traffic Source", sources, key="season_source")
+
+if source == "Combined Forecast":
+    st.success("Using Combined forecast (baseline + positional + new content \u2212 decay \u2212 AIO erosion).")
+else:
+    st.warning("Using a single-stream source. Run **Combined Forecast** for the most complete view.")
 
 if source == "Keyword Forecast" and kw_results:
     monthly_df = kw_results["monthly_df"].copy()

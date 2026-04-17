@@ -347,6 +347,80 @@ class TestCombinedForecast:
         assert (combined["baseline"] == 0).all()
 
 
+class TestCombinedHub:
+    def test_layered_math_with_bands(self):
+        historical = pd.DataFrame({
+            "date": pd.date_range("2023-01-01", periods=12, freq="MS"),
+            "traffic": [10000] * 12,
+        })
+        positional = pd.DataFrame({
+            "month": range(1, 13),
+            "baseline": [10000] * 12,
+            "uplift_p10": [200] * 12,
+            "uplift_p50": [500] * 12,
+            "uplift_p90": [800] * 12,
+        })
+        decay = pd.DataFrame({
+            "month": range(1, 13),
+            "cumulative_decay": [50 * i for i in range(1, 13)],
+        })
+        aio = pd.DataFrame({
+            "month": range(1, 13),
+            "cumulative_erosion": [30 * i for i in range(1, 13)],
+        })
+        combined = run_combined_forecast(
+            historical_df=historical,
+            positional_monthly=positional,
+            new_content_monthly=None,
+            months=12,
+            decay_df=decay,
+            aio_erosion_df=aio,
+        )
+        forecast = combined[combined["is_forecast"]]
+        m12 = forecast.iloc[-1]
+        expected_p50 = m12["baseline"] + m12["positional_uplift_p50"] - m12["decay"] - m12["aio_erosion"]
+        assert abs(m12["combined_p50"] - expected_p50) < 2
+
+    def test_bands_preserved_order(self):
+        historical = pd.DataFrame({
+            "date": pd.date_range("2023-01-01", periods=12, freq="MS"),
+            "traffic": [10000] * 12,
+        })
+        positional = pd.DataFrame({
+            "month": range(1, 13),
+            "baseline": [10000] * 12,
+            "uplift_p10": [200] * 12,
+            "uplift_p50": [500] * 12,
+            "uplift_p90": [800] * 12,
+        })
+        combined = run_combined_forecast(
+            historical_df=historical,
+            positional_monthly=positional,
+            new_content_monthly=None,
+            months=12,
+        )
+        forecast = combined[combined["is_forecast"]]
+        assert (forecast["combined_p10"] <= forecast["combined_p50"]).all()
+        assert (forecast["combined_p50"] <= forecast["combined_p90"]).all()
+
+    def test_backward_compat_aliases(self):
+        positional = pd.DataFrame({
+            "month": range(1, 7),
+            "baseline": [10000] * 6,
+            "uplift_p10": [200] * 6,
+            "uplift_p50": [500] * 6,
+            "uplift_p90": [800] * 6,
+        })
+        combined = run_combined_forecast(
+            historical_df=None,
+            positional_monthly=positional,
+            new_content_monthly=None,
+            months=6,
+        )
+        assert "combined" in combined.columns
+        assert "positional_uplift" in combined.columns
+
+
 # ── Revenue Engine ──────────────────────────────────────────────────────────
 
 
@@ -761,6 +835,105 @@ class TestPositionalForecast:
             assert (qw["position"] <= 20).all()
 
 
+# ── Monte Carlo + Attention Curve ──────────────────────────────────────────
+
+
+class TestPositionalMonteCarlo:
+    @pytest.fixture
+    def mc_sample(self):
+        return pd.DataFrame({
+            "keyword": [f"kw_{i}" for i in range(30)],
+            "position": [10] * 30,
+            "volume": [1000] * 30,
+            "kd": [30] * 30,
+            "current_traffic": [100] * 30,
+            "primary_intent": ["commercial"] * 30,
+            "has_aio": [False] * 30,
+        })
+
+    def test_bands_ordered(self, mc_sample):
+        from engine.positional_engine import run_positional_forecast_mc
+        _, monthly = run_positional_forecast_mc(mc_sample, months=12, n_trials=200)
+        assert (monthly["uplift_p10"] <= monthly["uplift_p50"]).all()
+        assert (monthly["uplift_p50"] <= monthly["uplift_p90"]).all()
+
+    def test_band_width_meaningful(self):
+        from engine.positional_engine import run_positional_forecast_mc
+        df = pd.DataFrame({
+            "keyword": [f"kw_{i}" for i in range(50)],
+            "position": [15] * 50,
+            "volume": [1000] * 50,
+            "kd": [40] * 50,
+            "current_traffic": [80] * 50,
+            "primary_intent": ["commercial"] * 50,
+            "has_aio": [False] * 50,
+        })
+        _, monthly = run_positional_forecast_mc(df, months=12, n_trials=500)
+        m12 = monthly.iloc[-1]
+        spread = m12["uplift_p90"] - m12["uplift_p10"]
+        assert spread > m12["uplift_p50"] * 0.1
+
+    def test_deterministic_with_seed(self, mc_sample):
+        from engine.positional_engine import run_positional_forecast_mc
+        _, m1 = run_positional_forecast_mc(mc_sample, months=12, n_trials=200, seed=42)
+        _, m2 = run_positional_forecast_mc(mc_sample, months=12, n_trials=200, seed=42)
+        pd.testing.assert_frame_equal(m1, m2)
+
+    def test_backward_compat_columns(self, mc_sample):
+        from engine.positional_engine import run_positional_forecast_mc
+        _, monthly = run_positional_forecast_mc(mc_sample, months=12, n_trials=200)
+        assert "uplift" in monthly.columns
+        assert "traffic" in monthly.columns
+        assert (monthly["uplift"] == monthly["uplift_p50"]).all()
+
+
+class TestAttentionCurve:
+    def test_top_keywords_get_full_weight(self):
+        from engine.positional_engine import attention_weight
+        assert attention_weight(0.01) == 1.00
+        assert attention_weight(0.04) == 1.00
+
+    def test_long_tail_gets_minimal_weight(self):
+        from engine.positional_engine import attention_weight
+        assert attention_weight(0.99) == 0.05
+
+    def test_weights_decrease_monotonically(self):
+        from engine.positional_engine import attention_weight
+        weights = [attention_weight(p) for p in [0.01, 0.1, 0.3, 0.8]]
+        for i in range(1, len(weights)):
+            assert weights[i] <= weights[i - 1]
+
+    def test_apply_attention_curve_assigns_weights(self):
+        from engine.positional_engine import apply_attention_curve
+        df = pd.DataFrame({
+            "keyword": [f"kw_{i}" for i in range(100)],
+            "volume": list(range(100, 0, -1)),
+            "kd": [30] * 100,
+        })
+        result = apply_attention_curve(df)
+        assert (result.head(5)["attention_weight"] == 1.00).all()
+        assert (result.tail(50)["attention_weight"] == 0.05).all()
+
+    def test_attention_reduces_aggregate_uplift(self):
+        from engine.positional_engine import run_positional_forecast_mc
+        df = pd.DataFrame({
+            "keyword": [f"kw_{i}" for i in range(200)],
+            "position": [15] * 200,
+            "volume": [1000] * 200,
+            "kd": [35] * 200,
+            "current_traffic": [80] * 200,
+            "primary_intent": ["commercial"] * 200,
+            "has_aio": [False] * 200,
+        })
+        _, with_attn = run_positional_forecast_mc(
+            df, months=12, n_trials=200, use_attention_curve=True, seed=99
+        )
+        _, no_attn = run_positional_forecast_mc(
+            df, months=12, n_trials=200, use_attention_curve=False, seed=99
+        )
+        assert with_attn.iloc[-1]["uplift_p50"] < no_attn.iloc[-1]["uplift_p50"]
+
+
 # ── AIO Risk Engine ────────────────────────────────────────────────────────
 
 
@@ -810,3 +983,242 @@ class TestAioRiskEngine:
         })
         risk = calculate_aio_risk(df)
         assert len(aio_recommendations(risk)) > 0
+
+
+# ── Snapshot + Variance ────────────────────────────────────────────────────
+
+
+class TestSnapshot:
+    def test_roundtrip(self):
+        from engine.snapshot_engine import build_snapshot, snapshot_to_bytes, load_snapshot
+        combined = pd.DataFrame({
+            "date": pd.date_range("2026-01-01", periods=12, freq="MS"),
+            "actual": [None] * 12,
+            "baseline": [10000] * 12,
+            "combined_p50": [11000] * 12,
+            "is_forecast": [True] * 12,
+        })
+        snap = build_snapshot("Test Client", combined, {"effort": "moderate"})
+        data = snapshot_to_bytes(snap)
+        loaded = load_snapshot(data)
+        assert loaded["client_name"] == "Test Client"
+        assert len(loaded["forecast"]) == 12
+
+    def test_variance_calculation(self):
+        from engine.snapshot_engine import compare_to_actuals
+        snapshot = {
+            "forecast": [
+                {"date": "2026-01-01", "combined_p50": 10000, "combined_p10": 8000, "combined_p90": 12000},
+                {"date": "2026-02-01", "combined_p50": 10500, "combined_p10": 8500, "combined_p90": 12500},
+            ]
+        }
+        actuals = pd.DataFrame({
+            "date": ["2026-01-01", "2026-02-01"],
+            "traffic": [10500, 9000],
+        })
+        result = compare_to_actuals(snapshot, actuals)
+        assert len(result) == 2
+        assert abs(result.iloc[0]["variance_pct"] - 5.0) < 0.1
+        assert result.iloc[0]["within_band"]
+        assert result.iloc[1]["variance_pct"] < 0
+
+    def test_summarise_variance(self):
+        from engine.snapshot_engine import compare_to_actuals, summarise_variance
+        snapshot = {
+            "forecast": [
+                {"date": "2026-01-01", "combined_p50": 10000, "combined_p10": 8000, "combined_p90": 12000},
+            ]
+        }
+        actuals = pd.DataFrame({"date": ["2026-01-01"], "traffic": [10500]})
+        comparison = compare_to_actuals(snapshot, actuals)
+        summary = summarise_variance(comparison)
+        assert summary["n_months_compared"] == 1
+        assert summary["pct_within_band"] == 100.0
+
+
+# ── AIO Erosion (Time-varying) ─────────────────────────────────────────────
+
+
+class TestAioErosion:
+    def test_erosion_grows_over_time(self):
+        from engine.aio_risk_engine import project_aio_erosion
+        df = pd.DataFrame({
+            "keyword": [f"kw_{i}" for i in range(100)],
+            "primary_intent": ["informational"] * 100,
+            "current_traffic": [100] * 100,
+            "has_aio": [False] * 100,
+        })
+        result = project_aio_erosion(df, months=24, monthly_growth=0.03)
+        assert result["cumulative_erosion"].is_monotonic_increasing
+        assert result.iloc[-1]["cumulative_erosion"] > result.iloc[0]["cumulative_erosion"] * 5
+
+    def test_informational_erodes_more_than_transactional(self):
+        from engine.aio_risk_engine import project_aio_erosion
+        info_df = pd.DataFrame({
+            "keyword": ["a"], "primary_intent": ["informational"],
+            "current_traffic": [1000], "has_aio": [True],
+        })
+        trans_df = pd.DataFrame({
+            "keyword": ["a"], "primary_intent": ["transactional"],
+            "current_traffic": [1000], "has_aio": [True],
+        })
+        info_result = project_aio_erosion(info_df, months=12)
+        trans_result = project_aio_erosion(trans_df, months=12)
+        assert info_result.iloc[-1]["cumulative_erosion"] > trans_result.iloc[-1]["cumulative_erosion"]
+
+    def test_zero_growth_only_hits_pre_affected(self):
+        from engine.aio_risk_engine import project_aio_erosion
+        df = pd.DataFrame({
+            "keyword": ["a", "b"],
+            "primary_intent": ["informational", "informational"],
+            "current_traffic": [1000, 1000],
+            "has_aio": [True, False],
+        })
+        result = project_aio_erosion(df, months=12, monthly_growth=0.0)
+        assert result.iloc[0]["cumulative_erosion"] == result.iloc[-1]["cumulative_erosion"]
+
+
+# ── Decay Engine ──────────────────────────────────────────────────────────
+
+
+class TestDecayEngine:
+    def test_position_bucketing(self):
+        from engine.decay_engine import position_bucket
+        assert position_bucket(1) == "top3"
+        assert position_bucket(5) == "top10"
+        assert position_bucket(15) == "11_20"
+        assert position_bucket(30) == "21_50"
+        assert position_bucket(75) == "51_plus"
+        assert position_bucket(None) == "51_plus"
+
+    def test_monthly_decay_factor(self):
+        from engine.decay_engine import monthly_decay_factor
+        monthly = monthly_decay_factor(0.12)
+        assert 0.98 < monthly < 0.995
+        annual = monthly ** 12
+        assert abs(annual - 0.88) < 0.01
+
+    def test_decay_cumulative_increases(self):
+        from engine.decay_engine import calculate_portfolio_decay
+        df = pd.DataFrame({
+            "keyword": ["a", "b", "c"],
+            "position": [2, 8, 25],
+            "current_traffic": [1000, 500, 200],
+        })
+        result = calculate_portfolio_decay(df, months=12)
+        assert result["cumulative_decay"].is_monotonic_increasing
+
+    def test_maintenance_reduces_decay(self):
+        from engine.decay_engine import calculate_portfolio_decay
+        df = pd.DataFrame({
+            "keyword": ["a"],
+            "position": [10],
+            "current_traffic": [1000],
+        })
+        no_maint = calculate_portfolio_decay(df, months=12, maintenance_coverage=0.0)
+        with_maint = calculate_portfolio_decay(df, months=12, maintenance_coverage=0.7)
+        assert with_maint.iloc[-1]["cumulative_decay"] < no_maint.iloc[-1]["cumulative_decay"]
+
+    def test_empty_portfolio(self):
+        from engine.decay_engine import calculate_portfolio_decay
+        df = pd.DataFrame(columns=["position", "current_traffic"])
+        result = calculate_portfolio_decay(df, months=6)
+        assert len(result) == 6
+        assert result["decay_loss"].sum() == 0
+
+    def test_decayed_baseline_is_lower_than_linear(self):
+        from engine.decay_engine import project_decayed_baseline
+        historical = pd.Series([10000 + i * 100 for i in range(12)])
+        keyword_df = pd.DataFrame({
+            "keyword": ["a", "b"],
+            "position": [5, 25],
+            "current_traffic": [3000, 1500],
+        })
+        result = project_decayed_baseline(historical, keyword_df, months=12, maintenance_coverage=0.0)
+        assert (result["honest_baseline"] <= result["linear_baseline"]).all()
+
+
+class TestDecayRespectsMaintenance:
+    def test_high_maintenance_reduces_decay(self):
+        """High maintenance_coverage should meaningfully reduce cumulative decay vs zero."""
+        from engine.decay_engine import calculate_portfolio_decay
+        df = pd.DataFrame({
+            "keyword": ["kw1", "kw2", "kw3"],
+            "position": [2, 7, 15],
+            "current_traffic": [2000, 1000, 500],
+        })
+        no_maint = calculate_portfolio_decay(df, months=12, maintenance_coverage=0.0)
+        high_maint = calculate_portfolio_decay(df, months=12, maintenance_coverage=0.9)
+        cumulative_no = no_maint.iloc[-1]["cumulative_decay"]
+        cumulative_hi = high_maint.iloc[-1]["cumulative_decay"]
+        assert cumulative_hi < cumulative_no
+        # At 0.9 coverage, effective decay should be reduced by at least 50%
+        assert cumulative_hi < cumulative_no * 0.5
+
+
+# ── Intent-Weighted Revenue ───────────────────────────────────────────────
+
+
+class TestIntentWeightedRevenue:
+    def test_commercial_only_boosts_cvr(self):
+        from engine.revenue_engine import compute_intent_weighted_cvr
+        df = pd.DataFrame({
+            "primary_intent": ["commercial"] * 5,
+            "uplift": [100] * 5,
+        })
+        result = compute_intent_weighted_cvr(df, 2.0)
+        assert result == pytest.approx(2.0 * 1.5, rel=0.01)
+
+    def test_transactional_highest_multiplier(self):
+        from engine.revenue_engine import compute_intent_weighted_cvr
+        df = pd.DataFrame({
+            "primary_intent": ["transactional"] * 5,
+            "volume": [100] * 5,
+        })
+        result = compute_intent_weighted_cvr(df, 2.0)
+        assert result == pytest.approx(2.0 * 2.0, rel=0.01)
+
+    def test_informational_lowers_cvr(self):
+        from engine.revenue_engine import compute_intent_weighted_cvr
+        df = pd.DataFrame({
+            "primary_intent": ["informational"] * 5,
+            "uplift": [100] * 5,
+        })
+        result = compute_intent_weighted_cvr(df, 2.0)
+        assert result < 2.0
+
+    def test_mixed_intent_is_between(self):
+        from engine.revenue_engine import compute_intent_weighted_cvr
+        df = pd.DataFrame({
+            "primary_intent": ["commercial", "informational"],
+            "uplift": [100, 100],
+        })
+        result = compute_intent_weighted_cvr(df, 2.0)
+        assert 2.0 * 0.3 < result < 2.0 * 1.5
+
+    def test_empty_returns_base(self):
+        from engine.revenue_engine import compute_intent_weighted_cvr
+        df = pd.DataFrame({"primary_intent": [], "uplift": []})
+        assert compute_intent_weighted_cvr(df, 2.5) == 2.5
+
+    def test_intent_col_fallback(self):
+        """New content engine uses 'intent' not 'primary_intent'."""
+        from engine.revenue_engine import compute_intent_weighted_cvr
+        df = pd.DataFrame({
+            "intent": ["commercial"] * 3,
+            "estimated_monthly_traffic": [200] * 3,
+        })
+        result = compute_intent_weighted_cvr(df, 2.0)
+        assert result == pytest.approx(2.0 * 1.5, rel=0.01)
+
+    def test_breakdown_table(self):
+        from engine.revenue_engine import intent_revenue_breakdown
+        df = pd.DataFrame({
+            "primary_intent": ["commercial", "transactional", "informational"],
+            "uplift": [1000, 500, 300],
+        })
+        table = intent_revenue_breakdown(df, 2.0, 100.0)
+        assert not table.empty
+        assert "Intent" in table.columns
+        assert "Monthly Revenue" in table.columns
+        assert len(table) == 4  # one row per intent in INTENT_CVR_MULTIPLIERS

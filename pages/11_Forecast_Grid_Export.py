@@ -7,10 +7,16 @@ from engine.revenue_engine import add_revenue, CURRENCY_SYMBOLS
 from utils.forecast_grid import build_seo_forecast_grid
 from utils.export import to_csv
 from utils.sidebar import render_ai_settings
+from utils.assumptions_panel import render_assumptions_banner
+from engine.assumptions import initialise_assumptions, get_assumption
 
 st.header("Forecast Grid Export")
 st.caption("Download the SEO row for the multi-channel plan in GAZMAN format.")
 render_ai_settings()
+
+store = st.session_state.setdefault("assumptions", {})
+initialise_assumptions(store)
+render_assumptions_banner(store)
 
 # -- Source selector ----------------------------------------------------------
 sources = []
@@ -27,6 +33,23 @@ if not sources:
 
 source = st.selectbox("Forecast Source", sources, key="grid_source")
 
+# -- Scenario selector for band-aware sources --------------------------------
+scenario_options = {"Conservative (P10)": "p10", "Median (P50)": "p50", "Aggressive (P90)": "p90"}
+has_bands = False
+
+if source == "Combined Forecast":
+    comb_df = st.session_state["comb_results"]["combined_df"]
+    has_bands = "combined_p10" in comb_df.columns
+elif source == "Positional Forecast":
+    pos_monthly = st.session_state["pos_result"]["monthly"]
+    has_bands = "traffic_p10" in pos_monthly.columns
+
+if has_bands:
+    scenario_label = st.selectbox("Scenario", list(scenario_options.keys()), index=1, key="grid_scenario")
+    scenario = scenario_options[scenario_label]
+else:
+    scenario = "p50"
+
 # -- Extract monthly traffic based on source ----------------------------------
 monthly_traffic = []
 
@@ -34,12 +57,14 @@ if source == "Combined Forecast":
     comb = st.session_state["comb_results"]
     combined_df = comb["combined_df"]
     forecast_rows = combined_df[combined_df["is_forecast"]]
-    monthly_traffic = forecast_rows["combined"].tolist()
+    col = f"combined_{scenario}" if f"combined_{scenario}" in forecast_rows.columns else "combined"
+    monthly_traffic = forecast_rows[col].tolist()
 
 elif source == "Positional Forecast":
     pos = st.session_state["pos_result"]
     pos_monthly = pos["monthly"]
-    monthly_traffic = pos_monthly["traffic"].tolist()
+    col = f"traffic_{scenario}" if f"traffic_{scenario}" in pos_monthly.columns else "traffic"
+    monthly_traffic = pos_monthly[col].tolist()
 
 elif source == "Historical Forecast":
     hist = st.session_state["hist_results"]
@@ -59,17 +84,10 @@ n_months = len(monthly_traffic)
 # -- Sidebar settings ---------------------------------------------------------
 st.sidebar.header("Grid Settings")
 
-# Auto-populate CVR and AOV from ga4_df if available
-ga4_df = st.session_state.get("ga4_df")
-default_cvr = 2.5
-default_aov = 100.0
-if ga4_df is not None:
-    if "transactions" in ga4_df.columns and ga4_df["traffic"].sum() > 0:
-        default_cvr = round(
-            (ga4_df["transactions"].sum() / ga4_df["traffic"].sum()) * 100, 2
-        )
-    if "aov" in ga4_df.columns and ga4_df["aov"].notna().any():
-        default_aov = round(float(ga4_df["aov"].dropna().mean()), 2)
+# Defaults from assumptions store (populated from GA4 detection if data was uploaded)
+default_cvr = float(get_assumption(store, "blended_cr_pct"))
+default_aov = float(get_assumption(store, "aov"))
+default_cur = str(get_assumption(store, "currency"))
 
 cvr = st.sidebar.number_input(
     "Conversion Rate (%)", 0.1, 100.0, default_cvr, step=0.1, key="grid_cvr"
@@ -77,8 +95,10 @@ cvr = st.sidebar.number_input(
 aov = st.sidebar.number_input(
     "Average Order Value", 1.0, 100000.0, default_aov, step=10.0, key="grid_aov"
 )
+_cur_options = list(CURRENCY_SYMBOLS.keys())
+_cur_idx = _cur_options.index(default_cur) if default_cur in _cur_options else 0
 currency = st.sidebar.selectbox(
-    "Currency", list(CURRENCY_SYMBOLS.keys()), key="grid_currency"
+    "Currency", _cur_options, index=_cur_idx, key="grid_currency"
 )
 sym = CURRENCY_SYMBOLS.get(currency, "$")
 client_name = st.sidebar.text_input("Client Name", value="", key="grid_client")

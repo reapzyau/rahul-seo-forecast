@@ -2,9 +2,25 @@
 
 Calculates CTR erosion risk from Google AI Overviews appearing for
 SEMrush keyword data, and generates actionable recommendations.
+
+v3 adds time-varying erosion: AIO coverage spreads ~2-3% of queries
+per month, so a forecast-horizon projection shows increasing loss.
 """
 
+import numpy as np
 import pandas as pd
+
+
+# ── Time-varying AIO erosion constants ─────────────────────────────────────
+
+DEFAULT_MONTHLY_AIO_GROWTH = 0.025  # 2.5% per month
+
+INTENT_AIO_CTR_PENALTY = {
+    "informational": 0.45,
+    "commercial": 0.15,
+    "transactional": 0.05,
+    "navigational": 0.00,
+}
 
 
 def calculate_aio_risk(df: pd.DataFrame, ctr_penalty_pct: float = 40.0) -> dict:
@@ -123,3 +139,66 @@ def aio_recommendations(risk: dict) -> list[str]:
             )
 
     return recommendations
+
+
+# ── Time-varying AIO erosion ───────────────────────────────────────────────
+
+
+def project_aio_erosion(
+    keyword_df: pd.DataFrame,
+    months: int,
+    monthly_growth: float = DEFAULT_MONTHLY_AIO_GROWTH,
+    intent_penalties: dict | None = None,
+) -> pd.DataFrame:
+    """Project per-month traffic loss from spreading AIO coverage.
+
+    Two components:
+      1. Keywords already flagged with AIO lose CTR from month 1.
+      2. Additional keywords become AIO-affected over time at monthly_growth rate.
+
+    Returns:
+        DataFrame with month, aio_affected_count, monthly_erosion, cumulative_erosion.
+    """
+    if keyword_df.empty:
+        return pd.DataFrame({
+            "month": range(1, months + 1),
+            "aio_affected_count": [0] * months,
+            "monthly_erosion": [0] * months,
+            "cumulative_erosion": [0] * months,
+        })
+
+    penalties = intent_penalties or INTENT_AIO_CTR_PENALTY
+    df = keyword_df.copy()
+    df["penalty"] = df["primary_intent"].map(lambda i: penalties.get(i, 0.10))
+    df["current_traffic"] = df.get("current_traffic", pd.Series([0] * len(df))).fillna(0)
+
+    initially_affected = df["has_aio"].astype(bool)
+    already_traffic = df.loc[initially_affected, "current_traffic"].values.astype(float)
+    already_penalties = df.loc[initially_affected, "penalty"].values
+    newcomer_traffic = df.loc[~initially_affected, "current_traffic"].values.astype(float)
+    newcomer_penalties = df.loc[~initially_affected, "penalty"].values
+    n_initially = int(initially_affected.sum())
+    n_newcomers = int((~initially_affected).sum())
+
+    rows = []
+    prev_cumulative = 0
+    for m in range(1, months + 1):
+        p_affected_by_m = 1.0 - (1.0 - monthly_growth) ** m
+
+        already_loss = float((already_traffic * already_penalties).sum())
+        newcomer_loss = float((newcomer_traffic * newcomer_penalties).sum()) * p_affected_by_m
+
+        cumulative_erosion = int(already_loss + newcomer_loss)
+        monthly_loss = cumulative_erosion - prev_cumulative
+        prev_cumulative = cumulative_erosion
+
+        affected_count = n_initially + int(n_newcomers * p_affected_by_m)
+
+        rows.append({
+            "month": m,
+            "aio_affected_count": affected_count,
+            "monthly_erosion": monthly_loss,
+            "cumulative_erosion": cumulative_erosion,
+        })
+
+    return pd.DataFrame(rows)
