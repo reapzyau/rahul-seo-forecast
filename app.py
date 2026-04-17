@@ -15,13 +15,17 @@ render_ai_settings()
 st.markdown("""
 Choose a forecasting mode from the sidebar:
 
-- **Keyword Forecast** — Project traffic from target keywords (no historical data needed)
+- **Data Upload** — Upload GA4 organic and SEMrush keyword exports (used across all pages)
+- **Positional Forecast** — Project uplift from moving existing keywords up the SERP
+- **New Content Forecast** — Project traffic from new content targeting new keywords
 - **Historical Forecast** — Project traffic from your past organic data
-- **Combined Forecast** — Layer new content projections onto your existing traffic baseline
-- **Seasonality** — Apply monthly modifiers and campaign events to your forecast
-- **Content Roadmap** — AI-powered content planning and prioritization
+- **Combined Forecast** — Layer historical baseline + positional + new content
+- **Seasonality** — Apply monthly modifiers and campaign events
+- **AI Overview Risk** — Traffic at risk from AIO, with action recommendations
 - **Keyword Pipeline** — Track keyword distribution across SERP pages over time
-- **Budget Roadmap** — SEO task allocation and monthly budget planning
+- **Content Roadmap** — AI-powered content planning and prioritization
+- **SEO Roadmap** — Month-by-month task allocation in the GAZMAN format
+- **Forecast Grid Export** — Forecast / Actual / % Variance grid for the multi-channel plan
 - **Methodology** — How the models work
 """)
 
