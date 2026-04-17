@@ -38,7 +38,7 @@ class TestKeywordLoader:
     def test_reads_semrush_sample(self, semrush_sample_path):
         df = load_keyword_portfolio(semrush_sample_path)
         assert df is not None
-        assert len(df) > 100
+        assert len(df) > 5000  # Cable Melbourne sample has ~9682 keywords
         assert "keyword" in df.columns
         assert "position" in df.columns
         assert "volume" in df.columns
