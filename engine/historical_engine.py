@@ -63,38 +63,39 @@ def exponential_smoothing_forecast(
     alpha: float,
     future_months: int,
 ) -> list[float]:
-    """Simple exponential smoothing with extrapolation.
+    """Holt's linear trend (double exponential smoothing).
+
+    Tracks level and trend as separate components so the forecast
+    genuinely diverges from simple linear regression on non-linear data.
 
     Args:
         traffic: Historical traffic values.
-        alpha: Smoothing factor (0-1).
+        alpha: Level smoothing factor (0-1).
         future_months: Number of months to forecast.
 
     Returns:
         List of smoothed historical values + forecasted values.
     """
     values = traffic.values.astype(float)
-    smoothed = [values[0]]
+    n = len(values)
+    beta = 0.1  # trend smoothing factor
 
-    for i in range(1, len(values)):
-        s = alpha * values[i] + (1 - alpha) * smoothed[-1]
-        smoothed.append(s)
+    level = values[0]
+    trend = (values[1] - values[0]) if n > 1 else 0.0
 
-    # Extrapolate: calculate average trend from smoothed series
-    if len(smoothed) >= 2:
-        diffs = [smoothed[i] - smoothed[i - 1] for i in range(1, len(smoothed))]
-        # Weight recent diffs more heavily
-        weights = np.arange(1, len(diffs) + 1, dtype=float)
-        avg_trend = np.average(diffs, weights=weights)
-    else:
-        avg_trend = 0
+    smoothed = [level]
+    for i in range(1, n):
+        prev_level = level
+        level = alpha * values[i] + (1 - alpha) * (level + trend)
+        trend = beta * (level - prev_level) + (1 - beta) * trend
+        smoothed.append(level)
 
-    last_smoothed = smoothed[-1]
-    for j in range(1, future_months + 1):
-        next_val = max(0, last_smoothed + avg_trend * j)
-        smoothed.append(next_val)
+    # Forecast h steps ahead: F_{t+h} = L_t + h * T_t
+    result = list(smoothed)
+    for h in range(1, future_months + 1):
+        result.append(max(0.0, level + h * trend))
 
-    return [round(v) for v in smoothed]
+    return [round(v) for v in result]
 
 
 def sma_forecast(

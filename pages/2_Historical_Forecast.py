@@ -109,6 +109,7 @@ if "hist_results" in st.session_state:
 
     tabs = st.tabs(tab_names)
     tab_idx = 0
+    sym = CURRENCY_SYMBOLS.get(r["currency"], "$")
 
     # ── Tab: Forecast Chart ──────────────────────────────────────────────
     with tabs[tab_idx]:
@@ -143,7 +144,7 @@ if "hist_results" in st.session_state:
             col_idx = 0
             if "revenue_forecast" in result.columns:
                 end_rev = forecast_rows["revenue_forecast"].iloc[-1]
-                ext_cols[col_idx].metric("Projected Revenue", f"${end_rev:,.0f}")
+                ext_cols[col_idx].metric("Projected Revenue", f"{sym}{end_rev:,.0f}")
                 col_idx += 1
             if "transactions_forecast" in result.columns:
                 end_trans = forecast_rows["transactions_forecast"].iloc[-1]
@@ -151,7 +152,7 @@ if "hist_results" in st.session_state:
                 col_idx += 1
             if "aov_forecast" in result.columns:
                 end_aov = forecast_rows["aov_forecast"].iloc[-1]
-                ext_cols[col_idx].metric("Projected AOV", f"${end_aov:,.2f}")
+                ext_cols[col_idx].metric("Projected AOV", f"{sym}{end_aov:,.2f}")
                 col_idx += 1
             if "cr_forecast" in result.columns:
                 end_cr = forecast_rows["cr_forecast"].iloc[-1]

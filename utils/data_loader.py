@@ -60,25 +60,62 @@ def _match_column(df_columns: list[str], aliases: dict[str, str]) -> str | None:
     return None
 
 
+_TRAFFIC_SHEET_NAMES = {
+    "sessions", "traffic", "visits", "organic traffic", "organic sessions",
+    "organic", "clicks", "gsc", "ga", "analytics",
+}
+
+
+def _pick_excel_sheet(xl: "pd.ExcelFile") -> tuple[pd.DataFrame, str]:
+    """Return (df, sheet_name) for the most traffic-relevant sheet.
+
+    Priority: sheet name match → column name match → first sheet.
+    """
+    sheets = xl.sheet_names
+    traffic_col_keys = set(TRAFFIC_COL_ALIASES.keys())
+
+    for sheet in sheets:
+        if sheet.lower().strip() in _TRAFFIC_SHEET_NAMES:
+            return xl.parse(sheet), sheet
+
+    for sheet in sheets:
+        df = xl.parse(sheet)
+        lower_cols = {c.lower().strip() for c in df.columns}
+        if lower_cols & traffic_col_keys:
+            return df, sheet
+
+    return xl.parse(sheets[0]), sheets[0]
+
+
 def _read_file(file) -> pd.DataFrame | None:
-    """Read a CSV, TSV, or Excel file, return DataFrame or None."""
+    """Read a CSV, TSV, or Excel file, return DataFrame or None.
+
+    For multi-sheet Excel files, selects the most traffic-relevant sheet.
+    """
     try:
         if isinstance(file, str):
             if file.endswith((".xlsx", ".xls")):
-                return pd.read_excel(file)
+                xl = pd.ExcelFile(file)
+                df, _ = _pick_excel_sheet(xl)
+                return df
             if file.endswith(".tsv"):
                 return pd.read_csv(file, sep="\t")
-            df = pd.read_csv(file, sep=None, engine="python")
-            return df
-        # Uploaded file object
+            return pd.read_csv(file, sep=None, engine="python")
+
         name = getattr(file, "name", "").lower()
         if name.endswith((".xlsx", ".xls")):
-            return pd.read_excel(file)
+            xl = pd.ExcelFile(file)
+            df, chosen_sheet = _pick_excel_sheet(xl)
+            if len(xl.sheet_names) > 1:
+                st.info(
+                    f"Multi-sheet workbook — reading **{chosen_sheet}** sheet "
+                    f"(available: {', '.join(xl.sheet_names)}). "
+                    "Rename your traffic sheet to 'Sessions' or 'Traffic' to ensure correct selection."
+                )
+            return df
         if name.endswith(".tsv"):
             return pd.read_csv(file, sep="\t")
-        # Auto-detect separator (handles CSV and TSV)
-        df = pd.read_csv(file, sep=None, engine="python")
-        return df
+        return pd.read_csv(file, sep=None, engine="python")
     except Exception as e:
         st.error(f"Could not read file: {e}")
         return None
@@ -173,8 +210,10 @@ def _try_ai_transform(raw_df: pd.DataFrame, target_format: str, data_type: str) 
 
     try:
         with st.spinner("AI is analyzing your data format..."):
-            code = transform_data(client, raw_df, target_format, model)
+            code, used_model = transform_data(client, raw_df, target_format, model)
 
+        if used_model != model:
+            st.info(f"Fell back to {used_model} — selected model was unavailable")
         with st.expander("AI-generated transform code", expanded=False):
             st.code(code, language="python")
 

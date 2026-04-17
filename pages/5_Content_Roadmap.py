@@ -26,11 +26,12 @@ st.subheader("Existing Roadmap (Optional)")
 st.caption("Upload your current content roadmap to provide context for AI recommendations.")
 roadmap_file = st.file_uploader("Upload roadmap file", type=["csv", "tsv", "xlsx", "xls"], key="roadmap_upload")
 
-existing_roadmap = None
+existing_roadmap_csv = None
 if roadmap_file is not None:
     try:
         existing_roadmap = pd.read_csv(roadmap_file)
-        st.success(f"Loaded {len(existing_roadmap)} rows from existing roadmap")
+        existing_roadmap_csv = existing_roadmap.to_csv(index=False)
+        st.success(f"Loaded {len(existing_roadmap)} rows from existing roadmap — AI will avoid duplicating these topics")
         st.dataframe(existing_roadmap.head(10), use_container_width=True, hide_index=True)
     except Exception as e:
         st.error(f"Could not read roadmap CSV: {e}")
@@ -62,7 +63,9 @@ with col2:
 if st.button("Generate AI Content Roadmap", type="primary", key="roadmap_generate"):
     with st.spinner("AI is analyzing your keywords and building a content roadmap..."):
         try:
-            roadmap = generate_content_roadmap(client, keyword_df, roadmap_months, ai_model)
+            roadmap, used_model = generate_content_roadmap(client, keyword_df, roadmap_months, ai_model, existing_roadmap_csv)
+            if used_model != ai_model:
+                st.info(f"Fell back to {used_model} — selected model was unavailable")
             st.session_state["content_roadmap"] = roadmap
         except Exception as e:
             st.error(f"Roadmap generation failed: {e}")

@@ -243,10 +243,28 @@ class TestExponentialSmoothing:
         assert len(result) == 8  # 5 historical + 3 forecast
 
     def test_weights_recent_data(self):
-        # Sudden jump: smoothed should follow the jump direction
         traffic = pd.Series([100, 100, 100, 100, 200])
         result = exponential_smoothing_forecast(traffic, alpha=0.5, future_months=1)
-        assert result[-1] > 100  # Forecast should be above baseline
+        assert result[-1] > 100
+
+    def test_upward_trend_extrapolates_upward(self):
+        """Holt's method should continue the trend, not plateau."""
+        traffic = pd.Series([100, 110, 120, 130, 140, 150])
+        result = exponential_smoothing_forecast(traffic, alpha=0.3, future_months=3)
+        # Each forecast step should be higher than the previous
+        assert result[-1] > result[-2] > result[-3]
+
+    def test_forecast_differs_from_flat(self):
+        """Consecutive forecast values must not all be equal (flat-line bug check)."""
+        traffic = pd.Series([100, 120, 140, 160, 180])
+        result = exponential_smoothing_forecast(traffic, alpha=0.3, future_months=3)
+        forecast = result[5:]
+        assert len(set(forecast)) > 1  # values are not all identical
+
+    def test_no_negative_values(self):
+        traffic = pd.Series([500, 400, 300, 200, 100])
+        result = exponential_smoothing_forecast(traffic, alpha=0.5, future_months=6)
+        assert all(v >= 0 for v in result)
 
 
 class TestSmaForecast:
@@ -620,6 +638,43 @@ class TestTemplates:
         df = pd.read_csv(io.StringIO(keyword_template_csv()))
         assert (df["volume"] > 0).all()
         assert (df["kd"] >= 0).all()
+
+
+class TestModelsConfig:
+    def test_config_loads(self):
+        from engine.ai_engine import get_model_options, get_default_model, get_fallback_chain
+        models = get_model_options()
+        assert len(models) > 0
+        assert all("id" in m and "label" in m for m in models)
+
+    def test_default_model_in_list(self):
+        from engine.ai_engine import get_model_options, get_default_model
+        default = get_default_model()
+        ids = [m["id"] for m in get_model_options()]
+        assert default in ids
+
+    def test_fallback_chain_valid(self):
+        from engine.ai_engine import get_model_options, get_fallback_chain
+        chain = get_fallback_chain()
+        assert len(chain) >= 2
+        ids = [m["id"] for m in get_model_options()]
+        for model in chain:
+            assert model in ids
+
+
+class TestPromptLoader:
+    def test_all_prompts_load(self):
+        from engine.ai_engine import _load_prompt
+        for name in ["cluster_keywords", "check_cannibalization", "content_roadmap", "transform_data"]:
+            system, user_tmpl = _load_prompt(name)
+            assert len(system) > 20
+            assert user_tmpl.template
+
+    def test_prompt_substitution(self):
+        from engine.ai_engine import _load_prompt
+        system, user_tmpl = _load_prompt("cluster_keywords")
+        result = user_tmpl.substitute(kw_list="- test keyword")
+        assert "test keyword" in result
 
 
 class TestDataLoaderHelpers:

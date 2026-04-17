@@ -29,7 +29,7 @@ def expected_position(da: int, kd: int, seed: int) -> int:
     Higher DA relative to KD yields positions closer to 1.
     The gap between DA and KD defines the range of possible positions.
     """
-    rng = np.random.RandomState(seed)
+    rng = np.random.default_rng(seed)
     gap = da - kd
 
     if gap >= 30:
@@ -45,7 +45,7 @@ def expected_position(da: int, kd: int, seed: int) -> int:
     else:
         low, high = 12, 20
 
-    return int(rng.randint(low, high + 1))
+    return int(rng.integers(low, high + 1))
 
 
 def classify_intent(keyword: str) -> str:
@@ -115,9 +115,9 @@ def get_ctr(position: int, ctr_model: dict | None = None) -> float:
 
 def time_to_rank_months(tier: str, da: int, seed: int) -> int:
     """Calculate months to rank, adjusted by DA, with seeded randomness."""
-    rng = np.random.RandomState(seed)
+    rng = np.random.default_rng(seed)
     low, high = TIME_TO_RANK[tier]
-    base = int(rng.randint(low, high + 1))
+    base = int(rng.integers(low, high + 1))
     # DA adjustment: higher DA speeds things up slightly
     adjustment = (da - 50) / 100  # ranges roughly -0.5 to +0.5
     adjusted = max(1, round(base - adjustment * 2))
@@ -186,7 +186,7 @@ def run_keyword_forecast(
         kw_seed = seed + i
         prob = ranking_probability(da, row["kd"])
         probabilities.append(prob)
-        rng = np.random.RandomState(kw_seed + 1000)
+        rng = np.random.default_rng(kw_seed + 1000)
         roll = rng.random()
         ranks.append(roll <= prob)
 

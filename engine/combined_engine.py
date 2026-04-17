@@ -42,10 +42,13 @@ def run_combined_forecast(
             "is_forecast": False,
         })
 
+    # Precompute forecast slice once — avoids O(months²) boolean mask rebuilds
+    baseline_forecast = baseline_df[baseline_df["is_forecast"]].reset_index(drop=True)
+
     # Forecast portion
     for j in range(1, months + 1):
         forecast_date = last_date + pd.DateOffset(months=j)
-        baseline_val = baseline_df[baseline_df["is_forecast"]].iloc[j - 1]["linear"]
+        baseline_val = baseline_forecast.iloc[j - 1]["linear"]
 
         # Get incremental traffic from keyword engine for this month
         kw_row = monthly_kw_df[monthly_kw_df["month"] == j]
