@@ -371,7 +371,7 @@ def load_traffic(file) -> pd.DataFrame | None:
     Returns:
         Validated DataFrame sorted chronologically, or None on failure.
     """
-    # Multi-sheet Excel: merge all metric sheets natively
+    # Multi-sheet Excel: merge all metric sheets natively, fall back to AI
     name = getattr(file, "name", "").lower() if not isinstance(file, str) else file.lower()
     if name.endswith((".xlsx", ".xls")):
         xl = pd.ExcelFile(file)
@@ -379,7 +379,20 @@ def load_traffic(file) -> pd.DataFrame | None:
             merged = _merge_traffic_sheets(xl)
             if merged is not None:
                 return _validate_traffic_df(merged)
-        # Reset file pointer for fallback path
+            # Native merge failed — try AI transform on the best single sheet
+            best_df, best_sheet = _pick_excel_sheet(xl)
+            st.info(
+                f"Could not auto-merge sheets — trying AI transform on **{best_sheet}** sheet "
+                f"(available: {', '.join(xl.sheet_names)})"
+            )
+            ai_result = _try_ai_transform(best_df, TRAFFIC_TARGET_FORMAT, "traffic")
+            if ai_result is not None:
+                return _validate_traffic_df(ai_result)
+            st.error(
+                "Could not load traffic data. Try renaming your sheets to: "
+                "Sessions (or Traffic), Revenue, Transactions, AOV."
+            )
+            return None
         if hasattr(file, "seek"):
             file.seek(0)
 
