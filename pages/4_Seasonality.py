@@ -44,31 +44,47 @@ else:
     st.error("No forecast data available.")
     st.stop()
 
-# ── Sidebar: Seasonality Settings ────────────────────────────────────────────
-st.sidebar.header("Seasonality Settings")
+# ── Monthly Modifiers (main body, editable table) ─────────────────────────────
+st.subheader("Monthly Modifiers")
+st.caption("Edit the traffic modifier for each month. Positive = boost, negative = reduction.")
 
-st.sidebar.subheader("Monthly Modifiers")
-st.sidebar.caption("Adjust traffic % modifier for each month")
+modifier_rows = []
+for m in range(1, 13):
+    d = DEFAULT_SEASONALITY[m]
+    modifier_rows.append({
+        "Month": d["label"].split(" (")[0],
+        "Description": d["label"],
+        "Traffic Modifier (%)": round(d["traffic_mod"] * 100, 1),
+    })
+modifier_defaults = pd.DataFrame(modifier_rows)
+
+edited_modifiers = st.data_editor(
+    modifier_defaults,
+    column_config={
+        "Month": st.column_config.TextColumn(disabled=True, width="small"),
+        "Description": st.column_config.TextColumn(disabled=True),
+        "Traffic Modifier (%)": st.column_config.NumberColumn(
+            min_value=-50.0, max_value=100.0, step=0.5, format="%.1f",
+        ),
+    },
+    hide_index=True,
+    use_container_width=True,
+    key="season_modifier_editor",
+)
 
 custom_seasonality = {}
 for m in range(1, 13):
     default = DEFAULT_SEASONALITY[m]
-    mod = st.sidebar.slider(
-        default["label"][:20],
-        -0.50, 0.50,
-        default["traffic_mod"],
-        step=0.01,
-        key=f"season_mod_{m}",
-        help=default["label"],
-    )
+    mod_pct = float(edited_modifiers.iloc[m - 1]["Traffic Modifier (%)"])
     custom_seasonality[m] = {
         "label": default["label"],
-        "traffic_mod": mod,
+        "traffic_mod": mod_pct / 100,
         "cr_mod": default["cr_mod"],
         "aov_mod": default["aov_mod"],
     }
 
-st.sidebar.divider()
+# ── Sidebar: Campaign Events & Revenue ────────────────────────────────────────
+st.sidebar.header("Seasonality Settings")
 st.sidebar.subheader("Campaign Events")
 st.sidebar.caption("Format: Name | Month | Traffic Boost | CR Boost | AOV Boost")
 
@@ -86,6 +102,8 @@ st.sidebar.subheader("Revenue Settings")
 base_cr = st.sidebar.number_input("Base CR%", 0.1, 20.0, 2.5, step=0.1, key="season_cr")
 base_aov = st.sidebar.number_input("Base AOV ($)", 1.0, 1000.0, 150.0, step=5.0, key="season_aov")
 currency = st.sidebar.selectbox("Currency", list(CURRENCY_SYMBOLS.keys()), key="season_cur")
+
+st.divider()
 
 # ── Apply seasonality ────────────────────────────────────────────────────────
 if st.button("Apply Seasonality", type="primary", key="season_apply"):

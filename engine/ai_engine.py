@@ -133,6 +133,7 @@ def generate_content_roadmap(
     keyword_df: pd.DataFrame,
     months: int,
     model: str = "openai/gpt-5.4-mini",
+    existing_roadmap_csv: str | None = None,
 ) -> list[dict]:
     """Generate an AI-powered content roadmap from keyword forecast data."""
     cols = ["keyword", "volume", "kd", "tier", "intent", "efficiency_score",
@@ -140,6 +141,10 @@ def generate_content_roadmap(
     available = [c for c in cols if c in keyword_df.columns]
     summary_df = keyword_df[available].head(50)
     data_str = summary_df.to_csv(index=False)
+
+    existing_ctx = ""
+    if existing_roadmap_csv:
+        existing_ctx = f"\n\nExisting roadmap for context (avoid duplicating these topics):\n{existing_roadmap_csv[:3000]}"
 
     text = _call_bifrost(
         client, model,
@@ -150,7 +155,7 @@ def generate_content_roadmap(
             "from AI Overviews. Return valid JSON only, no markdown fences."
         ),
         user_input=(
-            f"Keyword forecast data (top 50 by efficiency):\n\n{data_str}\n\n"
+            f"Keyword forecast data (top 50 by efficiency):\n\n{data_str}{existing_ctx}\n\n"
             f"Create a {months}-month content roadmap. Return JSON:\n"
             '[{"month": 1, "content_pieces": [{"title": "...", '
             '"target_keywords": ["kw1", "kw2"], "estimated_traffic": 1000, '
@@ -242,8 +247,29 @@ def transform_data(
     return _strip_code_fences(code)
 
 
+_BLOCKED_CODE_PATTERNS = [
+    "import os", "import sys", "import subprocess", "import socket",
+    "import shutil", "import pathlib", "import tempfile", "import glob",
+    "__import__", "__builtins__", "open(", "eval(", "exec(",
+    "os.system", "os.popen", "os.environ", "subprocess.", "shutil.",
+    "globals()", "locals()", "compile(",
+]
+
+_SAFE_BUILTINS = {
+    "len": len, "range": range, "int": int, "float": float, "str": str,
+    "list": list, "dict": dict, "tuple": tuple, "bool": bool,
+    "zip": zip, "enumerate": enumerate, "sorted": sorted,
+    "min": min, "max": max, "sum": sum, "abs": abs, "round": round,
+    "isinstance": isinstance, "print": print, "None": None,
+    "True": True, "False": False,
+}
+
+
 def execute_transform(df: pd.DataFrame, code: str) -> pd.DataFrame:
-    """Safely execute AI-generated transform code.
+    """Execute AI-generated transform code with restricted builtins.
+
+    Blocks dangerous patterns (os, subprocess, open, eval, exec, etc.)
+    before running the code in an isolated namespace.
 
     Args:
         df: Source DataFrame.
@@ -253,10 +279,14 @@ def execute_transform(df: pd.DataFrame, code: str) -> pd.DataFrame:
         Transformed DataFrame.
 
     Raises:
-        Exception: If code execution fails.
+        ValueError: If blocked patterns detected or result is invalid.
     """
-    namespace = {"df": df.copy(), "pd": pd, "np": np}
-    exec(code, namespace)
+    for pattern in _BLOCKED_CODE_PATTERNS:
+        if pattern in code:
+            raise ValueError(f"Generated code contains disallowed pattern: {pattern!r}")
+
+    namespace = {"df": df.copy(), "pd": pd, "np": np, "__builtins__": _SAFE_BUILTINS}
+    exec(code, namespace)  # noqa: S102
     result = namespace.get("result")
     if result is None:
         raise ValueError("Transform code did not produce a 'result' variable")

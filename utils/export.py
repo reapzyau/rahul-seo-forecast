@@ -3,7 +3,7 @@ import plotly.graph_objects as go
 import plotly.io as pio
 
 
-def to_csv(df, filename: str = "export.csv") -> bytes:
+def to_csv(df) -> bytes:
     """Convert DataFrame to CSV bytes for st.download_button."""
     buffer = io.BytesIO()
     df.to_csv(buffer, index=False)

@@ -243,10 +243,28 @@ class TestExponentialSmoothing:
         assert len(result) == 8  # 5 historical + 3 forecast
 
     def test_weights_recent_data(self):
-        # Sudden jump: smoothed should follow the jump direction
         traffic = pd.Series([100, 100, 100, 100, 200])
         result = exponential_smoothing_forecast(traffic, alpha=0.5, future_months=1)
-        assert result[-1] > 100  # Forecast should be above baseline
+        assert result[-1] > 100
+
+    def test_upward_trend_extrapolates_upward(self):
+        """Holt's method should continue the trend, not plateau."""
+        traffic = pd.Series([100, 110, 120, 130, 140, 150])
+        result = exponential_smoothing_forecast(traffic, alpha=0.3, future_months=3)
+        # Each forecast step should be higher than the previous
+        assert result[-1] > result[-2] > result[-3]
+
+    def test_forecast_differs_from_flat(self):
+        """Consecutive forecast values must not all be equal (flat-line bug check)."""
+        traffic = pd.Series([100, 120, 140, 160, 180])
+        result = exponential_smoothing_forecast(traffic, alpha=0.3, future_months=3)
+        forecast = result[5:]
+        assert len(set(forecast)) > 1  # values are not all identical
+
+    def test_no_negative_values(self):
+        traffic = pd.Series([500, 400, 300, 200, 100])
+        result = exponential_smoothing_forecast(traffic, alpha=0.5, future_months=6)
+        assert all(v >= 0 for v in result)
 
 
 class TestSmaForecast:

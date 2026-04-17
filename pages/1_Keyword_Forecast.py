@@ -266,7 +266,7 @@ if "kw_results" in st.session_state:
         # Wasted slots callout
         unlikely = keyword_df[~keyword_df["will_rank"]].head(5)
         if not unlikely.empty:
-            st.warning("**Keywords unlikely to rank** — consider deferring these:")
+            st.info("💡 **Keywords unlikely to rank at this DA** — consider deferring these or raising DA:")
             for _, row in unlikely.iterrows():
                 st.markdown(f"- **{row['keyword']}** (KD: {row['kd']}, Volume: {row['volume']:,})")
 
