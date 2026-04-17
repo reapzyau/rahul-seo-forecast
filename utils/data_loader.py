@@ -79,6 +79,15 @@ _TRAFFIC_SHEET_NAMES = {
     "organic", "clicks", "gsc", "ga", "analytics",
 }
 
+_SHEET_METRIC_MAP = {
+    "sessions": "traffic", "traffic": "traffic", "visits": "traffic",
+    "clicks": "traffic",
+    "revenue": "revenue",
+    "transactions": "transactions", "orders": "transactions",
+    "conversions": "transactions",
+    "average order value": "aov", "aov": "aov",
+}
+
 
 def _pick_excel_sheet(xl: "pd.ExcelFile") -> tuple[pd.DataFrame, str]:
     """Return (df, sheet_name) for the most traffic-relevant sheet.
@@ -99,6 +108,72 @@ def _pick_excel_sheet(xl: "pd.ExcelFile") -> tuple[pd.DataFrame, str]:
             return df, sheet
 
     return xl.parse(sheets[0]), sheets[0]
+
+
+def _aggregate_sheet(df: pd.DataFrame, date_col: str, metric_col: str) -> pd.DataFrame:
+    """Aggregate a sheet by date, summing the metric across rows (e.g. channel groups)."""
+    agg = df[[date_col, metric_col]].copy()
+    agg[metric_col] = pd.to_numeric(agg[metric_col], errors="coerce")
+    agg = agg.dropna(subset=[metric_col])
+    return agg.groupby(date_col, as_index=False)[metric_col].sum()
+
+
+def _merge_traffic_sheets(xl: "pd.ExcelFile") -> pd.DataFrame | None:
+    """Read all metric sheets from a multi-sheet workbook and merge by date.
+
+    Each sheet should have a date column and one numeric metric column.
+    Sheets are mapped to standard column names (traffic, revenue, transactions, aov)
+    via _SHEET_METRIC_MAP. Rows are aggregated (summed) per date first.
+    """
+    merged = None
+    sheets_used = []
+
+    for sheet_name in xl.sheet_names:
+        sheet_lower = sheet_name.lower().strip()
+        target_col = None
+        for alias, standard in _SHEET_METRIC_MAP.items():
+            if alias in sheet_lower:
+                target_col = standard
+                break
+        if target_col is None:
+            continue
+
+        df = xl.parse(sheet_name)
+        if df.empty:
+            continue
+
+        date_col = _match_column(df.columns.tolist(), DATE_COL_ALIASES)
+        if not date_col:
+            continue
+
+        numeric_cols = df.select_dtypes(include="number").columns.tolist()
+        if not numeric_cols:
+            for col in df.columns:
+                if col == date_col:
+                    continue
+                coerced = pd.to_numeric(df[col], errors="coerce")
+                if coerced.notna().sum() > len(df) * 0.3:
+                    df[col] = coerced
+                    numeric_cols = [col]
+                    break
+        if not numeric_cols:
+            continue
+
+        metric_col = numeric_cols[-1]
+        agg_df = _aggregate_sheet(df, date_col, metric_col)
+        agg_df = agg_df.rename(columns={date_col: "date", metric_col: target_col})
+
+        if merged is None:
+            merged = agg_df
+        elif target_col not in merged.columns:
+            merged = merged.merge(agg_df, on="date", how="outer")
+
+        sheets_used.append(f"{sheet_name} → {target_col}")
+
+    if merged is not None and "traffic" in merged.columns:
+        st.info(f"Merged **{len(sheets_used)} sheets**: {', '.join(sheets_used)}")
+        return merged
+    return None
 
 
 def _read_file(file) -> pd.DataFrame | None:
@@ -242,13 +317,20 @@ def _try_ai_transform(raw_df: pd.DataFrame, target_format: str, data_type: str) 
 
 
 def _validate_traffic_df(df: pd.DataFrame) -> pd.DataFrame | None:
-    """Validate and clean a traffic DataFrame (used after AI transform or normal load)."""
+    """Validate and clean a traffic DataFrame (used after multi-sheet merge, AI transform, or normal load)."""
     if "date" not in df.columns or "traffic" not in df.columns:
         st.error("Transformed data is missing required columns: date, traffic")
         return None
 
-    df["date"] = pd.to_datetime(df["date"], errors="coerce")
+    df["date"] = pd.to_datetime(df["date"], format="mixed", errors="coerce")
     df["traffic"] = pd.to_numeric(df["traffic"], errors="coerce")
+
+    # Aggregate duplicate dates (e.g. from channel-group rows)
+    numeric_cols = [c for c in df.columns if c != "date"]
+    dupes = df["date"].dropna().duplicated(keep=False).any()
+    if dupes:
+        agg = {c: "mean" if c in ("aov", "cr") else "sum" for c in numeric_cols if c in df.columns}
+        df = df.groupby("date", as_index=False).agg(agg)
 
     for col in ["revenue", "transactions", "aov", "cr"]:
         if col in df.columns:
@@ -282,12 +364,38 @@ def _validate_traffic_df(df: pd.DataFrame) -> pd.DataFrame | None:
 def load_traffic(file) -> pd.DataFrame | None:
     """Load and validate a historical traffic CSV/Excel.
 
-    Required columns: date, traffic (flexible name matching).
-    Optional columns: revenue, transactions, aov, cr (auto-detected).
+    For multi-sheet Excel workbooks, merges all metric sheets (Sessions,
+    Revenue, Transactions, AOV) by date before validation. Falls back to
+    single-sheet reading + AI transform for unrecognised formats.
 
     Returns:
         Validated DataFrame sorted chronologically, or None on failure.
     """
+    # Multi-sheet Excel: merge all metric sheets natively, fall back to AI
+    name = getattr(file, "name", "").lower() if not isinstance(file, str) else file.lower()
+    if name.endswith((".xlsx", ".xls")):
+        xl = pd.ExcelFile(file)
+        if len(xl.sheet_names) > 1:
+            merged = _merge_traffic_sheets(xl)
+            if merged is not None:
+                return _validate_traffic_df(merged)
+            # Native merge failed — try AI transform on the best single sheet
+            best_df, best_sheet = _pick_excel_sheet(xl)
+            st.info(
+                f"Could not auto-merge sheets — trying AI transform on **{best_sheet}** sheet "
+                f"(available: {', '.join(xl.sheet_names)})"
+            )
+            ai_result = _try_ai_transform(best_df, TRAFFIC_TARGET_FORMAT, "traffic")
+            if ai_result is not None:
+                return _validate_traffic_df(ai_result)
+            st.error(
+                "Could not load traffic data. Try renaming your sheets to: "
+                "Sessions (or Traffic), Revenue, Transactions, AOV."
+            )
+            return None
+        if hasattr(file, "seek"):
+            file.seek(0)
+
     df = _read_file(file)
     if df is None or df.empty:
         st.warning("No valid rows found in your file")
