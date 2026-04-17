@@ -347,6 +347,80 @@ class TestCombinedForecast:
         assert (combined["baseline"] == 0).all()
 
 
+class TestCombinedHub:
+    def test_layered_math_with_bands(self):
+        historical = pd.DataFrame({
+            "date": pd.date_range("2023-01-01", periods=12, freq="MS"),
+            "traffic": [10000] * 12,
+        })
+        positional = pd.DataFrame({
+            "month": range(1, 13),
+            "baseline": [10000] * 12,
+            "uplift_p10": [200] * 12,
+            "uplift_p50": [500] * 12,
+            "uplift_p90": [800] * 12,
+        })
+        decay = pd.DataFrame({
+            "month": range(1, 13),
+            "cumulative_decay": [50 * i for i in range(1, 13)],
+        })
+        aio = pd.DataFrame({
+            "month": range(1, 13),
+            "cumulative_erosion": [30 * i for i in range(1, 13)],
+        })
+        combined = run_combined_forecast(
+            historical_df=historical,
+            positional_monthly=positional,
+            new_content_monthly=None,
+            months=12,
+            decay_df=decay,
+            aio_erosion_df=aio,
+        )
+        forecast = combined[combined["is_forecast"]]
+        m12 = forecast.iloc[-1]
+        expected_p50 = m12["baseline"] + m12["positional_uplift_p50"] - m12["decay"] - m12["aio_erosion"]
+        assert abs(m12["combined_p50"] - expected_p50) < 2
+
+    def test_bands_preserved_order(self):
+        historical = pd.DataFrame({
+            "date": pd.date_range("2023-01-01", periods=12, freq="MS"),
+            "traffic": [10000] * 12,
+        })
+        positional = pd.DataFrame({
+            "month": range(1, 13),
+            "baseline": [10000] * 12,
+            "uplift_p10": [200] * 12,
+            "uplift_p50": [500] * 12,
+            "uplift_p90": [800] * 12,
+        })
+        combined = run_combined_forecast(
+            historical_df=historical,
+            positional_monthly=positional,
+            new_content_monthly=None,
+            months=12,
+        )
+        forecast = combined[combined["is_forecast"]]
+        assert (forecast["combined_p10"] <= forecast["combined_p50"]).all()
+        assert (forecast["combined_p50"] <= forecast["combined_p90"]).all()
+
+    def test_backward_compat_aliases(self):
+        positional = pd.DataFrame({
+            "month": range(1, 7),
+            "baseline": [10000] * 6,
+            "uplift_p10": [200] * 6,
+            "uplift_p50": [500] * 6,
+            "uplift_p90": [800] * 6,
+        })
+        combined = run_combined_forecast(
+            historical_df=None,
+            positional_monthly=positional,
+            new_content_monthly=None,
+            months=6,
+        )
+        assert "combined" in combined.columns
+        assert "positional_uplift" in combined.columns
+
+
 # ── Revenue Engine ──────────────────────────────────────────────────────────
 
 
