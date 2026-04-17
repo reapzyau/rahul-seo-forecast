@@ -911,6 +911,48 @@ class TestAioRiskEngine:
         assert len(aio_recommendations(risk)) > 0
 
 
+# ── AIO Erosion (Time-varying) ─────────────────────────────────────────────
+
+
+class TestAioErosion:
+    def test_erosion_grows_over_time(self):
+        from engine.aio_risk_engine import project_aio_erosion
+        df = pd.DataFrame({
+            "keyword": [f"kw_{i}" for i in range(100)],
+            "primary_intent": ["informational"] * 100,
+            "current_traffic": [100] * 100,
+            "has_aio": [False] * 100,
+        })
+        result = project_aio_erosion(df, months=24, monthly_growth=0.03)
+        assert result["cumulative_erosion"].is_monotonic_increasing
+        assert result.iloc[-1]["cumulative_erosion"] > result.iloc[0]["cumulative_erosion"] * 5
+
+    def test_informational_erodes_more_than_transactional(self):
+        from engine.aio_risk_engine import project_aio_erosion
+        info_df = pd.DataFrame({
+            "keyword": ["a"], "primary_intent": ["informational"],
+            "current_traffic": [1000], "has_aio": [True],
+        })
+        trans_df = pd.DataFrame({
+            "keyword": ["a"], "primary_intent": ["transactional"],
+            "current_traffic": [1000], "has_aio": [True],
+        })
+        info_result = project_aio_erosion(info_df, months=12)
+        trans_result = project_aio_erosion(trans_df, months=12)
+        assert info_result.iloc[-1]["cumulative_erosion"] > trans_result.iloc[-1]["cumulative_erosion"]
+
+    def test_zero_growth_only_hits_pre_affected(self):
+        from engine.aio_risk_engine import project_aio_erosion
+        df = pd.DataFrame({
+            "keyword": ["a", "b"],
+            "primary_intent": ["informational", "informational"],
+            "current_traffic": [1000, 1000],
+            "has_aio": [True, False],
+        })
+        result = project_aio_erosion(df, months=12, monthly_growth=0.0)
+        assert result.iloc[0]["cumulative_erosion"] == result.iloc[-1]["cumulative_erosion"]
+
+
 # ── Decay Engine ──────────────────────────────────────────────────────────
 
 
