@@ -985,6 +985,57 @@ class TestAioRiskEngine:
         assert len(aio_recommendations(risk)) > 0
 
 
+# ── Snapshot + Variance ────────────────────────────────────────────────────
+
+
+class TestSnapshot:
+    def test_roundtrip(self):
+        from engine.snapshot_engine import build_snapshot, snapshot_to_bytes, load_snapshot
+        combined = pd.DataFrame({
+            "date": pd.date_range("2026-01-01", periods=12, freq="MS"),
+            "actual": [None] * 12,
+            "baseline": [10000] * 12,
+            "combined_p50": [11000] * 12,
+            "is_forecast": [True] * 12,
+        })
+        snap = build_snapshot("Test Client", combined, {"effort": "moderate"})
+        data = snapshot_to_bytes(snap)
+        loaded = load_snapshot(data)
+        assert loaded["client_name"] == "Test Client"
+        assert len(loaded["forecast"]) == 12
+
+    def test_variance_calculation(self):
+        from engine.snapshot_engine import compare_to_actuals
+        snapshot = {
+            "forecast": [
+                {"date": "2026-01-01", "combined_p50": 10000, "combined_p10": 8000, "combined_p90": 12000},
+                {"date": "2026-02-01", "combined_p50": 10500, "combined_p10": 8500, "combined_p90": 12500},
+            ]
+        }
+        actuals = pd.DataFrame({
+            "date": ["2026-01-01", "2026-02-01"],
+            "traffic": [10500, 9000],
+        })
+        result = compare_to_actuals(snapshot, actuals)
+        assert len(result) == 2
+        assert abs(result.iloc[0]["variance_pct"] - 5.0) < 0.1
+        assert result.iloc[0]["within_band"]
+        assert result.iloc[1]["variance_pct"] < 0
+
+    def test_summarise_variance(self):
+        from engine.snapshot_engine import compare_to_actuals, summarise_variance
+        snapshot = {
+            "forecast": [
+                {"date": "2026-01-01", "combined_p50": 10000, "combined_p10": 8000, "combined_p90": 12000},
+            ]
+        }
+        actuals = pd.DataFrame({"date": ["2026-01-01"], "traffic": [10500]})
+        comparison = compare_to_actuals(snapshot, actuals)
+        summary = summarise_variance(comparison)
+        assert summary["n_months_compared"] == 1
+        assert summary["pct_within_band"] == 100.0
+
+
 # ── AIO Erosion (Time-varying) ─────────────────────────────────────────────
 
 
