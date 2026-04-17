@@ -24,30 +24,44 @@ KD_COL_ALIASES = {
     "kd %": "kd", "kd%": "kd", "keyword_difficulty": "kd",
 }
 DATE_COL_ALIASES = {
-    "date": "date", "month": "date", "period": "date", "year-month": "date",
+    "date": "date", "month": "date", "period": "date",
+    "year-month": "date", "year month": "date", "year_month": "date",
+    "month year": "date", "month_year": "date", "yearmonth": "date",
+    "report date": "date", "report_date": "date",
+    "ga month": "date", "ga_month": "date",
+    "year month (month of year)": "date",
 }
 TRAFFIC_COL_ALIASES = {
-    "traffic": "traffic", "sessions": "traffic", "organic traffic": "traffic",
-    "visits": "traffic", "clicks": "traffic", "organic sessions": "traffic",
-    "organic_traffic": "traffic",
+    "traffic": "traffic", "sessions": "traffic",
+    "organic traffic": "traffic", "organic_traffic": "traffic",
+    "visits": "traffic", "users": "traffic", "pageviews": "traffic",
+    "clicks": "traffic", "organic sessions": "traffic",
+    "organic_sessions": "traffic", "total sessions": "traffic",
+    "total_sessions": "traffic", "web sessions": "traffic",
+    "entrances": "traffic",
 }
 REVENUE_COL_ALIASES = {
-    "revenue": "revenue", "organic revenue": "revenue", "organic_revenue": "revenue",
-    "total revenue": "revenue",
+    "revenue": "revenue", "organic revenue": "revenue",
+    "organic_revenue": "revenue", "total revenue": "revenue",
+    "total_revenue": "revenue", "purchase revenue": "revenue",
+    "average purchase revenue": "revenue",
+    "gross revenue": "revenue", "net revenue": "revenue",
 }
 TRANSACTIONS_COL_ALIASES = {
     "transactions": "transactions", "organic transactions": "transactions",
     "organic_transactions": "transactions", "orders": "transactions",
-    "conversions": "transactions",
+    "conversions": "transactions", "purchases": "transactions",
+    "total transactions": "transactions", "total_transactions": "transactions",
 }
 AOV_COL_ALIASES = {
     "aov": "aov", "average order value": "aov", "avg order value": "aov",
-    "avg_order_value": "aov",
+    "avg_order_value": "aov", "avg. order value": "aov",
+    "average purchase revenue": "aov", "avg purchase value": "aov",
 }
 CR_COL_ALIASES = {
     "cr": "cr", "cr%": "cr", "cr %": "cr", "conversion rate": "cr",
     "organic cr": "cr", "organic cr %": "cr", "organic cr%": "cr",
-    "conversion_rate": "cr", "cvr": "cr",
+    "conversion_rate": "cr", "cvr": "cr", "ecommerce conversion rate": "cr",
 }
 
 
