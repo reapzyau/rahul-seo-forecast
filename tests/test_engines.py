@@ -812,6 +812,66 @@ class TestAioRiskEngine:
         assert len(aio_recommendations(risk)) > 0
 
 
+# ── Decay Engine ──────────────────────────────────────────────────────────
+
+
+class TestDecayEngine:
+    def test_position_bucketing(self):
+        from engine.decay_engine import position_bucket
+        assert position_bucket(1) == "top3"
+        assert position_bucket(5) == "top10"
+        assert position_bucket(15) == "11_20"
+        assert position_bucket(30) == "21_50"
+        assert position_bucket(75) == "51_plus"
+        assert position_bucket(None) == "51_plus"
+
+    def test_monthly_decay_factor(self):
+        from engine.decay_engine import monthly_decay_factor
+        monthly = monthly_decay_factor(0.12)
+        assert 0.98 < monthly < 0.995
+        annual = monthly ** 12
+        assert abs(annual - 0.88) < 0.01
+
+    def test_decay_cumulative_increases(self):
+        from engine.decay_engine import calculate_portfolio_decay
+        df = pd.DataFrame({
+            "keyword": ["a", "b", "c"],
+            "position": [2, 8, 25],
+            "current_traffic": [1000, 500, 200],
+        })
+        result = calculate_portfolio_decay(df, months=12)
+        assert result["cumulative_decay"].is_monotonic_increasing
+
+    def test_maintenance_reduces_decay(self):
+        from engine.decay_engine import calculate_portfolio_decay
+        df = pd.DataFrame({
+            "keyword": ["a"],
+            "position": [10],
+            "current_traffic": [1000],
+        })
+        no_maint = calculate_portfolio_decay(df, months=12, maintenance_coverage=0.0)
+        with_maint = calculate_portfolio_decay(df, months=12, maintenance_coverage=0.7)
+        assert with_maint.iloc[-1]["cumulative_decay"] < no_maint.iloc[-1]["cumulative_decay"]
+
+    def test_empty_portfolio(self):
+        from engine.decay_engine import calculate_portfolio_decay
+        df = pd.DataFrame(columns=["position", "current_traffic"])
+        result = calculate_portfolio_decay(df, months=6)
+        assert len(result) == 6
+        assert result["decay_loss"].sum() == 0
+
+    def test_decayed_baseline_is_lower_than_linear(self):
+        from engine.decay_engine import project_decayed_baseline
+        historical = pd.Series([10000 + i * 100 for i in range(12)])
+        keyword_df = pd.DataFrame({
+            "keyword": ["a", "b"],
+            "position": [5, 25],
+            "current_traffic": [3000, 1500],
+        })
+        result = project_decayed_baseline(historical, keyword_df, months=12, maintenance_coverage=0.0)
+        assert (result["honest_baseline"] <= result["linear_baseline"]).all()
+
+
 # ── Intent-Weighted Revenue ───────────────────────────────────────────────
 
 
