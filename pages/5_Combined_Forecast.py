@@ -13,11 +13,17 @@ from engine.revenue_engine import (
 from utils.chart_builder import combined_three_stream_chart, combined_revenue_chart
 from utils.export import to_csv, to_html_report
 from utils.sidebar import render_ai_settings
+from utils.assumptions_panel import render_assumptions_banner
+from engine.assumptions import initialise_assumptions, get_assumption
 
 st.header("Combined Forecast")
 st.caption("Layer multiple forecast streams into a single projection with intent-weighted revenue.")
 
 render_ai_settings()
+
+store = st.session_state.setdefault("assumptions", {})
+initialise_assumptions(store)
+render_assumptions_banner(store)
 
 # ── Data Availability ──────────────────────────────────────────────────────
 ga4_df = st.session_state.get("ga4_df")

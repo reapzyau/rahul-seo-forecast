@@ -5,18 +5,29 @@ import plotly.graph_objects as go
 
 from utils.ga4_loader import load_ga4_organic
 from utils.keyword_loader import load_keyword_portfolio, split_existing_vs_new
+from utils.roadmap_loader import load_roadmap
 from utils.chart_builder import _apply_layout
 from utils.sidebar import render_ai_settings
+from utils.assumptions_panel import render_assumptions_panel, render_assumptions_banner
+from engine.assumptions import initialise_assumptions, run_detection
 
 st.header("Data Upload")
-st.caption("Upload GA4 organic traffic and SEMrush keyword exports. Data flows to all downstream pages.")
+st.caption("Upload GA4 organic traffic, SEMrush keyword exports, and an optional roadmap file. Data flows to all downstream pages.")
 
 render_ai_settings()
 
-# ── Tabs ────────────────────────────────────────────────────────────────────
-tab_ga4, tab_semrush = st.tabs(["📊 GA4 Organic Traffic", "🔑 SEMrush Keywords"])
+# ── Assumptions store ────────────────────────────────────────────────────────
+store = st.session_state.setdefault("assumptions", {})
+initialise_assumptions(store)
 
-# ── GA4 Tab ─────────────────────────────────────────────────────────────────
+# ── Tabs ─────────────────────────────────────────────────────────────────────
+tab_ga4, tab_semrush, tab_roadmap = st.tabs([
+    "📊 GA4 Organic Traffic",
+    "🔑 SEMrush Keywords",
+    "🗺️ Roadmap",
+])
+
+# ── GA4 Tab ──────────────────────────────────────────────────────────────────
 with tab_ga4:
     uploaded_ga4 = st.file_uploader(
         "Upload GA4 organic export",
@@ -36,6 +47,7 @@ with tab_ga4:
 
     if ga4_df is not None:
         st.session_state["ga4_df"] = ga4_df
+        run_detection(store, ga4_df=ga4_df)
 
         date_min = ga4_df["date"].min()
         date_max = ga4_df["date"].max()
@@ -89,7 +101,7 @@ with tab_ga4:
     elif uploaded_ga4 is not None:
         st.error("Could not parse the uploaded GA4 file. Please check the format.")
 
-# ── SEMrush Tab ─────────────────────────────────────────────────────────────
+# ── SEMrush Tab ──────────────────────────────────────────────────────────────
 with tab_semrush:
     uploaded_semrush = st.file_uploader(
         "Upload SEMrush organic positions export",
@@ -163,10 +175,51 @@ with tab_semrush:
     elif uploaded_semrush is not None:
         st.error("Could not parse the uploaded SEMrush file. Please check the format.")
 
-# ── Data Status Footer ──────────────────────────────────────────────────────
+# ── Roadmap Tab ───────────────────────────────────────────────────────────────
+with tab_roadmap:
+    st.markdown(
+        "Upload your SEO roadmap to auto-detect **content cadence**, "
+        "**effort level**, and **maintenance coverage** for the forecast engines."
+    )
+    st.caption("Accepts the SEO Roadmap XLSX export from this tool, or any CSV with Task / Focus / Occurrence / Hours columns.")
+
+    uploaded_roadmap = st.file_uploader(
+        "Upload roadmap file",
+        type=["csv", "xlsx", "xls"],
+        key="roadmap_upload",
+    )
+
+    if uploaded_roadmap is not None:
+        try:
+            roadmap_data = load_roadmap(uploaded_roadmap.read())
+            if roadmap_data:
+                run_detection(store, roadmap_data=roadmap_data)
+                st.session_state["roadmap_data"] = roadmap_data
+
+                detected_keys = [k for k in ("content_cadence", "effort_level", "maintenance_coverage") if k in roadmap_data]
+                st.success(f"Roadmap loaded. Detected: {', '.join(detected_keys)}.")
+
+                display_rows = []
+                for k in detected_keys:
+                    display_rows.append({"Parameter": k.replace("_", " ").title(), "Value": roadmap_data[k]})
+                st.table(pd.DataFrame(display_rows))
+            else:
+                st.warning("Roadmap file parsed but no recognisable parameters were found. Check column names.")
+        except Exception as e:
+            st.error(f"Could not parse roadmap: {e}")
+
+    elif "roadmap_data" in st.session_state:
+        rd = st.session_state["roadmap_data"]
+        st.info(
+            f"Roadmap from previous upload: cadence={rd.get('content_cadence', '—')}, "
+            f"effort={rd.get('effort_level', '—')}, "
+            f"maintenance={rd.get('maintenance_coverage', '—')}"
+        )
+
+# ── Data Status Footer ────────────────────────────────────────────────────────
 st.divider()
 st.subheader("Data Status")
-col1, col2 = st.columns(2)
+col1, col2, col3 = st.columns(3)
 with col1:
     if "ga4_df" in st.session_state:
         ga4 = st.session_state["ga4_df"]
@@ -179,3 +232,13 @@ with col2:
         st.success(f"Keywords: {len(kw)} loaded ({len(st.session_state.get('kw_existing', []))} ranking)")
     else:
         st.info("Keywords: Not loaded")
+with col3:
+    if "roadmap_data" in st.session_state:
+        st.success("Roadmap: loaded")
+    else:
+        st.info("Roadmap: Not loaded")
+
+# ── Assumptions Panel ─────────────────────────────────────────────────────────
+st.divider()
+render_assumptions_banner(store)
+render_assumptions_panel(store)

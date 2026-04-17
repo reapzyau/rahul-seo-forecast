@@ -7,11 +7,18 @@ from utils.chart_builder import positional_uplift_chart, revenue_projection_char
 from utils.export import to_csv, to_html_report
 from engine.constants import CTR_MODELS, FORECAST_SCENARIOS, TIER_COLORS
 from utils.sidebar import render_ai_settings
+from utils.assumptions_panel import render_assumptions_banner
+from engine.assumptions import initialise_assumptions, get_assumption
 
 st.header("Positional Forecast")
 st.caption("Project uplift from moving existing keywords up the SERP.")
 
 render_ai_settings()
+
+# ── Assumptions store ────────────────────────────────────────────────────────
+store = st.session_state.setdefault("assumptions", {})
+initialise_assumptions(store)
+render_assumptions_banner(store)
 
 # ── Data check ──────────────────────────────────────────────────────────────
 kw_existing = st.session_state.get("kw_existing")
@@ -25,10 +32,13 @@ ga4_df = st.session_state.get("ga4_df")
 st.sidebar.header("Positional Forecast Settings")
 
 months = st.sidebar.slider("Forecast Horizon (months)", 6, 36, 12, key="pos_months")
+_effort_options = ["light", "moderate", "aggressive"]
+_default_effort = str(get_assumption(store, "effort_level"))
+_effort_idx = _effort_options.index(_default_effort) if _default_effort in _effort_options else 1
 effort = st.sidebar.selectbox(
     "Effort Level",
-    ["light", "moderate", "aggressive"],
-    index=1,
+    _effort_options,
+    index=_effort_idx,
     key="pos_effort",
     help="How aggressively you plan to optimise existing content.",
 )
@@ -83,16 +93,21 @@ st.sidebar.divider()
 st.sidebar.subheader("Revenue Settings")
 
 enable_revenue = st.sidebar.checkbox("Enable Revenue Projection", key="pos_rev")
+_default_cvr = float(get_assumption(store, "blended_cr_pct"))
+_default_aov = float(get_assumption(store, "aov"))
+_default_cur = str(get_assumption(store, "currency"))
 cvr = st.sidebar.number_input(
-    "Conversion Rate (%)", 0.1, 100.0, 2.5, step=0.1,
+    "Conversion Rate (%)", 0.1, 100.0, _default_cvr, step=0.1,
     key="pos_cvr", disabled=not enable_revenue,
 )
 aov = st.sidebar.number_input(
-    "Average Order Value", 1.0, 100000.0, 100.0, step=10.0,
+    "Average Order Value", 1.0, 100000.0, _default_aov, step=10.0,
     key="pos_aov", disabled=not enable_revenue,
 )
+_cur_options = list(CURRENCY_SYMBOLS.keys())
+_cur_idx = _cur_options.index(_default_cur) if _default_cur in _cur_options else 0
 currency = st.sidebar.selectbox(
-    "Currency", list(CURRENCY_SYMBOLS.keys()),
+    "Currency", _cur_options, index=_cur_idx,
     key="pos_cur", disabled=not enable_revenue,
 )
 

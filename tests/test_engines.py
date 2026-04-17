@@ -1138,6 +1138,24 @@ class TestDecayEngine:
         assert (result["honest_baseline"] <= result["linear_baseline"]).all()
 
 
+class TestDecayRespectsMaintenance:
+    def test_high_maintenance_reduces_decay(self):
+        """High maintenance_coverage should meaningfully reduce cumulative decay vs zero."""
+        from engine.decay_engine import calculate_portfolio_decay
+        df = pd.DataFrame({
+            "keyword": ["kw1", "kw2", "kw3"],
+            "position": [2, 7, 15],
+            "current_traffic": [2000, 1000, 500],
+        })
+        no_maint = calculate_portfolio_decay(df, months=12, maintenance_coverage=0.0)
+        high_maint = calculate_portfolio_decay(df, months=12, maintenance_coverage=0.9)
+        cumulative_no = no_maint.iloc[-1]["cumulative_decay"]
+        cumulative_hi = high_maint.iloc[-1]["cumulative_decay"]
+        assert cumulative_hi < cumulative_no
+        # At 0.9 coverage, effective decay should be reduced by at least 50%
+        assert cumulative_hi < cumulative_no * 0.5
+
+
 # ── Intent-Weighted Revenue ───────────────────────────────────────────────
 
 

@@ -343,6 +343,42 @@ This is the tool's calibration loop. Without it, forecasts are guesses nobody ev
 
 ---
 
+## Assumptions Management
+
+All forecast parameters are tracked in a centralised assumptions store (`engine/assumptions.py`). Each assumption has a **provenance** that tells you how its value was determined:
+
+| Provenance | Colour | Meaning |
+|------------|--------|---------|
+| defaulted | grey | Using the built-in default — no data has been provided yet |
+| detected | blue | Automatically inferred from your uploaded data (GA4, roadmap) |
+| overridden | green | You have explicitly set this value via the Assumptions panel |
+
+### Key assumptions
+
+| Key | Default | Detection Source |
+|-----|---------|-----------------|
+| `blended_cr_pct` | 2.5% | GA4 transactions ÷ sessions |
+| `aov` | $100 | GA4 average order value |
+| `currency` | USD | — (user sets) |
+| `effort_level` | moderate | Roadmap import |
+| `content_cadence` | 4 posts/mo | Roadmap import (content hours ÷ 10) |
+| `maintenance_coverage` | 0.0 | Roadmap import (on-page/technical task regularity) |
+| `aio_monthly_growth` | 2.5% | — |
+| `aio_ctr_penalty_informational` | 45% | — |
+| `decay_rate_top3` | 8%/yr | — |
+| `decay_rate_top10` | 12%/yr | — |
+
+### Roadmap ingestion
+
+Upload a roadmap CSV or XLSX on the **Data Upload → Roadmap** tab. Accepted formats:
+
+1. **Task table** (columns: Task, Focus, Occurrence, Hours) — the native GAZMAN xlsx produced by the SEO Roadmap page
+2. **Param table** (columns: cadence, effort_level, maintenance_coverage) — a simple one-row override file
+
+The loader extracts content cadence (from content production hours), effort level (from total monthly hours), and maintenance coverage (from regularity of on-page/technical tasks).
+
+---
+
 ## Assumptions and Limitations
 
 1. **CTR data is based on industry averages** — actual CTR varies by industry, SERP features, and brand recognition.

@@ -129,3 +129,42 @@ Tests cover engine logic only. No Streamlit or network calls in tests.
 1. Create `engine/my_engine.py` — pure Python, no Streamlit imports
 2. Export from `engine/__init__.py` if needed
 3. Write tests in `tests/test_engines.py`
+
+## Assumptions store (v4)
+
+`engine/assumptions.py` is the single source of truth for all forecast parameters. It provides:
+
+- `ASSUMPTIONS` registry — 10 keyed entries (blended_cr_pct, aov, currency, effort_level, content_cadence, maintenance_coverage, aio_monthly_growth, aio_ctr_penalty_informational, decay_rate_top3, decay_rate_top10)
+- Provenance tracking: `"defaulted"` | `"detected"` | `"overridden"`
+- Session state API (all functions take an explicit `store: dict` parameter — no Streamlit import):
+  - `initialise_assumptions(store, force=False)` — populate with defaults; no-op if already done
+  - `run_detection(store, ga4_df=None, kw_df=None, roadmap_data=None)` — auto-detect values from data
+  - `override_assumption(store, key, value, source=...)` — explicit user override
+  - `clear_override(store, key)` — revert to default
+  - `get_assumption(store, key)` — current value
+  - `get_provenance(store, key)` — full provenance dict
+  - `assumptions_summary(store)` — list of all provenance dicts
+
+**In pages**, always use:
+```python
+store = st.session_state.setdefault("assumptions", {})
+initialise_assumptions(store)
+```
+Then read values with `get_assumption(store, "blended_cr_pct")` instead of hardcoding defaults.
+
+`utils/assumptions_panel.py` provides two Streamlit components:
+- `render_assumptions_banner(store)` — compact info bar with provenance counts; call after the page header
+- `render_assumptions_panel(store)` — full table with override widgets; shown at bottom of Data Upload page
+
+## Roadmap ingestion (v4)
+
+`utils/roadmap_loader.py` parses uploaded roadmap files and extracts three forecast parameters:
+- `content_cadence` (int) — posts per month
+- `effort_level` (str) — "light" | "moderate" | "aggressive"
+- `maintenance_coverage` (float 0–1) — fraction of portfolio actively maintained
+
+Supports two formats:
+1. **Task-table** (columns: Task, Focus, Occurrence, Hours) — the native GAZMAN xlsx from SEO Roadmap page
+2. **Param-table** (columns: cadence, effort_level, maintenance_coverage) — direct override CSV
+
+Use `load_roadmap(file_bytes_or_path)` as the single entry point. The Data Upload page (Roadmap tab) calls this and then passes the result to `run_detection(store, roadmap_data=...)` to wire values into the assumptions store.
