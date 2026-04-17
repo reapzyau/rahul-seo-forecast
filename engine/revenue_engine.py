@@ -9,6 +9,13 @@ CURRENCY_SYMBOLS = {
     "CAD": "C$",
 }
 
+INTENT_CVR_MULTIPLIERS = {
+    "transactional": 2.0,
+    "commercial": 1.5,
+    "navigational": 0.5,
+    "informational": 0.3,
+}
+
 
 def add_revenue(
     df: pd.DataFrame,
@@ -134,6 +141,91 @@ def keyword_revenue_table(
     result.attrs["currency_symbol"] = symbol
 
     return result.reset_index(drop=True)
+
+
+def _get_intent_col(df: pd.DataFrame) -> str | None:
+    """Find intent column — positional engine uses 'primary_intent', new content uses 'intent'."""
+    if "primary_intent" in df.columns:
+        return "primary_intent"
+    if "intent" in df.columns:
+        return "intent"
+    return None
+
+
+def compute_intent_weighted_cvr(
+    keyword_df: pd.DataFrame,
+    base_cvr: float,
+) -> float:
+    """Compute a blended CVR weighted by keyword intent and traffic contribution.
+
+    Commercial and transactional keywords convert at higher rates;
+    informational keywords convert lower.  The returned CVR reflects
+    the traffic-weighted mix of intents in the keyword set.
+    """
+    intent_col = _get_intent_col(keyword_df)
+    if keyword_df.empty or intent_col is None:
+        return base_cvr
+
+    for col in ("uplift", "estimated_monthly_traffic", "volume"):
+        if col in keyword_df.columns:
+            weight_col = col
+            break
+    else:
+        return base_cvr
+
+    weights = keyword_df[weight_col].fillna(0).clip(lower=0)
+    total = weights.sum()
+    if total <= 0:
+        return base_cvr
+
+    intents = keyword_df[intent_col].fillna("commercial").str.lower()
+    blended = 0.0
+    for intent, mult in INTENT_CVR_MULTIPLIERS.items():
+        blended += (weights[intents == intent].sum() / total) * mult
+
+    known = set(INTENT_CVR_MULTIPLIERS.keys())
+    blended += (weights[~intents.isin(known)].sum() / total) * 1.0
+
+    return round(base_cvr * blended, 2)
+
+
+def intent_revenue_breakdown(
+    keyword_df: pd.DataFrame,
+    base_cvr: float,
+    aov: float,
+) -> pd.DataFrame:
+    """Break down expected monthly revenue contribution by keyword intent."""
+    intent_col = _get_intent_col(keyword_df)
+    if keyword_df.empty or intent_col is None:
+        return pd.DataFrame()
+
+    for col in ("uplift", "estimated_monthly_traffic", "volume"):
+        if col in keyword_df.columns:
+            traffic_col = col
+            break
+    else:
+        return pd.DataFrame()
+
+    intents = keyword_df[intent_col].fillna("commercial").str.lower()
+    rows = []
+    for intent, mult in INTENT_CVR_MULTIPLIERS.items():
+        mask = intents == intent
+        kw_count = int(mask.sum())
+        traffic = keyword_df.loc[mask, traffic_col].fillna(0).clip(lower=0).sum()
+        effective_cvr = base_cvr * mult
+        txn = traffic * (effective_cvr / 100)
+        rev = txn * aov
+        rows.append({
+            "Intent": intent.title(),
+            "Keywords": kw_count,
+            "Monthly Traffic": int(round(traffic)),
+            "CVR Multiplier": f"{mult}x",
+            "Effective CVR": f"{effective_cvr:.2f}%",
+            "Monthly Transactions": int(round(txn)),
+            "Monthly Revenue": round(rev, 2),
+        })
+
+    return pd.DataFrame(rows)
 
 
 def build_full_metrics_table(

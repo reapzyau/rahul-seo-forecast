@@ -810,3 +810,71 @@ class TestAioRiskEngine:
         })
         risk = calculate_aio_risk(df)
         assert len(aio_recommendations(risk)) > 0
+
+
+# ── Intent-Weighted Revenue ───────────────────────────────────────────────
+
+
+class TestIntentWeightedRevenue:
+    def test_commercial_only_boosts_cvr(self):
+        from engine.revenue_engine import compute_intent_weighted_cvr
+        df = pd.DataFrame({
+            "primary_intent": ["commercial"] * 5,
+            "uplift": [100] * 5,
+        })
+        result = compute_intent_weighted_cvr(df, 2.0)
+        assert result == pytest.approx(2.0 * 1.5, rel=0.01)
+
+    def test_transactional_highest_multiplier(self):
+        from engine.revenue_engine import compute_intent_weighted_cvr
+        df = pd.DataFrame({
+            "primary_intent": ["transactional"] * 5,
+            "volume": [100] * 5,
+        })
+        result = compute_intent_weighted_cvr(df, 2.0)
+        assert result == pytest.approx(2.0 * 2.0, rel=0.01)
+
+    def test_informational_lowers_cvr(self):
+        from engine.revenue_engine import compute_intent_weighted_cvr
+        df = pd.DataFrame({
+            "primary_intent": ["informational"] * 5,
+            "uplift": [100] * 5,
+        })
+        result = compute_intent_weighted_cvr(df, 2.0)
+        assert result < 2.0
+
+    def test_mixed_intent_is_between(self):
+        from engine.revenue_engine import compute_intent_weighted_cvr
+        df = pd.DataFrame({
+            "primary_intent": ["commercial", "informational"],
+            "uplift": [100, 100],
+        })
+        result = compute_intent_weighted_cvr(df, 2.0)
+        assert 2.0 * 0.3 < result < 2.0 * 1.5
+
+    def test_empty_returns_base(self):
+        from engine.revenue_engine import compute_intent_weighted_cvr
+        df = pd.DataFrame({"primary_intent": [], "uplift": []})
+        assert compute_intent_weighted_cvr(df, 2.5) == 2.5
+
+    def test_intent_col_fallback(self):
+        """New content engine uses 'intent' not 'primary_intent'."""
+        from engine.revenue_engine import compute_intent_weighted_cvr
+        df = pd.DataFrame({
+            "intent": ["commercial"] * 3,
+            "estimated_monthly_traffic": [200] * 3,
+        })
+        result = compute_intent_weighted_cvr(df, 2.0)
+        assert result == pytest.approx(2.0 * 1.5, rel=0.01)
+
+    def test_breakdown_table(self):
+        from engine.revenue_engine import intent_revenue_breakdown
+        df = pd.DataFrame({
+            "primary_intent": ["commercial", "transactional", "informational"],
+            "uplift": [1000, 500, 300],
+        })
+        table = intent_revenue_breakdown(df, 2.0, 100.0)
+        assert not table.empty
+        assert "Intent" in table.columns
+        assert "Monthly Revenue" in table.columns
+        assert len(table) == 4  # one row per intent in INTENT_CVR_MULTIPLIERS

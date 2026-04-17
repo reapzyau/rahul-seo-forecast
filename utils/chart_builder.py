@@ -322,6 +322,29 @@ def combined_three_stream_chart(combined_df: pd.DataFrame) -> go.Figure:
     return _apply_layout(fig, "Combined Traffic Forecast", "Date", "Monthly Organic Sessions")
 
 
+def combined_revenue_chart(rev_df: pd.DataFrame, currency_symbol: str = "$") -> go.Figure:
+    """Stacked area chart showing baseline revenue + uplift revenue over time."""
+    fig = go.Figure()
+    fmask = rev_df["is_forecast"] if "is_forecast" in rev_df.columns else pd.Series(True, index=rev_df.index)
+    df = rev_df[fmask]
+
+    fig.add_trace(go.Scatter(
+        x=df["date"], y=df["baseline_revenue"],
+        mode="lines", name="Baseline Revenue",
+        line=dict(color="#94A3B8", width=2),
+        stackgroup="rev", fillcolor="rgba(148,163,184,0.3)",
+        hovertemplate="%{x|%b %Y}<br>Baseline: " + currency_symbol + "%{y:,.0f}<extra></extra>",
+    ))
+    fig.add_trace(go.Scatter(
+        x=df["date"], y=df["uplift_revenue"],
+        mode="lines", name="Uplift Revenue",
+        line=dict(color="#22C55E", width=2),
+        stackgroup="rev", fillcolor="rgba(34,197,94,0.4)",
+        hovertemplate="%{x|%b %Y}<br>Uplift: " + currency_symbol + "%{y:,.0f}<extra></extra>",
+    ))
+    return _apply_layout(fig, "Combined Revenue Projection", "Date", f"Revenue ({currency_symbol})")
+
+
 def aio_risk_chart(intent_breakdown: pd.DataFrame, ctr_penalty: float) -> go.Figure:
     """Grouped bar: traffic at risk vs projected loss by intent."""
     fig = go.Figure()
