@@ -16,6 +16,14 @@ st.caption("Layer new content projections onto your existing traffic baseline.")
 
 render_ai_settings()
 
+# Pre-populate revenue inputs from file data on the run after upload
+if st.session_state.get("_comb_update_revenue"):
+    metrics = st.session_state.pop("_comb_update_revenue")
+    if "aov" in metrics:
+        st.session_state["comb_aov"] = metrics["aov"]
+    if "cvr" in metrics:
+        st.session_state["comb_cvr"] = metrics["cvr"]
+
 # ── Sidebar ──────────────────────────────────────────────────────────────────
 st.sidebar.header("Combined Forecast Settings")
 
@@ -141,6 +149,18 @@ else:
         kw_df = load_keywords(kw_file)
     if traffic_file is not None:
         traffic_df = load_traffic(traffic_file)
+        if traffic_df is not None:
+            metrics = {}
+            if "aov" in traffic_df.columns:
+                avg_aov = round(float(traffic_df["aov"].dropna().mean()), 2)
+                if avg_aov > 0:
+                    metrics["aov"] = avg_aov
+            if "transactions" in traffic_df.columns and traffic_df["traffic"].sum() > 0:
+                cvr = round((traffic_df["transactions"].sum() / traffic_df["traffic"].sum()) * 100, 2)
+                metrics["cvr"] = cvr
+            if metrics:
+                st.session_state["_comb_update_revenue"] = metrics
+                st.rerun()
 
 if kw_df is not None:
     st.success(f"Keywords: {len(kw_df)} loaded")

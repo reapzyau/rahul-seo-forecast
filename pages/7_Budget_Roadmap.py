@@ -7,6 +7,7 @@ from engine.budget_engine import (
     build_monthly_budget_timeline,
     DEFAULT_SEO_TASKS,
 )
+from engine.revenue_engine import CURRENCY_SYMBOLS
 from utils.export import to_csv
 
 st.header("SEO Budget & Task Roadmap")
@@ -14,7 +15,9 @@ st.caption("Plan your SEO investment with task allocation and monthly budgeting.
 
 # ── Sidebar Settings ─────────────────────────────────────────────────────────
 st.sidebar.header("Budget Settings")
-hourly_rate = st.sidebar.number_input("Hourly Rate ($)", 50.0, 500.0, 200.0, step=10.0, key="budget_rate")
+currency = st.sidebar.selectbox("Currency", list(CURRENCY_SYMBOLS.keys()), key="budget_currency")
+sym = CURRENCY_SYMBOLS.get(currency, "$")
+hourly_rate = st.sidebar.number_input(f"Hourly Rate ({sym})", 50.0, 500.0, 200.0, step=10.0, key="budget_rate")
 months = st.sidebar.slider("Project Duration (months)", 3, 24, 12, key="budget_months")
 
 st.sidebar.divider()
@@ -37,10 +40,10 @@ timeline_df = build_monthly_budget_timeline(custom_tasks, hourly_rate, months)
 
 # ── KPI Cards ────────────────────────────────────────────────────────────────
 c1, c2, c3, c4 = st.columns(4)
-c1.metric("Monthly Investment", f"${summary['total_monthly_cost']:,.0f}")
+c1.metric("Monthly Investment", f"{sym}{summary['total_monthly_cost']:,.0f}")
 c2.metric("Hours/Month", f"{summary['total_hours_per_month']:.1f}")
-c3.metric("Annual Cost", f"${summary['total_annual_cost']:,.0f}")
-c4.metric("Project Total", f"${summary['total_project_cost']:,.0f}")
+c3.metric("Annual Cost", f"{sym}{summary['total_annual_cost']:,.0f}")
+c4.metric("Project Total", f"{sym}{summary['total_project_cost']:,.0f}")
 
 # ── Tabs ─────────────────────────────────────────────────────────────────────
 tab1, tab2, tab3, tab4 = st.tabs([
@@ -60,11 +63,11 @@ with tab1:
         cat_hours = cat_tasks["Hours/Month"].sum()
         cat_cost = cat_tasks["Monthly Cost"].sum()
 
-        with st.expander(f"**{cat}** — {cat_hours:.1f} hrs/mo (${cat_cost:,.0f}/mo)", expanded=True):
+        with st.expander(f"**{cat}** — {cat_hours:.1f} hrs/mo ({sym}{cat_cost:,.0f}/mo)", expanded=True):
             for _, row in cat_tasks.iterrows():
                 st.markdown(
                     f"**{row['Task']}** — {row['Hours/Month']:.1f} hrs/mo "
-                    f"(${row['Monthly Cost']:,.0f}/mo) | {row['Frequency']}"
+                    f"({sym}{row['Monthly Cost']:,.0f}/mo) | {row['Frequency']}"
                 )
                 st.caption(row["Description"])
 
@@ -74,7 +77,7 @@ with tab2:
     # Format currency columns
     for col in display_tl.columns:
         if col != "Month":
-            display_tl[col] = display_tl[col].apply(lambda x: f"${x:,.0f}")
+            display_tl[col] = display_tl[col].apply(lambda x: f"{sym}{x:,.0f}")
     st.dataframe(display_tl, use_container_width=True, hide_index=True)
 
 with tab3:
@@ -104,7 +107,7 @@ with tab3:
         barmode="stack",
         title="Monthly Budget by Category",
         xaxis_title="Month",
-        yaxis_title="Cost ($)",
+        yaxis_title=f"Cost ({sym})",
         plot_bgcolor="white",
     )
     st.plotly_chart(fig_bar, use_container_width=True)
