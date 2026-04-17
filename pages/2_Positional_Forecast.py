@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 
-from engine.positional_engine import run_positional_forecast, quick_wins
+from engine.positional_engine import run_positional_forecast, run_positional_forecast_mc, quick_wins
 from engine.revenue_engine import add_revenue, CURRENCY_SYMBOLS
 from utils.chart_builder import positional_uplift_chart, revenue_projection_chart
 from utils.export import to_csv, to_html_report
@@ -63,6 +63,12 @@ aio_penalty = st.sidebar.slider(
 )
 
 st.sidebar.divider()
+st.sidebar.subheader("Monte Carlo Settings")
+
+show_bands = st.sidebar.checkbox("Show P10/P50/P90 bands", value=True, key="pos_bands")
+use_attention_curve = st.sidebar.checkbox("Apply attention curve", value=True, key="pos_attn")
+
+st.sidebar.divider()
 st.sidebar.subheader("GA4 Anchoring")
 
 anchor_to_ga4 = False
@@ -97,13 +103,14 @@ if st.button("Generate Forecast", type="primary", key="pos_run"):
         if anchor_to_ga4 and ga4_df is not None:
             ga4_baseline = int(ga4_df["traffic"].iloc[-1])
 
-        kw_df, monthly = run_positional_forecast(
+        kw_df, monthly = run_positional_forecast_mc(
             kw_existing,
             months=months,
             effort=effort,
             ga4_baseline=ga4_baseline,
             ctr_model=ctr_model,
             traffic_multiplier=traffic_multiplier,
+            use_attention_curve=use_attention_curve,
             seed=42,
         )
 
@@ -123,6 +130,7 @@ if st.button("Generate Forecast", type="primary", key="pos_run"):
             "ctr_model_name": ctr_model_name,
             "scenario_name": scenario_name,
             "aio_penalty": aio_penalty,
+            "show_bands": show_bands,
         }
 
 # ── Results ─────────────────────────────────────────────────────────────────
@@ -145,13 +153,36 @@ if "pos_result" in st.session_state:
         total_uplift = monthly["uplift"].iloc[-1]
         uplift_pct = (total_uplift / baseline * 100) if baseline > 0 else 0.0
 
+        # P10/P90 end-of-period values for band display
+        uplift_p10 = monthly["uplift_p10"].iloc[-1]
+        uplift_p90 = monthly["uplift_p90"].iloc[-1]
+
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("Baseline Traffic", f"{baseline:,.0f}")
         c2.metric("Projected End Traffic", f"{projected_end:,.0f}")
-        c3.metric("Total Uplift", f"{total_uplift:,.0f}")
+        c3.metric("P50 M12 Uplift", f"{total_uplift:,.0f}")
+        if show_bands:
+            c3.caption(f"(P10\u2013P90: {uplift_p10:,.0f}\u2013{uplift_p90:,.0f})")
         c4.metric("Uplift %", f"{uplift_pct:.1f}%")
 
         fig = positional_uplift_chart(monthly)
+
+        if show_bands:
+            import plotly.graph_objects as go
+            fig.add_trace(go.Scatter(
+                x=monthly["month"], y=monthly["traffic_p90"],
+                mode="lines", line=dict(width=0),
+                showlegend=False, hoverinfo="skip",
+            ))
+            fig.add_trace(go.Scatter(
+                x=monthly["month"], y=monthly["traffic_p10"],
+                mode="lines", line=dict(width=0),
+                fill="tonexty",
+                fillcolor="rgba(37, 99, 235, 0.10)",
+                name="P10\u2013P90 range",
+                hoverinfo="skip",
+            ))
+
         st.plotly_chart(fig, use_container_width=True)
 
         if r["enable_revenue"] and "revenue" in monthly.columns:

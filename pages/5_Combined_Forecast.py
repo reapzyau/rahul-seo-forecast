@@ -2,6 +2,8 @@ import streamlit as st
 import pandas as pd
 
 from engine.combined_engine import run_combined_forecast
+from engine.decay_engine import calculate_portfolio_decay
+from engine.aio_risk_engine import project_aio_erosion
 from engine.revenue_engine import (
     CURRENCY_SYMBOLS,
     INTENT_CVR_MULTIPLIERS,
@@ -154,6 +156,23 @@ if enable_revenue:
         for intent, mult in INTENT_CVR_MULTIPLIERS.items():
             st.text(f"  {intent.title()}: {mult}x base CVR")
 
+st.sidebar.divider()
+st.sidebar.subheader("Decay & Erosion")
+include_decay = st.sidebar.checkbox(
+    "Model keyword decay (unmaintained pages)", value=True, key="comb_decay",
+)
+maintenance_coverage = st.sidebar.slider(
+    "Maintenance coverage", 0.0, 1.0, 0.0, 0.1,
+    key="comb_maint", disabled=not include_decay,
+)
+include_aio_erosion = st.sidebar.checkbox(
+    "Model AIO erosion (spreading AI Overviews)", value=True, key="comb_aio_erosion",
+)
+aio_growth_rate = st.sidebar.slider(
+    "AIO monthly growth rate", 0.0, 0.10, 0.025, 0.005,
+    key="comb_aio_growth", disabled=not include_aio_erosion,
+)
+
 # ── Generate ───────────────────────────────────────────────────────────────
 if st.button("Generate Combined Forecast", type="primary", key="comb_run"):
     with st.spinner("Running combined forecast..."):
@@ -171,11 +190,29 @@ if st.button("Generate Combined Forecast", type="primary", key="comb_run"):
             nc_monthly = nc_result["monthly_df"]
             nc_keyword_df = nc_result.get("keyword_df")
 
+        decay_df = None
+        if include_decay:
+            kw_for_decay = st.session_state.get("kw_existing")
+            if kw_for_decay is not None and not kw_for_decay.empty:
+                decay_df = calculate_portfolio_decay(
+                    kw_for_decay, months, maintenance_coverage=maintenance_coverage,
+                )
+
+        aio_erosion_df = None
+        if include_aio_erosion:
+            kw_for_aio = st.session_state.get("kw_df")
+            if kw_for_aio is not None and not kw_for_aio.empty:
+                aio_erosion_df = project_aio_erosion(
+                    kw_for_aio, months, monthly_growth=aio_growth_rate,
+                )
+
         combined_df = run_combined_forecast(
             historical_df=historical_df,
             positional_monthly=pos_monthly,
             new_content_monthly=nc_monthly,
             months=months,
+            decay_df=decay_df,
+            aio_erosion_df=aio_erosion_df,
         )
 
         # Build merged keyword set for intent-weighted revenue
@@ -213,6 +250,8 @@ if st.button("Generate Combined Forecast", type="primary", key="comb_run"):
             "months": months,
             "intent_breakdown": intent_breakdown,
             "ga4_rev_per_session": ga4_rev_per_session,
+            "decay_df": decay_df,
+            "aio_erosion_df": aio_erosion_df,
         }
 
 # ── Results ────────────────────────────────────────────────────────────────
@@ -222,10 +261,16 @@ if "comb_results" in st.session_state:
     forecast_mask = combined_df["is_forecast"]
     forecast_df = combined_df[forecast_mask]
 
+    has_bands = "combined_p50" in combined_df.columns
+    combined_col = "combined_p50" if has_bands else "combined"
+    pos_col = "positional_uplift_p50" if has_bands else "positional_uplift"
+
     baseline_end = int(forecast_df["baseline"].iloc[-1])
-    combined_end = int(forecast_df["combined"].iloc[-1])
-    pos_total = int(forecast_df["positional_uplift"].sum())
+    combined_end = int(forecast_df[combined_col].iloc[-1])
+    pos_total = int(forecast_df[pos_col].sum())
     nc_total = int(forecast_df["new_content_uplift"].sum())
+    total_decay = int(forecast_df["decay"].sum()) if "decay" in forecast_df.columns else 0
+    total_aio = int(forecast_df["aio_erosion"].sum()) if "aio_erosion" in forecast_df.columns else 0
     uplift_end = (
         round((combined_end - baseline_end) / baseline_end * 100, 1)
         if baseline_end > 0 else 0
@@ -259,28 +304,50 @@ if "comb_results" in st.session_state:
             streams_desc.append(f"positional uplift (**{pos_total:,}** visits)")
         if r["include_new_content"]:
             streams_desc.append(f"new content (**{nc_total:,}** visits)")
+        if total_decay > 0:
+            streams_desc.append(f"keyword decay (**-{total_decay:,}** visits)")
+        if total_aio > 0:
+            streams_desc.append(f"AIO erosion (**-{total_aio:,}** visits)")
+        band_note = ""
+        if has_bands:
+            p10_end = int(forecast_df["combined_p10"].iloc[-1])
+            p90_end = int(forecast_df["combined_p90"].iloc[-1])
+            band_note = f"\n\nP10/P90 range at end: **{p10_end:,}** — **{p90_end:,}** visits/month."
         st.info(
             f"Combined projection using: {', '.join(streams_desc)}.\n\n"
             f"Projected end traffic: **{combined_end:,}** visits/month"
             + (f" — **{uplift_end}%** uplift over baseline." if baseline_end > 0 else ".")
+            + band_note
         )
 
     # ── Tab: Uplift Table ───────────────────────────────────────────
     with tabs[tab_idx]:
         tab_idx += 1
 
-        display_df = forecast_df[
-            ["date", "baseline", "positional_uplift", "new_content_uplift", "combined", "uplift_pct"]
-        ].copy()
-        display_df["date"] = display_df["date"].dt.strftime("%b %Y")
-        display_df = display_df.rename(columns={
+        table_cols = ["date", "baseline", pos_col, "new_content_uplift"]
+        rename_map = {
             "date": "Month",
             "baseline": "Baseline",
-            "positional_uplift": "Positional",
+            pos_col: "Positional",
             "new_content_uplift": "New Content",
-            "combined": "Combined",
-            "uplift_pct": "Uplift %",
-        })
+        }
+        if "decay" in forecast_df.columns and total_decay > 0:
+            table_cols.append("decay")
+            rename_map["decay"] = "Decay"
+        if "aio_erosion" in forecast_df.columns and total_aio > 0:
+            table_cols.append("aio_erosion")
+            rename_map["aio_erosion"] = "AIO Erosion"
+        table_cols += [combined_col, "uplift_pct"]
+        rename_map[combined_col] = "Combined"
+        rename_map["uplift_pct"] = "Uplift %"
+        if has_bands:
+            table_cols += ["combined_p10", "combined_p90"]
+            rename_map["combined_p10"] = "P10"
+            rename_map["combined_p90"] = "P90"
+
+        display_df = forecast_df[table_cols].copy()
+        display_df["date"] = display_df["date"].dt.strftime("%b %Y")
+        display_df = display_df.rename(columns=rename_map)
         st.dataframe(display_df, use_container_width=True, hide_index=True)
 
     # ── Tab: Revenue Analysis ───────────────────────────────────────

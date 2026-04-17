@@ -27,6 +27,23 @@ if not sources:
 
 source = st.selectbox("Forecast Source", sources, key="grid_source")
 
+# -- Scenario selector for band-aware sources --------------------------------
+scenario_options = {"Conservative (P10)": "p10", "Median (P50)": "p50", "Aggressive (P90)": "p90"}
+has_bands = False
+
+if source == "Combined Forecast":
+    comb_df = st.session_state["comb_results"]["combined_df"]
+    has_bands = "combined_p10" in comb_df.columns
+elif source == "Positional Forecast":
+    pos_monthly = st.session_state["pos_result"]["monthly"]
+    has_bands = "traffic_p10" in pos_monthly.columns
+
+if has_bands:
+    scenario_label = st.selectbox("Scenario", list(scenario_options.keys()), index=1, key="grid_scenario")
+    scenario = scenario_options[scenario_label]
+else:
+    scenario = "p50"
+
 # -- Extract monthly traffic based on source ----------------------------------
 monthly_traffic = []
 
@@ -34,12 +51,14 @@ if source == "Combined Forecast":
     comb = st.session_state["comb_results"]
     combined_df = comb["combined_df"]
     forecast_rows = combined_df[combined_df["is_forecast"]]
-    monthly_traffic = forecast_rows["combined"].tolist()
+    col = f"combined_{scenario}" if f"combined_{scenario}" in forecast_rows.columns else "combined"
+    monthly_traffic = forecast_rows[col].tolist()
 
 elif source == "Positional Forecast":
     pos = st.session_state["pos_result"]
     pos_monthly = pos["monthly"]
-    monthly_traffic = pos_monthly["traffic"].tolist()
+    col = f"traffic_{scenario}" if f"traffic_{scenario}" in pos_monthly.columns else "traffic"
+    monthly_traffic = pos_monthly[col].tolist()
 
 elif source == "Historical Forecast":
     hist = st.session_state["hist_results"]

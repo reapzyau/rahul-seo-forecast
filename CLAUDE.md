@@ -35,9 +35,25 @@ The positional engine accepts a `ga4_baseline: int` parameter. When set, the eng
 - **Positional** = for keywords that already rank (position 1-100). Projects uplift from moving them up the SERP. This is the default workflow because SEMrush exports only contain keywords you rank for.
 - **New Content** = for net-new keywords (gap analysis output, target keyword lists from a strategist). Uses probabilistic ranking based on DA vs. KD. Requires a separate upload — SEMrush alone can't populate this.
 
-## Known calibration concerns
+## v3 architecture: forecasts are bands, not lines
 
-The positional engine's "moderate" effort level currently projects ~75% uplift over baseline at month 12 on the Cable Melbourne test data. This is on the aggressive end of realistic — a properly-run SEO engagement typically delivers 30-50% over 12 months. The tuning knob is `engine/positional_engine.py::estimate_target_position` (the `base_gain` per KD tier). Calibration against real campaign outcomes is pending.
+From v3, the positional engine returns P10/P50/P90 monthly data via Monte Carlo simulation (500 trials). Every downstream consumer handles bands. Pages that need a single number use P50 with a label saying "P50 (median scenario)".
+
+## Combined Forecast is the canonical hub
+
+Every downstream page (Seasonality, AIO Risk, SEO Roadmap, Forecast Grid Export, Variance) reads from Combined first. Fallback order: Combined → Positional → Historical → New Content → error. The Combined engine layers: `baseline + positional_uplift + new_content - decay - aio_erosion`.
+
+## Attention curve is on by default
+
+The portfolio attention curve (top 5% full effort, bottom 50% at 0.05 weight) is enabled by default. Can be disabled via sidebar toggle for raw forecasts. This addresses the v2 calibration concern: "moderate" effort now yields 30-50% uplift instead of 75%.
+
+## Snapshots are user-owned files
+
+Streamlit Community Cloud has no persistent storage. Forecast snapshots are downloadable JSON that the analyst keeps alongside the multi-channel plan. Upload back via the Variance page to grade forecasts. No server-side storage.
+
+## Seasonality is applied last
+
+Every engine produces un-seasoned forecasts. Seasonality multipliers apply to the Combined output as the final step.
 
 ## The FY-date reconstruction gotcha
 

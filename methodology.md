@@ -263,6 +263,86 @@ Recommendations are generated based on exposure percentage:
 
 ---
 
+## Mode 6: Keyword Decay
+
+Pages that rank today don't keep ranking tomorrow without maintenance. The decay engine models traffic loss on unmaintained pages using position-bucketed annual rates:
+
+| Position Bucket | Annual Decay Rate |
+|----------------|-------------------|
+| Top 3 | 8% |
+| Top 10 | 12% |
+| 11–20 | 18% |
+| 21–50 | 25% |
+| 51+ | 35% |
+
+Monthly retention is calculated as `(1 - annual_rate)^(1/12)`. The **maintenance coverage** parameter (0–1) reduces effective decay: at 0.7 coverage, only 30% of the decay applies.
+
+The "honest baseline" is the linear projection minus cumulative decay — this is what happens if you stop all SEO work.
+
+---
+
+## Mode 7: Monte Carlo Confidence Bands
+
+Instead of a single-line forecast, the positional engine runs 500 Monte Carlo trials per keyword:
+
+1. **Improvement probability** — logistic function on (effort score − normalised KD). Not every keyword improves.
+2. **Target position** — triangular distribution centred on the deterministic target ±3 positions.
+3. **Time-to-move** — triangular distribution around tier defaults.
+
+Each trial produces a full monthly traffic projection. The P10/P50/P90 percentiles across trials give:
+- **P10** (conservative) — 90% chance of beating this
+- **P50** (median) — the most likely outcome
+- **P90** (optimistic) — only 10% chance of reaching this
+
+When a single number is needed (e.g. Forecast Grid Export), P50 is used by default.
+
+---
+
+## Mode 8: Portfolio Attention Curve
+
+SEO teams can't meaningfully work on all keywords at once. The attention curve models realistic effort distribution:
+
+| Portfolio Slice | Effort Weight | Label |
+|----------------|---------------|-------|
+| Top 5% | 1.00 | Focus |
+| Next 15% | 0.60 | Secondary |
+| Next 30% | 0.25 | Long Tail |
+| Bottom 50% | 0.05 | Background |
+
+Keywords are ranked by opportunity score (`volume / (kd + 1)`). The effort weight multiplies the improvement probability in the Monte Carlo — background keywords are unlikely to improve without dedicated effort.
+
+This brings the aggregate uplift from v2's ~75% down to a realistic 30–50% range on typical portfolios.
+
+---
+
+## Mode 9: Time-Varying AIO Erosion
+
+v3 models AI Overview coverage as spreading over the forecast horizon at ~2.5% of queries per month. Intent-specific CTR penalties apply:
+
+| Intent | CTR Penalty |
+|--------|-------------|
+| Informational | 45% |
+| Commercial | 15% |
+| Transactional | 5% |
+| Navigational | 0% |
+
+Keywords already flagged as AIO-affected lose CTR from month 1. Previously unaffected keywords become affected over time via compound probability: `P(affected by month m) = 1 - (1 - growth_rate)^m`.
+
+---
+
+## Mode 10: Forecast Variance & Calibration
+
+Every Combined Forecast can be downloaded as a JSON snapshot. Months later, upload it alongside fresh GA4 data to see how the forecast performed.
+
+The variance analysis shows:
+- Per-month P50 forecast vs. actual traffic
+- Whether actuals fell within the P10–P90 band
+- Mean variance %, max overshoot/undershoot
+
+This is the tool's calibration loop. Without it, forecasts are guesses nobody ever grades. With accumulated snapshots, parameters can be tuned to improve accuracy over time.
+
+---
+
 ## Assumptions and Limitations
 
 1. **CTR data is based on industry averages** — actual CTR varies by industry, SERP features, and brand recognition.
