@@ -173,8 +173,10 @@ def _try_ai_transform(raw_df: pd.DataFrame, target_format: str, data_type: str) 
 
     try:
         with st.spinner("AI is analyzing your data format..."):
-            code = transform_data(client, raw_df, target_format, model)
+            code, used_model = transform_data(client, raw_df, target_format, model)
 
+        if used_model != model:
+            st.info(f"Fell back to {used_model} — selected model was unavailable")
         with st.expander("AI-generated transform code", expanded=False):
             st.code(code, language="python")
 

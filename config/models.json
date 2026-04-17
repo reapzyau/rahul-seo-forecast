@@ -1,0 +1,34 @@
+{
+  "default": "openai/gpt-4o-mini",
+  "fallback_chain": [
+    "openai/gpt-4o-mini",
+    "openai/gpt-4o",
+    "anthropic/claude-haiku-4-5"
+  ],
+  "models": [
+    {
+      "id": "openai/gpt-4o-mini",
+      "label": "GPT-4o Mini — fast, cheap, good default"
+    },
+    {
+      "id": "openai/gpt-4o",
+      "label": "GPT-4o — smarter, still fast"
+    },
+    {
+      "id": "openai/gpt-4.1",
+      "label": "GPT-4.1 — latest generation"
+    },
+    {
+      "id": "openai/o4-mini",
+      "label": "o4-mini — reasoning model, fast"
+    },
+    {
+      "id": "anthropic/claude-haiku-4-5",
+      "label": "Claude Haiku 4.5 — fast alternative"
+    },
+    {
+      "id": "bedrock/amazon.nova-2-lite",
+      "label": "Nova 2 Lite — cheapest (Bedrock)"
+    }
+  ]
+}

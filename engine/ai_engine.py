@@ -1,5 +1,7 @@
 import json
 import os
+from pathlib import Path
+from string import Template
 
 import numpy as np
 import pandas as pd
@@ -10,15 +12,55 @@ except ImportError:
     OpenAI = None
 
 
+_CONFIG_DIR = Path(__file__).resolve().parent.parent / "config"
+_PROMPT_DIR = Path(__file__).resolve().parent.parent / "prompts"
+
+
+# ── Config helpers ───────────────────────────────────────────────────────────
+
+
+def _load_models_config() -> dict:
+    with open(_CONFIG_DIR / "models.json") as f:
+        return json.load(f)
+
+
+def get_model_options() -> list[dict]:
+    """Return the list of available models from config/models.json."""
+    return _load_models_config()["models"]
+
+
+def get_default_model() -> str:
+    return _load_models_config()["default"]
+
+
+def get_fallback_chain() -> list[str]:
+    return _load_models_config()["fallback_chain"]
+
+
+# ── Prompt loader ────────────────────────────────────────────────────────────
+
+
+def _load_prompt(name: str) -> tuple[str, Template]:
+    """Load a prompt file split by --- into (system_instructions, user_template).
+
+    User templates use $variable substitution (string.Template).
+    """
+    text = (_PROMPT_DIR / f"{name}.txt").read_text()
+    parts = text.split("---", 1)
+    system = parts[0].strip()
+    user = Template(parts[1].strip()) if len(parts) > 1 else Template("")
+    return system, user
+
+
+# ── Client ───────────────────────────────────────────────────────────────────
+
+
 def get_bifrost_client(api_key: str | None = None) -> "OpenAI | None":
     """Get Bi Frost OpenAI-compatible client.
 
     Args:
         api_key: Bi Frost virtual key. Falls back to Streamlit secrets,
                  then BIFROST_API_KEY env var.
-
-    Returns:
-        OpenAI client configured for Bi Frost, or None if unavailable.
     """
     if OpenAI is None:
         return None
@@ -34,7 +76,13 @@ def get_bifrost_client(api_key: str | None = None) -> "OpenAI | None":
         key = os.environ.get("BIFROST_API_KEY")
     if not key:
         return None
-    return OpenAI(base_url="https://bifrost.pattern.com/openai", api_key=key)
+    base_url = "https://bifrost.pattern.com"
+    if not base_url.rstrip("/").endswith("/v1"):
+        base_url = base_url.rstrip("/") + "/v1"
+    return OpenAI(base_url=base_url, api_key=key)
+
+
+# ── LLM helpers ──────────────────────────────────────────────────────────────
 
 
 def _parse_llm_json(text: str):
@@ -61,81 +109,95 @@ def _strip_code_fences(text: str) -> str:
 
 def _call_bifrost(client: "OpenAI", model: str, instructions: str, user_input: str,
                   temperature: float = 0.3, max_tokens: int = 4000) -> str:
-    """Call Bi Frost using the Responses API and return the output text."""
-    response = client.responses.create(
+    """Call Bi Frost via Chat Completions API and return the response text."""
+    response = client.chat.completions.create(
         model=model,
-        instructions=instructions,
-        input=user_input,
+        max_tokens=max_tokens,
         temperature=temperature,
-        max_output_tokens=max_tokens,
+        messages=[
+            {"role": "system", "content": instructions},
+            {"role": "user", "content": user_input},
+        ],
     )
-    return response.output_text
+    return response.choices[0].message.content
+
+
+def generate_with_fallback(client: "OpenAI", model: str, instructions: str,
+                           user_input: str, **kwargs) -> tuple[str, str]:
+    """Call Bi Frost with automatic fallback through the model chain.
+
+    Returns:
+        (response_text, model_used) tuple.
+    """
+    chain = get_fallback_chain()
+    models_to_try = [model] + [m for m in chain if m != model]
+    last_error = None
+    for attempt in models_to_try:
+        try:
+            return _call_bifrost(client, attempt, instructions, user_input, **kwargs), attempt
+        except Exception as e:
+            last_error = e
+            continue
+    raise RuntimeError(f"All models failed. Tried: {models_to_try}. Last error: {last_error}")
+
+
+# ── AI features ──────────────────────────────────────────────────────────────
 
 
 def cluster_keywords(
     client: "OpenAI",
     keywords: list[str],
-    model: str = "openai/gpt-5.4-mini",
-) -> dict:
-    """Group keywords into topical clusters using AI."""
+    model: str = "openai/gpt-4o-mini",
+) -> tuple[dict, str]:
+    """Group keywords into topical clusters using AI.
+
+    Returns:
+        (clusters_dict, model_used) tuple.
+    """
+    system, user_tmpl = _load_prompt("cluster_keywords")
     kw_list = "\n".join(f"- {kw}" for kw in keywords[:200])
+    user_input = user_tmpl.substitute(kw_list=kw_list)
 
-    text = _call_bifrost(
-        client, model,
-        instructions=(
-            "You are an SEO expert. Group the given keywords into topical clusters. "
-            "Each cluster should represent one content piece or page. "
-            "Return valid JSON only, no markdown fences."
-        ),
-        user_input=(
-            f"Group these SEO keywords into topical clusters:\n\n{kw_list}\n\n"
-            'Return JSON: {"clusters": [{"name": "cluster name", '
-            '"keywords": ["kw1", "kw2"], "suggested_title": "Article Title"}]}'
-        ),
-        temperature=0.3,
+    text, used_model = generate_with_fallback(
+        client, model, system, user_input, temperature=0.3,
     )
-
-    return _parse_llm_json(text)
+    return _parse_llm_json(text), used_model
 
 
 def check_cannibalization(
     client: "OpenAI",
     keywords: list[str],
     existing_urls: list[str],
-    model: str = "openai/gpt-5.4-mini",
-) -> list[dict]:
-    """Check if proposed keywords conflict with existing URLs."""
+    model: str = "openai/gpt-4o-mini",
+) -> tuple[list[dict], str]:
+    """Check if proposed keywords conflict with existing URLs.
+
+    Returns:
+        (results_list, model_used) tuple.
+    """
+    system, user_tmpl = _load_prompt("check_cannibalization")
     kw_list = "\n".join(f"- {kw}" for kw in keywords[:100])
     url_list = "\n".join(f"- {url}" for url in existing_urls[:100])
+    user_input = user_tmpl.substitute(kw_list=kw_list, url_list=url_list)
 
-    text = _call_bifrost(
-        client, model,
-        instructions=(
-            "You are an SEO cannibalization expert. Analyze whether proposed keywords "
-            "would compete with existing URLs. Return valid JSON only, no markdown fences."
-        ),
-        user_input=(
-            f"Proposed keywords:\n{kw_list}\n\n"
-            f"Existing URLs:\n{url_list}\n\n"
-            "For each keyword, assess cannibalization risk. Return JSON array:\n"
-            '[{"keyword": "...", "conflicting_url": "..." or null, '
-            '"risk": "high"|"medium"|"low"|"none", '
-            '"recommendation": "brief action item"}]'
-        ),
-        temperature=0.2,
+    text, used_model = generate_with_fallback(
+        client, model, system, user_input, temperature=0.2,
     )
-
-    return _parse_llm_json(text)
+    return _parse_llm_json(text), used_model
 
 
 def generate_content_roadmap(
     client: "OpenAI",
     keyword_df: pd.DataFrame,
     months: int,
-    model: str = "openai/gpt-5.4-mini",
+    model: str = "openai/gpt-4o-mini",
     existing_roadmap_csv: str | None = None,
-) -> list[dict]:
-    """Generate an AI-powered content roadmap from keyword forecast data."""
+) -> tuple[list[dict], str]:
+    """Generate an AI-powered content roadmap from keyword forecast data.
+
+    Returns:
+        (roadmap_list, model_used) tuple.
+    """
     cols = ["keyword", "volume", "kd", "tier", "intent", "efficiency_score",
             "estimated_monthly_traffic", "publish_month"]
     available = [c for c in cols if c in keyword_df.columns]
@@ -144,27 +206,20 @@ def generate_content_roadmap(
 
     existing_ctx = ""
     if existing_roadmap_csv:
-        existing_ctx = f"\n\nExisting roadmap for context (avoid duplicating these topics):\n{existing_roadmap_csv[:3000]}"
+        existing_ctx = (
+            "\n\nExisting roadmap for context (avoid duplicating these topics):\n"
+            + existing_roadmap_csv[:3000]
+        )
 
-    text = _call_bifrost(
-        client, model,
-        instructions=(
-            "You are an SEO content strategist. Create a prioritized content roadmap "
-            "from keyword forecast data. Consider: publish highest-efficiency keywords first, "
-            "cluster related keywords into single posts, flag informational keywords at risk "
-            "from AI Overviews. Return valid JSON only, no markdown fences."
-        ),
-        user_input=(
-            f"Keyword forecast data (top 50 by efficiency):\n\n{data_str}{existing_ctx}\n\n"
-            f"Create a {months}-month content roadmap. Return JSON:\n"
-            '[{"month": 1, "content_pieces": [{"title": "...", '
-            '"target_keywords": ["kw1", "kw2"], "estimated_traffic": 1000, '
-            '"priority": "high"|"medium"|"low", "notes": "brief note"}]}]'
-        ),
-        temperature=0.4,
+    system, user_tmpl = _load_prompt("content_roadmap")
+    user_input = user_tmpl.substitute(
+        data_str=data_str, existing_ctx=existing_ctx, months=months,
     )
 
-    return _parse_llm_json(text)
+    text, used_model = generate_with_fallback(
+        client, model, system, user_input, temperature=0.4,
+    )
+    return _parse_llm_json(text), used_model
 
 
 # ── AI Data Transformation ──────────────────────────────────────────────────
@@ -208,43 +263,25 @@ def transform_data(
     client: "OpenAI",
     df: pd.DataFrame,
     target_format: str,
-    model: str = "openai/gpt-5.4-mini",
-) -> str:
-    """Use AI to generate Python code that transforms uploaded data into the target format.
-
-    Args:
-        client: Bi Frost OpenAI client.
-        df: The uploaded DataFrame.
-        target_format: Description of the target format.
-        model: Model to use.
+    model: str = "openai/gpt-4o-mini",
+) -> tuple[str, str]:
+    """Use AI to generate Python code that transforms uploaded data.
 
     Returns:
-        Python code string that transforms variable 'df' into the target format.
+        (code_string, model_used) tuple.
     """
     sample = df.head(15).to_csv(index=False)
     col_info = f"Columns: {list(df.columns)}\nShape: {df.shape}\nDtypes:\n{df.dtypes.to_string()}"
 
-    code = _call_bifrost(
-        client, model,
-        instructions=(
-            "You are a data engineering expert. Given a sample of uploaded data, "
-            "write Python/pandas code to transform it into the required format. "
-            "The code should operate on a variable called 'df' (a pandas DataFrame) "
-            "and produce a variable called 'result' (the transformed DataFrame). "
-            "Return ONLY the Python code, no explanations, no markdown fences. "
-            "Import only pandas (already available as pd). numpy is available as np. "
-            "Handle edge cases like missing values gracefully."
-        ),
-        user_input=(
-            f"## Source data\n{col_info}\n\nSample rows:\n{sample}\n\n"
-            f"## Target format\n{target_format}\n\n"
-            "Write Python code to transform 'df' into 'result'."
-        ),
-        temperature=0.1,
-        max_tokens=2000,
+    system, user_tmpl = _load_prompt("transform_data")
+    user_input = user_tmpl.substitute(
+        col_info=col_info, sample=sample, target_format=target_format,
     )
 
-    return _strip_code_fences(code)
+    text, used_model = generate_with_fallback(
+        client, model, system, user_input, temperature=0.1, max_tokens=2000,
+    )
+    return _strip_code_fences(text), used_model
 
 
 _BLOCKED_CODE_PATTERNS = [
@@ -270,16 +307,6 @@ def execute_transform(df: pd.DataFrame, code: str) -> pd.DataFrame:
 
     Blocks dangerous patterns (os, subprocess, open, eval, exec, etc.)
     before running the code in an isolated namespace.
-
-    Args:
-        df: Source DataFrame.
-        code: Python code that transforms 'df' into 'result'.
-
-    Returns:
-        Transformed DataFrame.
-
-    Raises:
-        ValueError: If blocked patterns detected or result is invalid.
     """
     for pattern in _BLOCKED_CODE_PATTERNS:
         if pattern in code:

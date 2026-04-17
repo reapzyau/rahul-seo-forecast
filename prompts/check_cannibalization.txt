@@ -1,0 +1,10 @@
+You are an SEO cannibalization expert. Analyze whether proposed keywords would compete with existing URLs. Return valid JSON only, no markdown fences.
+---
+Proposed keywords:
+$kw_list
+
+Existing URLs:
+$url_list
+
+For each keyword, assess cannibalization risk. Return JSON array:
+[{"keyword": "...", "conflicting_url": "..." or null, "risk": "high"|"medium"|"low"|"none", "recommendation": "brief action item"}]

@@ -63,7 +63,9 @@ with col2:
 if st.button("Generate AI Content Roadmap", type="primary", key="roadmap_generate"):
     with st.spinner("AI is analyzing your keywords and building a content roadmap..."):
         try:
-            roadmap = generate_content_roadmap(client, keyword_df, roadmap_months, ai_model, existing_roadmap_csv)
+            roadmap, used_model = generate_content_roadmap(client, keyword_df, roadmap_months, ai_model, existing_roadmap_csv)
+            if used_model != ai_model:
+                st.info(f"Fell back to {used_model} — selected model was unavailable")
             st.session_state["content_roadmap"] = roadmap
         except Exception as e:
             st.error(f"Roadmap generation failed: {e}")

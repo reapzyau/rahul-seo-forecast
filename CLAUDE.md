@@ -7,6 +7,8 @@ app.py                  # Streamlit home page + shared sidebar (AI settings)
 pages/                  # One file per page (numbered for sidebar order)
 engine/                 # Pure-Python computation — no Streamlit imports
 utils/                  # Shared helpers (charts, export, data loading, sidebar)
+config/                 # models.json — model catalogue and fallback chain
+prompts/                # Prompt templates (system + user) for AI features
 assets/                 # Sample CSV files
 tests/                  # pytest unit tests (engine logic only, no Streamlit)
 ```
@@ -42,9 +44,22 @@ A better long-term approach: have the LLM return a JSON transform spec (rename m
 ## AI integration (Bi Frost)
 
 - Client: `engine/ai_engine.get_bifrost_client()` — reads key from session state → secrets → env var
-- Base URL: `https://bifrost.pattern.com/openai` (Responses API, not Chat Completions)
-- All calls go through `_call_bifrost(client, model, instructions, user_input)` helper
-- Default model: `openai/gpt-5.4-mini`
+- Base URL: `https://bifrost.pattern.com/v1` (Chat Completions API, not Responses)
+- All calls go through `_call_bifrost(client, model, instructions, user_input)` → `client.chat.completions.create()`
+- Fallback: `generate_with_fallback()` tries the selected model, then walks the chain in `config/models.json`
+- Model catalogue: `config/models.json` — single source of truth for model IDs, labels, and fallback chain
+- Prompts: `prompts/*.txt` — system instructions + user template separated by `---`, loaded via `_load_prompt()`
+- Default model: `openai/gpt-4o-mini` (set in `config/models.json`)
+
+### Adding a new AI feature
+
+1. Create `prompts/feature_name.txt` with system instructions and user template (use `$variable` placeholders)
+2. Add function in `engine/ai_engine.py` that calls `generate_with_fallback()` — returns `(result, used_model)` tuple
+3. In the page, handle the tuple and show fallback info if `used_model != ai_model`
+
+### Changing models
+
+Edit `config/models.json` — do not hardcode model IDs in Python files. The sidebar loads from this file.
 
 ## Running tests
 

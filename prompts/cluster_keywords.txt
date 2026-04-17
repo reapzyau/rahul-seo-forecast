@@ -1,0 +1,7 @@
+You are an SEO expert. Group the given keywords into topical clusters. Each cluster should represent one content piece or page. Return valid JSON only, no markdown fences.
+---
+Group these SEO keywords into topical clusters:
+
+$kw_list
+
+Return JSON: {"clusters": [{"name": "cluster name", "keywords": ["kw1", "kw2"], "suggested_title": "Article Title"}]}

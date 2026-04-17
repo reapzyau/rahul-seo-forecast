@@ -640,6 +640,43 @@ class TestTemplates:
         assert (df["kd"] >= 0).all()
 
 
+class TestModelsConfig:
+    def test_config_loads(self):
+        from engine.ai_engine import get_model_options, get_default_model, get_fallback_chain
+        models = get_model_options()
+        assert len(models) > 0
+        assert all("id" in m and "label" in m for m in models)
+
+    def test_default_model_in_list(self):
+        from engine.ai_engine import get_model_options, get_default_model
+        default = get_default_model()
+        ids = [m["id"] for m in get_model_options()]
+        assert default in ids
+
+    def test_fallback_chain_valid(self):
+        from engine.ai_engine import get_model_options, get_fallback_chain
+        chain = get_fallback_chain()
+        assert len(chain) >= 2
+        ids = [m["id"] for m in get_model_options()]
+        for model in chain:
+            assert model in ids
+
+
+class TestPromptLoader:
+    def test_all_prompts_load(self):
+        from engine.ai_engine import _load_prompt
+        for name in ["cluster_keywords", "check_cannibalization", "content_roadmap", "transform_data"]:
+            system, user_tmpl = _load_prompt(name)
+            assert len(system) > 20
+            assert user_tmpl.template
+
+    def test_prompt_substitution(self):
+        from engine.ai_engine import _load_prompt
+        system, user_tmpl = _load_prompt("cluster_keywords")
+        result = user_tmpl.substitute(kw_list="- test keyword")
+        assert "test keyword" in result
+
+
 class TestDataLoaderHelpers:
     def test_efficiency_ordering_preserved(self):
         """Verify the keyword engine sorts by efficiency."""

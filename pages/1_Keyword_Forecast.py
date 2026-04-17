@@ -335,7 +335,9 @@ if "kw_results" in st.session_state:
                 if st.button("Generate Clusters", key="kw_cluster_btn"):
                     with st.spinner("Clustering keywords..."):
                         try:
-                            result = cluster_keywords(client, keyword_df["keyword"].tolist(), ai_model)
+                            result, used_model = cluster_keywords(client, keyword_df["keyword"].tolist(), ai_model)
+                            if used_model != ai_model:
+                                st.info(f"Fell back to {used_model} — selected model was unavailable")
                             clusters = result.get("clusters", [])
                             for cluster in clusters:
                                 with st.expander(f"**{cluster.get('name', 'Cluster')}** — {cluster.get('suggested_title', '')}"):
@@ -359,9 +361,11 @@ if "kw_results" in st.session_state:
                     else:
                         with st.spinner("Checking cannibalization..."):
                             try:
-                                results = check_cannibalization(
+                                results, used_model = check_cannibalization(
                                     client, keyword_df["keyword"].tolist(), urls, ai_model
                                 )
+                                if used_model != ai_model:
+                                    st.info(f"Fell back to {used_model} — selected model was unavailable")
                                 risk_colors = {"high": "#EF4444", "medium": "#F97316", "low": "#EAB308", "none": "#22C55E"}
                                 risk_df = pd.DataFrame(results)
                                 st.dataframe(
@@ -385,7 +389,9 @@ if "kw_results" in st.session_state:
                 with st.spinner("Generating content roadmap..."):
                     try:
                         months_val = r.get("months", 12)
-                        roadmap = generate_content_roadmap(client, keyword_df, months_val, ai_model)
+                        roadmap, used_model = generate_content_roadmap(client, keyword_df, months_val, ai_model)
+                        if used_model != ai_model:
+                            st.info(f"Fell back to {used_model} — selected model was unavailable")
                         for month_plan in roadmap:
                             month_num = month_plan.get("month", "?")
                             pieces = month_plan.get("content_pieces", [])
