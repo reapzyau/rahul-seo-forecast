@@ -178,15 +178,18 @@ Then read values with `get_assumption(store, "blended_cr_pct")` instead of hardc
 - `render_assumptions_banner(store)` — compact info bar with provenance counts; call after the page header
 - `render_assumptions_panel(store)` — full table with override widgets; shown at bottom of Data Upload page
 
-## Roadmap ingestion (v4)
+## Roadmap ingestion (v4 → v4.9)
 
-`utils/roadmap_loader.py` parses uploaded roadmap files and extracts three forecast parameters:
-- `content_cadence` (int) — posts per month
-- `effort_level` (str) — "light" | "moderate" | "aggressive"
-- `maintenance_coverage` (float 0–1) — fraction of portfolio actively maintained
+Roadmap detection goes through `engine.roadmap_ai_engine`, not the legacy loader.
 
-Supports two formats:
-1. **Task-table** (columns: Task, Focus, Occurrence, Hours) — the native GAZMAN xlsx from SEO Roadmap page
-2. **Param-table** (columns: cadence, effort_level, maintenance_coverage) — direct override CSV
+`engine/roadmap_ai_engine.py::extract_roadmap_with_ai()` extracts a rich per-focus-area bundle from an uploaded xlsx/csv file using a Bi Frost LLM call. The bundle is flattened into ~17 assumption keys by `_detect_from_roadmap_bundle()` in `engine/assumptions.py`.
 
-Use `load_roadmap(file_bytes_or_path)` as the single entry point. The Data Upload page (Roadmap tab) calls this and then passes the result to `run_detection(store, roadmap_data=...)` to wire values into the assumptions store.
+Per-focus assumption keys are the source of truth; the three legacy scalars (`effort_level`, `content_cadence`, `maintenance_coverage`) are **computed rollups** — do not set them directly from new code. They are derived by `recompute_rollups(store)` which is called at the end of `_detect_from_roadmap()`.
+
+Caching: Bi Frost roadmap extraction results are cached in `st.session_state["roadmap_ai_cache"]` as `dict[str, dict]` keyed by `hash(file_bytes + nl_correction + model)`. This prevents re-runs on Streamlit rerenders — only genuine user edits (new bytes or new correction text) trigger new AI calls. Do **not** add debouncing — the cache already handles it.
+
+The Bi Frost roadmap extraction is re-run on every user edit by design (product decision). The cache makes this safe.
+
+`utils/roadmap_loader.py` is the **legacy scalar loader**, retained for CI tests and no-AI fallback only. Its `load_roadmap()` function is deprecated — new code must not call it except in the fallback path in `pages/1_Data_Upload.py`.
+
+The Data Upload page (Roadmap tab) calls `run_detection(store, roadmap_data=bundle)` after extraction to wire values into the assumptions store.

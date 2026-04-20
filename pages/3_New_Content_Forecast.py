@@ -2,6 +2,7 @@ import os
 import streamlit as st
 import pandas as pd
 
+from engine.assumptions import initialise_assumptions, get_assumption, get_provenance
 from engine.new_content_engine import run_new_content_forecast
 from engine.revenue_engine import add_revenue, keyword_revenue_table, CURRENCY_SYMBOLS
 from utils.data_loader import load_keywords
@@ -21,6 +22,10 @@ st.caption("Project traffic from new content targeting keywords you don't yet ra
 
 render_ai_settings()
 
+# ── Assumptions store (read-only on this page) ────────────────────────────────
+_nc_store = st.session_state.setdefault("assumptions", {})
+initialise_assumptions(_nc_store)
+
 # ── Sidebar ──────────────────────────────────────────────────────────────────
 st.sidebar.header("Keyword Forecast Settings")
 
@@ -35,7 +40,18 @@ preset_name = st.sidebar.selectbox(
 preset = SITE_PRESETS[preset_name]
 
 da = st.sidebar.slider("Domain Authority (DA)", 1, 100, preset["da"], key="kw_da")
-cadence = st.sidebar.number_input("Monthly Content Production", 1, 50, preset["cadence"], key="kw_cadence")
+
+# Pre-select cadence from roadmap-detected content_cadence when available
+_cadence_prov = get_provenance(_nc_store, "content_cadence")
+_cadence_default = (
+    int(get_assumption(_nc_store, "content_cadence"))
+    if _cadence_prov["provenance"] != "defaulted"
+    else preset["cadence"]
+)
+cadence = st.sidebar.number_input("Monthly Content Production", 1, 50, _cadence_default, key="kw_cadence")
+if _cadence_prov["provenance"] != "defaulted":
+    st.sidebar.caption(f"Pre-set from roadmap ({_cadence_prov['provenance']}). Adjust above to override.")
+
 months = st.sidebar.slider("Forecast Horizon (months)", 6, 36, preset["months"], key="kw_months")
 seed = st.sidebar.number_input("Random Seed", value=42, step=1, key="kw_seed")
 
