@@ -467,9 +467,9 @@ All forecast parameters are tracked in a centralised assumptions store (`engine/
 | `blended_cr_pct` | 2.5% | GA4 transactions ÷ sessions |
 | `aov` | $100 | GA4 average order value |
 | `currency` | USD | — (user sets) |
-| `effort_level` | moderate | Roadmap import |
-| `content_cadence` | 4 posts/mo | Roadmap import (content hours ÷ 10) |
-| `maintenance_coverage` | 0.0 | Roadmap import (on-page/technical task regularity) |
+| `effort_level` | moderate | Computed rollup: max(content, on_page, off_page effort) |
+| `content_cadence` | 4 posts/mo | Computed rollup: content_monthly_hours ÷ 10 |
+| `maintenance_coverage` | 0.0 | Computed rollup: (on_page + technical hours) ÷ 20 |
 | `aio_monthly_growth` | 2.5% | — |
 | `aio_ctr_penalty_informational` | 45% | — |
 | `decay_rate_top3` | 8%/yr | — |
@@ -478,15 +478,82 @@ All forecast parameters are tracked in a centralised assumptions store (`engine/
 | `exclude_brand_from_forecasts` | True | — |
 | `seasonality_source` | "defaulted" | Auto-detected from GA4 data length |
 | `seasonality_blend_weight` | 0.0 | Auto-detected from GA4 data length |
+| `content_effort_level` | moderate | AI roadmap extraction (per focus area) |
+| `technical_effort_level` | moderate | AI roadmap extraction (per focus area) |
+| `on_page_effort_level` | moderate | AI roadmap extraction (per focus area) |
+| `off_page_effort_level` | moderate | AI roadmap extraction (per focus area) |
+| `local_effort_level` | moderate | AI roadmap extraction (per focus area) |
+| `analytics_effort_level` | moderate | AI roadmap extraction (per focus area) |
+| `strategy_effort_level` | moderate | AI roadmap extraction (per focus area) |
+| `content_monthly_hours` | 0.0 hrs | AI roadmap extraction |
+| `technical_monthly_hours` | 0.0 hrs | AI roadmap extraction |
+| `on_page_monthly_hours` | 0.0 hrs | AI roadmap extraction |
+| `off_page_monthly_hours` | 0.0 hrs | AI roadmap extraction |
+| `local_monthly_hours` | 0.0 hrs | AI roadmap extraction |
+| `analytics_monthly_hours` | 0.0 hrs | AI roadmap extraction |
+| `strategy_monthly_hours` | 0.0 hrs | AI roadmap extraction |
+| `total_monthly_hours` | 0.0 hrs | Sum of per-focus hours |
+| `positional_effort_level` | moderate | Computed rollup: max(on_page, off_page effort) |
+| `timeline_months_covered` | 12 | AI roadmap extraction |
 
-### Roadmap ingestion
+### AI Roadmap Ingestion
 
-Upload a roadmap CSV or XLSX on the **Data Upload → Roadmap** tab. Accepted formats:
+Upload a roadmap CSV or XLSX on the **Data Upload → Roadmap** tab. With Bi Frost API access, the file is sent to an LLM that extracts a rich per-focus-area bundle.
 
-1. **Task table** (columns: Task, Focus, Occurrence, Hours) — the native GAZMAN xlsx produced by the SEO Roadmap page
-2. **Param table** (columns: cadence, effort_level, maintenance_coverage) — a simple one-row override file
+#### Per-focus breakdown
 
-The loader extracts content cadence (from content production hours), effort level (from total monthly hours), and maintenance coverage (from regularity of on-page/technical tasks).
+The AI classifies every roadmap task into one of seven focus areas (Content, Technical, On-Page, Off-Page, Local, Analytics, Strategy) and computes monthly-equivalent hours using the occurrence conversion table:
+
+| Occurrence | Monthly equivalent |
+|---|---|
+| Monthly | 1.0× |
+| Bi-Monthly | 0.5× |
+| Quarterly | 0.33× |
+| Bi-Annual | 0.167× |
+| Annual / One-Off | 0.083× |
+
+Effort level per focus area:
+- **light**: ≤ 8 hrs/month
+- **moderate**: 9–20 hrs/month
+- **aggressive**: > 20 hrs/month
+
+#### Rollup derivation (backward compat)
+
+Three legacy scalars are computed from the per-focus keys so older forecast pages continue to work:
+
+| Rollup | Formula |
+|---|---|
+| `effort_level` | max(content, on_page, off_page effort) |
+| `content_cadence` | round(content_monthly_hours / 10), min 1 |
+| `maintenance_coverage` | min(1.0, (on_page + technical hours) / 20) — 20 h/month = full coverage |
+
+#### Correction loop
+
+After extraction, users can correct the result two ways:
+1. **Natural language correction** — describe the change in plain English; the AI re-runs with the previous extraction as context.
+2. **JSON editor** — edit the extracted bundle directly; no AI call is made.
+
+Both paths update session state and can be applied to the assumptions store.
+
+#### Cost and caching
+
+- Average cost per extraction with gpt-4o-mini: ~$0.002
+- Session cache (keyed by hash of file bytes + correction text + model) prevents re-runs on Streamlit rerenders — only genuine edits trigger new AI calls
+- Input truncated to 4,000 characters; `parsing_confidence` in the bundle is downgraded to ≤ 0.75 when truncation occurs
+- Parsing confidence < 0.70 triggers a warning banner prompting the user to review before applying
+
+#### Engine mapping
+
+| Per-focus key | Drives |
+|---|---|
+| `content_effort_level` | New content engine ranking probability |
+| `on_page_effort_level` + `off_page_effort_level` → `positional_effort_level` | Positional forecast MC gain distribution |
+| `on_page_monthly_hours` + `technical_monthly_hours` → `maintenance_coverage` | Decay engine maintenance factor |
+| `content_monthly_hours` → `content_cadence` | New content engine cadence parameter |
+
+#### Legacy fallback
+
+Without a Bi Frost API key, the page falls back to the legacy `utils/roadmap_loader.py` scalar extraction (Task/Focus/Occurrence/Hours columns → three scalars). The legacy loader is retained for CI tests and no-AI environments.
 
 ---
 

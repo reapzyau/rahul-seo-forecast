@@ -1,4 +1,9 @@
-"""Tests for utils/roadmap_loader.py."""
+"""Tests for utils/roadmap_loader.py (legacy scalar loader).
+
+Class names prefixed with TestLegacy* to signal these cover the old scalar
+extraction path. A compat test at the bottom verifies the legacy output still
+flows correctly through _detect_from_roadmap() in the assumptions store.
+"""
 import io
 
 import pandas as pd
@@ -273,3 +278,34 @@ class TestLoadRoadmap:
         # but here has_task_cols is True too — falls through to task table
         # Just check it returns something without error
         assert isinstance(result, dict)
+
+
+# ── TestLegacyCompatibility ───────────────────────────────────────────────────
+
+
+class TestLegacyCompatibility:
+    """Verify legacy load_roadmap() output still flows through _detect_from_roadmap()."""
+
+    def test_legacy_flat_dict_detected_in_store(self):
+        from engine.assumptions import get_assumption, initialise_assumptions, run_detection
+        store: dict = {}
+        initialise_assumptions(store)
+        legacy = load_roadmap(
+            pd.DataFrame([
+                {"Task": "Article Writing", "Focus": "Content", "Occurrence": "Monthly", "Hours": 20},
+                {"Task": "Page Optimisation", "Focus": "On-Page", "Occurrence": "Monthly", "Hours": 8},
+            ]).to_csv(index=False).encode()
+        )
+        assert isinstance(legacy, dict)
+        run_detection(store, roadmap_data=legacy)
+        # Legacy format sets the three scalar keys
+        assert get_assumption(store, "effort_level") in ("light", "moderate", "aggressive")
+
+    def test_legacy_format_has_no_per_focus_key(self):
+        legacy = load_roadmap(
+            pd.DataFrame([
+                {"Task": "A", "Focus": "Content", "Occurrence": "Monthly", "Hours": 10},
+            ]).to_csv(index=False).encode()
+        )
+        # Legacy output must NOT have 'per_focus' key — that would trigger bundle path
+        assert "per_focus" not in legacy

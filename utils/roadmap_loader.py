@@ -1,12 +1,10 @@
-"""Roadmap ingestion — parse uploaded roadmap files and extract forecast assumptions.
+"""Legacy scalar roadmap loader.
 
-Supports two formats:
-  Native Pattern xlsx  — the GAZMAN-style task grid produced by the SEO Roadmap page
-                         (columns: Task, Focus, Occurrence, Hours)
-  Generic CSV/xlsx     — either the same task columns OR a direct parameters table
-                         (columns: cadence, effort_level, maintenance_coverage)
+Use engine.roadmap_ai_engine.extract_roadmap_with_ai() for rich per-focus-area
+extraction. This loader is retained only for CI tests and environments without
+Bi Frost API access.
 
-The loader extracts three assumptions:
+It reduces a roadmap to three scalars:
   content_cadence       — posts per month (int)
   effort_level          — "light" | "moderate" | "aggressive"
   maintenance_coverage  — 0.0–1.0 fraction of portfolio actively maintained
@@ -224,12 +222,16 @@ def parse_param_table(df: pd.DataFrame) -> dict:
 
 
 def load_roadmap(file: BinaryIO | bytes | str) -> dict:
-    """Load a roadmap file and return extracted forecast parameters.
+    """Load a roadmap file and return extracted forecast parameters (legacy).
 
     Accepts: file-like object, bytes, or file path string.
     Auto-detects native task-table format vs. direct param table.
 
     Returns dict with any subset of: content_cadence, effort_level, maintenance_coverage.
+
+    .. deprecated::
+        Use engine.roadmap_ai_engine.extract_roadmap_with_ai() for rich extraction.
+        This function is retained for CI tests and no-AI fallback only.
     """
     if isinstance(file, (str,)):
         with open(file, "rb") as f:
