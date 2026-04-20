@@ -205,3 +205,58 @@ def estimate_extraction_tokens(
     """Rough token estimate for a roadmap extraction call (4 chars ≈ 1 token)."""
     chars = len(roadmap_md) + len(correction_ctx) + len(schema_str) + 1500  # system prompt overhead
     return chars // 4
+
+
+def load_roadmap_v2(
+    client,
+    raw_bytes: bytes,
+    filename: str,
+    nl_correction: str | None = None,
+    previous_bundle: dict | None = None,
+    model: str = "openai/gpt-4o-mini",
+) -> tuple[dict, str]:
+    """Main entry point for roadmap ingestion. Returns (bundle, used_model_or_'deterministic').
+
+    Dispatches to the correct parser based on format detection:
+    - pattern_native → parse_pattern_native (deterministic)
+    - task_table / param_table → legacy parsers wrapped in v2 bundle
+    - unknown → AI extraction via extract_roadmap_with_ai (if client available)
+    """
+    from engine.roadmap_native_parser import (
+        detect_roadmap_format,
+        parse_pattern_native,
+        wrap_legacy_task_table_as_bundle,
+        wrap_legacy_param_table_as_bundle,
+    )
+    from utils.roadmap_loader import parse_task_table, parse_param_table
+
+    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+    fmt = detect_roadmap_format(raw_bytes, ext)
+
+    if fmt == "pattern_native":
+        bundle = parse_pattern_native(raw_bytes)
+        return bundle, "deterministic"
+
+    if fmt == "task_table":
+        df = pd.read_csv(io.BytesIO(raw_bytes)) if ext == "csv" else pd.read_excel(io.BytesIO(raw_bytes))
+        legacy = parse_task_table(df)
+        return wrap_legacy_task_table_as_bundle(legacy), "deterministic"
+
+    if fmt == "param_table":
+        df = pd.read_csv(io.BytesIO(raw_bytes)) if ext == "csv" else pd.read_excel(io.BytesIO(raw_bytes))
+        legacy = parse_param_table(df)
+        return wrap_legacy_param_table_as_bundle(legacy), "deterministic"
+
+    # Unknown format — fall back to AI extraction
+    if client is not None:
+        return extract_roadmap_with_ai(
+            client, raw_bytes, ext,
+            nl_correction=nl_correction,
+            previous_extraction=previous_bundle,
+            model=model,
+        )
+
+    raise NotImplementedError(
+        "Unknown roadmap format and no AI client available. "
+        "Provide a Bi Frost API key for AI-based extraction."
+    )
