@@ -7,8 +7,6 @@ v4 additions:
 """
 
 import pandas as pd
-import numpy as np
-
 
 # Default retail seasonality patterns (monthly index 1-12)
 DEFAULT_SEASONALITY = {
@@ -246,7 +244,7 @@ def blend_learned_and_default_seasonality(
     pct_learned = int(round(blend_weight * 100))
     pct_default = 100 - pct_learned
     for m in range(1, 13):
-        l = learned.get(m, {})
+        learned_m = learned.get(m, {})
         d = default.get(m, {"traffic_mod": 0, "cr_mod": 0, "aov_mod": 0, "label": f"Month {m}"})
         month_name = _MONTH_NAMES[m] if m <= 12 else f"Month {m}"
         if blend_weight >= 1.0:
@@ -258,13 +256,13 @@ def blend_learned_and_default_seasonality(
         blended[m] = {
             "label": label,
             "traffic_mod": round(
-                blend_weight * l.get("traffic_mod", 0) + (1 - blend_weight) * d.get("traffic_mod", 0), 4
+                blend_weight * learned_m.get("traffic_mod", 0) + (1 - blend_weight) * d.get("traffic_mod", 0), 4
             ),
             "cr_mod": round(
-                blend_weight * l.get("cr_mod", 0) + (1 - blend_weight) * d.get("cr_mod", 0), 4
+                blend_weight * learned_m.get("cr_mod", 0) + (1 - blend_weight) * d.get("cr_mod", 0), 4
             ),
             "aov_mod": round(
-                blend_weight * l.get("aov_mod", 0) + (1 - blend_weight) * d.get("aov_mod", 0), 4
+                blend_weight * learned_m.get("aov_mod", 0) + (1 - blend_weight) * d.get("aov_mod", 0), 4
             ),
         }
     return blended
@@ -322,7 +320,7 @@ INDUSTRY_SEASONALITY_PRIORS: dict[str, dict[int, float]] = {
     "Travel": {1: 0.06, 6: 0.08, 7: 0.10, 12: 0.05, 9: 0.05},
     "Food & Beverage": {11: 0.04, 12: 0.06, 4: 0.03, 5: 0.02, 8: 0.03},
     "Health": {1: 0.06, 2: 0.04, 9: 0.03, 5: 0.02, 11: 0.02},
-    "Finance": {6: 0.08, 7: 0.04, 6: 0.06, 1: 0.03, 7: 0.02},
+    "Finance": {6: 0.08, 7: 0.04, 8: 0.06, 1: 0.03, 2: 0.02},
     "Other": {},
 }
 

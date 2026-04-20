@@ -19,7 +19,6 @@ from utils.roadmap_loader import (
     parse_task_table,
 )
 
-
 # ── Fixtures ──────────────────────────────────────────────────────────────────
 
 

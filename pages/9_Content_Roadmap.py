@@ -1,10 +1,10 @@
-import streamlit as st
 import pandas as pd
+import streamlit as st
 
-from engine.ai_engine import get_bifrost_client, generate_content_roadmap, cluster_keywords
+from engine.ai_engine import generate_content_roadmap, get_bifrost_client
 from utils.export import to_csv
+from utils.session import BIFROST_API_KEY, BIFROST_MODEL, CONTENT_ROADMAP, NC_RESULT
 from utils.sidebar import render_ai_settings
-from utils.session import BIFROST_API_KEY, BIFROST_MODEL, NC_RESULT, CONTENT_ROADMAP
 
 st.header("Content Roadmap")
 st.caption("AI-powered content planning and prioritization using your keyword forecast data.")
@@ -48,75 +48,77 @@ if kw_results is None:
         "Go to the Keyword Forecast page, upload keywords, and click Generate Forecast."
     )
     st.stop()
+else:
+    keyword_df = kw_results["keyword_df"]
+    st.success(f"Using keyword forecast data: {len(keyword_df)} keywords")
 
-keyword_df = kw_results["keyword_df"]
-st.success(f"Using keyword forecast data: {len(keyword_df)} keywords")
+    # ── Configuration ────────────────────────────────────────────────────────
+    col1, col2 = st.columns(2)
+    with col1:
+        roadmap_months = st.slider("Roadmap Duration (months)", 3, 24, 12, key="roadmap_months")
+    with col2:
+        st.metric("Keywords Available", len(keyword_df))
+        st.metric("Keywords Ranking", int(keyword_df["will_rank"].sum()))
 
-# ── Configuration ────────────────────────────────────────────────────────────
-col1, col2 = st.columns(2)
-with col1:
-    roadmap_months = st.slider("Roadmap Duration (months)", 3, 24, 12, key="roadmap_months")
-with col2:
-    st.metric("Keywords Available", len(keyword_df))
-    st.metric("Keywords Ranking", int(keyword_df["will_rank"].sum()))
-
-# ── Generate ─────────────────────────────────────────────────────────────────
-if st.button("Generate AI Content Roadmap", type="primary", key="roadmap_generate"):
-    with st.spinner("AI is analyzing your keywords and building a content roadmap..."):
-        try:
-            roadmap, used_model = generate_content_roadmap(client, keyword_df, roadmap_months, ai_model, existing_roadmap_csv)
-            if used_model != ai_model:
-                st.info(f"Fell back to {used_model} — selected model was unavailable")
-            st.session_state[CONTENT_ROADMAP] = roadmap
-        except Exception as e:
-            st.error(f"Roadmap generation failed: {e}")
-
-# ── Display ──────────────────────────────────────────────────────────────────
-if CONTENT_ROADMAP in st.session_state:
-    roadmap = st.session_state[CONTENT_ROADMAP]
-
-    st.divider()
-    st.subheader("Content Roadmap")
-
-    # Build flat table for export
-    flat_rows = []
-    for month_plan in roadmap:
-        month_num = month_plan.get("month", "?")
-        pieces = month_plan.get("content_pieces", [])
-
-        with st.expander(f"**Month {month_num}** — {len(pieces)} content pieces", expanded=month_num <= 3):
-            for piece in pieces:
-                priority = piece.get("priority", "medium")
-                icon = {"high": "\U0001f534", "medium": "\U0001f7e1", "low": "\U0001f7e2"}.get(priority, "\u26aa")
-
-                st.markdown(
-                    f"{icon} **{piece.get('title', 'Untitled')}** "
-                    f"(~{piece.get('estimated_traffic', 0):,} visits/mo, priority: {priority})"
+    # ── Generate ─────────────────────────────────────────────────────────────
+    if st.button("Generate AI Content Roadmap", type="primary", key="roadmap_generate"):
+        with st.spinner("AI is analyzing your keywords and building a content roadmap..."):
+            try:
+                roadmap, used_model = generate_content_roadmap(
+                    client, keyword_df, roadmap_months, ai_model, existing_roadmap_csv,
                 )
-                kws = piece.get("target_keywords", [])
-                if kws:
-                    st.caption(f"Target keywords: {', '.join(kws)}")
-                notes = piece.get("notes")
-                if notes:
-                    st.caption(f"Note: {notes}")
+                if used_model != ai_model:
+                    st.info(f"Fell back to {used_model} — selected model was unavailable")
+                st.session_state[CONTENT_ROADMAP] = roadmap
+            except Exception as e:
+                st.error(f"Roadmap generation failed: {e}")
 
-                flat_rows.append({
-                    "Month": month_num,
-                    "Title": piece.get("title", ""),
-                    "Target Keywords": ", ".join(kws),
-                    "Estimated Traffic": piece.get("estimated_traffic", 0),
-                    "Priority": priority,
-                    "Notes": notes or "",
-                })
+    # ── Display ──────────────────────────────────────────────────────────────
+    if CONTENT_ROADMAP in st.session_state:
+        roadmap = st.session_state[CONTENT_ROADMAP]
 
-    # Export
-    if flat_rows:
         st.divider()
-        roadmap_df = pd.DataFrame(flat_rows)
-        st.download_button(
-            "Download Roadmap CSV",
-            to_csv(roadmap_df),
-            "content-roadmap.csv",
-            "text/csv",
-            key="roadmap_export",
-        )
+        st.subheader("Content Roadmap")
+
+        # Build flat table for export
+        flat_rows = []
+        for month_plan in roadmap:
+            month_num = month_plan.get("month", "?")
+            pieces = month_plan.get("content_pieces", [])
+
+            with st.expander(f"**Month {month_num}** — {len(pieces)} content pieces", expanded=month_num <= 3):
+                for piece in pieces:
+                    priority = piece.get("priority", "medium")
+                    icon = {"high": "\U0001f534", "medium": "\U0001f7e1", "low": "\U0001f7e2"}.get(priority, "\u26aa")
+
+                    st.markdown(
+                        f"{icon} **{piece.get('title', 'Untitled')}** "
+                        f"(~{piece.get('estimated_traffic', 0):,} visits/mo, priority: {priority})"
+                    )
+                    kws = piece.get("target_keywords", [])
+                    if kws:
+                        st.caption(f"Target keywords: {', '.join(kws)}")
+                    notes = piece.get("notes")
+                    if notes:
+                        st.caption(f"Note: {notes}")
+
+                    flat_rows.append({
+                        "Month": month_num,
+                        "Title": piece.get("title", ""),
+                        "Target Keywords": ", ".join(kws),
+                        "Estimated Traffic": piece.get("estimated_traffic", 0),
+                        "Priority": priority,
+                        "Notes": notes or "",
+                    })
+
+        # Export
+        if flat_rows:
+            st.divider()
+            roadmap_df = pd.DataFrame(flat_rows)
+            st.download_button(
+                "Download Roadmap CSV",
+                to_csv(roadmap_df),
+                "content-roadmap.csv",
+                "text/csv",
+                key="roadmap_export",
+            )

@@ -7,9 +7,7 @@ v3 adds time-varying erosion: AIO coverage spreads ~2-3% of queries
 per month, so a forecast-horizon projection shows increasing loss.
 """
 
-import numpy as np
 import pandas as pd
-
 
 # ── Time-varying AIO erosion constants ─────────────────────────────────────
 

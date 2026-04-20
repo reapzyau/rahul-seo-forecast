@@ -2,8 +2,12 @@ import numpy as np
 import pandas as pd
 
 from engine.constants import (
-    CTR_BY_POSITION, CTR_11_14, CTR_15_20,
-    DIFFICULTY_TIERS, TIME_TO_RANK, INTENT_PATTERNS,
+    CTR_11_14,
+    CTR_15_20,
+    CTR_BY_POSITION,
+    DIFFICULTY_TIERS,
+    INTENT_PATTERNS,
+    TIME_TO_RANK,
 )
 from engine.maturation_curve import maturation_schedule
 

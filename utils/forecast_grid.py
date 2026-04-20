@@ -12,12 +12,10 @@ from __future__ import annotations
 
 import calendar
 import io
-from typing import List
 
 from openpyxl import Workbook
-from openpyxl.styles import Alignment, Border, Font, NamedStyle, PatternFill, Side
+from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -35,7 +33,7 @@ _THIN_BORDER = Border(
 )
 
 
-def _month_abbrs(start_month: int, months: int) -> List[str]:
+def _month_abbrs(start_month: int, months: int) -> list[str]:
     """Return abbreviated month names starting from *start_month* (1-12)."""
     return [calendar.month_abbr[(start_month - 1 + i) % 12 + 1] for i in range(months)]
 
@@ -57,9 +55,9 @@ def _auto_width(ws) -> None:
 
 
 def build_seo_forecast_grid(
-    monthly_traffic: List[float],
-    monthly_transactions: List[float],
-    monthly_revenue: List[float],
+    monthly_traffic: list[float],
+    monthly_transactions: list[float],
+    monthly_revenue: list[float],
     months: int = 12,
     client_name: str = "",
     fy_label: str = "FY26",

@@ -9,9 +9,7 @@ for) and is subtracted from the baseline projection.
 """
 from __future__ import annotations
 
-import numpy as np
 import pandas as pd
-
 
 DEFAULT_DECAY_RATES = {
     "top3": 0.08,

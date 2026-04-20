@@ -11,7 +11,6 @@ from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 
-
 # ── Focus area colour palette ────────────────────────────────────────────────
 
 FOCUS_COLORS: dict[str, str] = {

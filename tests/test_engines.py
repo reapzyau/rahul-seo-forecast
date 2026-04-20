@@ -4,30 +4,34 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from engine.combined_engine import run_combined_forecast
 from engine.constants import (
-    CTR_BY_POSITION, CTR_11_14, CTR_15_20,
-    SITE_PRESETS, CTR_MODELS, FORECAST_SCENARIOS, INTENT_PATTERNS,
+    CTR_11_14,
+    CTR_15_20,
+    CTR_BY_POSITION,
+    CTR_MODELS,
+    FORECAST_SCENARIOS,
+    INTENT_PATTERNS,
+    SITE_PRESETS,
+)
+from engine.historical_engine import (
+    calculate_growth_rates,
+    exponential_smoothing_forecast,
+    linear_forecast,
+    run_historical_forecast,
+    sma_forecast,
 )
 from engine.new_content_engine import (
     classify_difficulty,
     classify_intent,
-    ranking_probability,
+    efficiency_score,
     expected_position,
     get_ctr,
-    time_to_rank_months,
-    efficiency_score,
+    ranking_probability,
     run_new_content_forecast,
+    time_to_rank_months,
 )
-from engine.historical_engine import (
-    linear_forecast,
-    exponential_smoothing_forecast,
-    sma_forecast,
-    calculate_growth_rates,
-    run_historical_forecast,
-)
-from engine.combined_engine import run_combined_forecast
 from engine.revenue_engine import add_revenue, keyword_revenue_table
-
 
 # ── Keyword Engine ──────────────────────────────────────────────────────────
 
@@ -572,7 +576,7 @@ class TestNewContentForecastFiltering:
 
 class TestPresets:
     def test_site_preset_values_valid(self):
-        for name, preset in SITE_PRESETS.items():
+        for _name, preset in SITE_PRESETS.items():
             assert "da" in preset
             assert "cadence" in preset
             assert "months" in preset
@@ -581,14 +585,14 @@ class TestPresets:
             assert preset["months"] >= 6
 
     def test_ctr_models_have_required_keys(self):
-        for name, model in CTR_MODELS.items():
+        for _name, model in CTR_MODELS.items():
             assert "ctr_by_position" in model
             assert "ctr_11_14" in model
             assert "ctr_15_20" in model
             assert "label" in model
 
     def test_forecast_scenarios_have_multiplier(self):
-        for name, scenario in FORECAST_SCENARIOS.items():
+        for _name, scenario in FORECAST_SCENARIOS.items():
             assert "traffic_multiplier" in scenario
             assert scenario["traffic_multiplier"] > 0
 
@@ -789,19 +793,19 @@ class TestTemplates:
 
 class TestModelsConfig:
     def test_config_loads(self):
-        from engine.ai_engine import get_model_options, get_default_model, get_fallback_chain
+        from engine.ai_engine import get_default_model, get_fallback_chain, get_model_options
         models = get_model_options()
         assert len(models) > 0
         assert all("id" in m and "label" in m for m in models)
 
     def test_default_model_in_list(self):
-        from engine.ai_engine import get_model_options, get_default_model
+        from engine.ai_engine import get_default_model, get_model_options
         default = get_default_model()
         ids = [m["id"] for m in get_model_options()]
         assert default in ids
 
     def test_fallback_chain_valid(self):
-        from engine.ai_engine import get_model_options, get_fallback_chain
+        from engine.ai_engine import get_fallback_chain, get_model_options
         chain = get_fallback_chain()
         assert len(chain) >= 2
         ids = [m["id"] for m in get_model_options()]
@@ -874,7 +878,7 @@ class TestPositionalForecast:
         assert aggressive.iloc[-1]["uplift"] >= moderate.iloc[-1]["uplift"] >= light.iloc[-1]["uplift"]
 
     def test_quick_wins_filter(self, sample_existing):
-        from engine.positional_engine import run_positional_forecast, quick_wins
+        from engine.positional_engine import quick_wins, run_positional_forecast
         kw_df, _ = run_positional_forecast(sample_existing, months=12, effort="moderate")
         qw = quick_wins(kw_df, top_n=20)
         if not qw.empty:
@@ -1022,7 +1026,7 @@ class TestAioRiskEngine:
         assert not risk["intent_breakdown"].empty
 
     def test_recommendations_nonempty(self):
-        from engine.aio_risk_engine import calculate_aio_risk, aio_recommendations
+        from engine.aio_risk_engine import aio_recommendations, calculate_aio_risk
         df = pd.DataFrame({
             "keyword": ["a"], "has_aio": [True],
             "volume": [100], "current_traffic": [50],
@@ -1037,7 +1041,7 @@ class TestAioRiskEngine:
 
 class TestSnapshot:
     def test_roundtrip(self):
-        from engine.snapshot_engine import build_snapshot, snapshot_to_bytes, load_snapshot
+        from engine.snapshot_engine import build_snapshot, load_snapshot, snapshot_to_bytes
         combined = pd.DataFrame({
             "date": pd.date_range("2026-01-01", periods=12, freq="MS"),
             "actual": [None] * 12,
@@ -1462,9 +1466,9 @@ class TestLearnedSeasonality:
 
     def test_blend_weight_zero_returns_defaults(self):
         from engine.seasonality_engine import (
-            learn_seasonality_from_ga4,
-            blend_learned_and_default_seasonality,
             DEFAULT_SEASONALITY,
+            blend_learned_and_default_seasonality,
+            learn_seasonality_from_ga4,
         )
         df = self._make_ga4_df()
         learned = learn_seasonality_from_ga4(df)
@@ -1474,9 +1478,9 @@ class TestLearnedSeasonality:
 
     def test_blend_weight_one_returns_learned(self):
         from engine.seasonality_engine import (
-            learn_seasonality_from_ga4,
-            blend_learned_and_default_seasonality,
             DEFAULT_SEASONALITY,
+            blend_learned_and_default_seasonality,
+            learn_seasonality_from_ga4,
         )
         df = self._make_ga4_df()
         learned = learn_seasonality_from_ga4(df)
@@ -1486,9 +1490,9 @@ class TestLearnedSeasonality:
 
     def test_blend_weight_half_is_midpoint(self):
         from engine.seasonality_engine import (
-            learn_seasonality_from_ga4,
-            blend_learned_and_default_seasonality,
             DEFAULT_SEASONALITY,
+            blend_learned_and_default_seasonality,
+            learn_seasonality_from_ga4,
         )
         df = self._make_ga4_df()
         learned = learn_seasonality_from_ga4(df)
@@ -1541,7 +1545,7 @@ class TestHistoricalV4:
         return pd.DataFrame({"date": dates, "traffic": traffic})
 
     def test_24_months_selects_holts_or_prophet(self):
-        from engine.historical_engine import run_historical_forecast_v4, _PROPHET_MIN_MONTHS
+        from engine.historical_engine import _PROPHET_MIN_MONTHS, run_historical_forecast_v4
         df = self._make_df(24)
         result = run_historical_forecast_v4(df, months=6)
         assert result.attrs["chosen_method"] in ("prophet", "holts", "linear")
@@ -1564,6 +1568,7 @@ class TestHistoricalV4:
         """Mock ImportError to ensure graceful fallback."""
         import sys
         import unittest.mock as mock
+
         from engine.historical_engine import run_historical_forecast_v4
         df = self._make_df(24)
         with mock.patch.dict(sys.modules, {"prophet": None}):
@@ -1610,6 +1615,7 @@ class TestHistoricalV4:
 
     def test_fallback_to_holts_when_prophet_unavailable(self):
         import unittest.mock as mock
+
         from engine.historical_engine import run_historical_forecast_v4
         df = self._make_df(24)
         with mock.patch("engine.prophet_engine._PROPHET_AVAILABLE", False):
@@ -1738,7 +1744,9 @@ class TestPrompt9Integration:
 
     def test_industry_bias_applied_when_industry_set(self):
         from engine.seasonality_engine import (
-            DEFAULT_SEASONALITY, apply_industry_bias, INDUSTRY_SEASONALITY_PRIORS,
+            DEFAULT_SEASONALITY,
+            INDUSTRY_SEASONALITY_PRIORS,
+            apply_industry_bias,
         )
         base = dict(DEFAULT_SEASONALITY)
         biased = apply_industry_bias(base, "Accessories", bias_weight=1.0)

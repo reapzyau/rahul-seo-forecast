@@ -125,12 +125,12 @@ class TestReadRoadmapFile:
         assert "Task" in df.columns
 
     def test_empty_raises(self):
-        raw = "col1,col2\n".encode()  # header but no rows → empty DataFrame
+        raw = b"col1,col2\n"  # header but no rows → empty DataFrame
         with pytest.raises(ValueError, match="empty"):
             _read_roadmap_file(raw, "csv")
 
     def test_tsv_extension(self):
-        raw = "A\tB\n1\t2\n3\t4\n".encode()
+        raw = b"A\tB\n1\t2\n3\t4\n"
         df = _read_roadmap_file(raw, "tsv")
         assert list(df.columns) == ["A", "B"]
         assert len(df) == 2

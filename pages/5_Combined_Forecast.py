@@ -1,6 +1,7 @@
-import streamlit as st
 import pandas as pd
+import streamlit as st
 
+from engine.assumptions import initialise_assumptions
 from engine.combined_engine import run_combined_forecast
 from engine.decay_engine import calculate_portfolio_decay
 from engine.revenue_engine import (
@@ -9,14 +10,18 @@ from engine.revenue_engine import (
     compute_intent_weighted_cvr,
     intent_revenue_breakdown,
 )
-from utils.chart_builder import combined_three_stream_chart, combined_revenue_chart
-from utils.export import to_csv, to_html_report
-from utils.sidebar import render_ai_settings
 from utils.assumptions_panel import render_assumptions_banner
-from engine.assumptions import initialise_assumptions, get_assumption
+from utils.chart_builder import combined_revenue_chart, combined_three_stream_chart
+from utils.export import to_csv, to_html_report
 from utils.session import (
-    ASSUMPTIONS, GA4_DF, POS_RESULT, NC_RESULT, KW_EXISTING, COMB_RESULTS,
+    ASSUMPTIONS,
+    COMB_RESULTS,
+    GA4_DF,
+    KW_EXISTING,
+    NC_RESULT,
+    POS_RESULT,
 )
+from utils.sidebar import render_ai_settings
 
 st.header("Combined Forecast")
 st.caption("Layer multiple forecast streams into a single projection with intent-weighted revenue.")

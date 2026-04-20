@@ -139,6 +139,16 @@ pytest tests/ -v
 
 Tests cover engine logic only. No Streamlit or network calls in tests.
 
+## Running checks locally
+
+```bash
+ruff check .                 # lint
+python -m pytest tests/ -v   # unit tests
+python -c "import importlib.util, pathlib, sys; spec = importlib.util.spec_from_file_location('p', 'pages/1_Data_Upload.py'); m = importlib.util.module_from_spec(spec); sys.modules['p'] = m; spec.loader.exec_module(m)"  # manual page-import smoke
+```
+
+CI runs all three on every push: ruff lint → page-import smoke → pytest.
+
 ## Adding a new page
 
 1. Create `pages/N_Name.py`

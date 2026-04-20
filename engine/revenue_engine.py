@@ -1,6 +1,5 @@
 import pandas as pd
 
-
 CURRENCY_SYMBOLS = {
     "USD": "$",
     "EUR": "\u20ac",

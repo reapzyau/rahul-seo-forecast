@@ -1,5 +1,5 @@
-import plotly.graph_objects as go
 import pandas as pd
+import plotly.graph_objects as go
 
 from engine.constants import TIER_COLORS
 
@@ -42,7 +42,6 @@ def traffic_projection_chart(monthly_df: pd.DataFrame, title: str = "Monthly Tra
     # Add vertical line at month where all keywords are covered
     if "traffic" in monthly_df.columns:
         max_traffic = monthly_df["traffic"].max()
-        max_month = monthly_df.loc[monthly_df["traffic"].idxmax(), "month"]
         if max_traffic > 0:
             # Find month where traffic first reaches its maximum
             full_coverage = monthly_df[monthly_df["traffic"] == max_traffic]["month"].iloc[0]

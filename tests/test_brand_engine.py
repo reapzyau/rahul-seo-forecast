@@ -3,7 +3,11 @@
 import pandas as pd
 import pytest
 
-from engine.brand_engine import classify_keywords_as_branded, extract_domain_from_semrush, split_branded_vs_non_branded
+from engine.brand_engine import (
+    classify_keywords_as_branded,
+    extract_domain_from_semrush,
+    split_branded_vs_non_branded,
+)
 
 
 class TestClassifyKeywordsAsBranded:
@@ -58,7 +62,7 @@ class TestClassifyKeywordsAsBranded:
 
     def test_classify_empty_brand_terms_returns_all_false(self, sample_df):
         result = classify_keywords_as_branded(sample_df, [])
-        assert (result["is_branded"] == False).all()
+        assert (~result["is_branded"]).all()
 
     def test_classify_word_boundary_no_substring_match(self):
         df = pd.DataFrame({"keyword": ["excable shoes", "cable shoes", "cablecar"]})

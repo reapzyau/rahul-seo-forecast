@@ -1,24 +1,34 @@
 import os
-import streamlit as st
-import pandas as pd
 
-from engine.assumptions import initialise_assumptions, get_assumption, get_provenance
+import pandas as pd
+import streamlit as st
+
+from engine.ai_engine import (
+    check_cannibalization,
+    cluster_keywords,
+    generate_content_roadmap,
+    get_bifrost_client,
+)
+from engine.assumptions import get_assumption, get_provenance, initialise_assumptions
+from engine.constants import CTR_MODELS, FORECAST_SCENARIOS, SITE_PRESETS, TIER_COLORS
 from engine.new_content_engine import run_new_content_forecast
-from engine.revenue_engine import add_revenue, keyword_revenue_table, CURRENCY_SYMBOLS
-from utils.data_loader import load_keywords
+from engine.revenue_engine import CURRENCY_SYMBOLS, add_revenue, keyword_revenue_table
 from utils.chart_builder import (
-    traffic_projection_chart,
     keyword_schedule_chart,
-    scenario_comparison_chart,
     revenue_projection_chart,
+    scenario_comparison_chart,
+    traffic_projection_chart,
 )
-from utils.export import to_csv, to_html_report, keyword_template_csv
-from engine.constants import TIER_COLORS, SITE_PRESETS, CTR_MODELS, FORECAST_SCENARIOS
-from engine.ai_engine import get_bifrost_client, cluster_keywords, check_cannibalization, generate_content_roadmap
-from utils.sidebar import render_ai_settings
+from utils.data_loader import load_keywords
+from utils.export import keyword_template_csv, to_csv, to_html_report
 from utils.session import (
-    ASSUMPTIONS, ROADMAP_CONTENT_PLAN, NC_RESULT, BIFROST_API_KEY, BIFROST_MODEL,
+    ASSUMPTIONS,
+    BIFROST_API_KEY,
+    BIFROST_MODEL,
+    NC_RESULT,
+    ROADMAP_CONTENT_PLAN,
 )
+from utils.sidebar import render_ai_settings
 
 st.header("New Content Forecast")
 st.caption("Project traffic from new content targeting keywords you don't yet rank for.")

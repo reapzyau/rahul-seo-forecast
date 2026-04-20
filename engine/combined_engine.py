@@ -1,4 +1,3 @@
-import numpy as np
 import pandas as pd
 
 from engine.historical_engine import linear_forecast
@@ -88,7 +87,6 @@ def run_combined_forecast(
     # Uplift percentage (P50-based when bands available)
     forecast_mask = result["is_forecast"]
     result["uplift_pct"] = 0.0
-    combined_col = "combined_p50" if has_bands else "combined"
     pos_col = "positional_uplift_p50" if has_bands else "positional_uplift"
 
     result.loc[forecast_mask, "uplift_pct"] = result.loc[forecast_mask].apply(

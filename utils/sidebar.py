@@ -1,7 +1,8 @@
 import os
+
 import streamlit as st
 
-from engine.ai_engine import get_model_options, get_default_model
+from engine.ai_engine import get_default_model, get_model_options
 from utils.session import BIFROST_API_KEY, BIFROST_MODEL
 
 

@@ -1,14 +1,19 @@
 import os
-import streamlit as st
-import pandas as pd
 
-from engine.historical_engine import run_historical_forecast, run_historical_forecast_v4, calculate_growth_rates
-from engine.revenue_engine import add_revenue, build_full_metrics_table, CURRENCY_SYMBOLS
-from utils.data_loader import load_traffic
+import pandas as pd
+import streamlit as st
+
+from engine.historical_engine import (
+    calculate_growth_rates,
+    run_historical_forecast,
+    run_historical_forecast_v4,
+)
+from engine.revenue_engine import CURRENCY_SYMBOLS, add_revenue, build_full_metrics_table
 from utils.chart_builder import historical_comparison_chart, revenue_projection_chart
+from utils.data_loader import load_traffic
 from utils.export import to_csv, to_html_report, traffic_template_csv
+from utils.session import HIST_N_MONTHS, HIST_RESULTS, SEASONALITY
 from utils.sidebar import render_ai_settings
-from utils.session import HIST_N_MONTHS, SEASONALITY, HIST_RESULTS
 
 st.header("Historical Forecast")
 st.caption("Project traffic from your past organic data using statistical models.")
