@@ -41,7 +41,7 @@ From v3, the positional engine returns P10/P50/P90 monthly data via Monte Carlo 
 
 ## Combined Forecast is the canonical hub
 
-Every downstream page (Seasonality, AIO Risk, SEO Roadmap, Forecast Grid Export, Variance) reads from Combined first. Fallback order: Combined → Positional → Historical → New Content → error. The Combined engine layers: `baseline + positional_uplift + new_content - decay - aio_erosion`.
+Every downstream page (AIO Risk, SEO Roadmap, Forecast Grid Export, Variance) reads from Combined first. Fallback order: Combined → Positional → Historical → New Content → error. The v4 Combined engine layers: `baseline + positional_uplift + new_content - decay`. AIO is no longer a separate deduction — it is baked into positional and new content via per-stream CTR penalty.
 
 ## Attention curve is on by default
 
@@ -51,9 +51,31 @@ The portfolio attention curve (top 5% full effort, bottom 50% at 0.05 weight) is
 
 Streamlit Community Cloud has no persistent storage. Forecast snapshots are downloadable JSON that the analyst keeps alongside the multi-channel plan. Upload back via the Variance page to grade forecasts. No server-side storage.
 
-## Seasonality is applied last
+## Seasonality is per-stream (v4)
 
-Every engine produces un-seasoned forecasts. Seasonality multipliers apply to the Combined output as the final step.
+In v4, seasonality is applied per-stream inside each engine (positional, new content, historical v4). Engines accept `seasonality: dict` and `forecast_start_month: int` parameters. The old pattern of applying seasonality post-hoc in a Seasonality page has been removed — `pages/6_Seasonality.py` has been deleted; its monthly modifier editor and comparison chart now live in `pages/1_Data_Upload.py` under "Seasonality Tuning".
+
+Learned seasonality is stored in `st.session_state["seasonality"]` by the Data Upload page and consumed by forecast pages.
+
+## AIO and seasonality are per-stream (v4)
+
+New engines should consume `aio_intent_penalties` and `seasonality` as parameters, not as post-processing steps. Apply AIO at the CTR computation step; apply seasonality to monthly totals. This ensures P10/P50/P90 bands reflect seasonal variation.
+
+## Prophet dependency is optional
+
+`engine/prophet_engine.py` wraps the `prophet` import in a try/except and raises `ImportError` with a clear message. `engine/historical_engine.py::run_historical_forecast_v4` catches this and falls back to Holt's or linear. Prophet's presence is reflected in `result.attrs["prophet_available"]`.
+
+## Maturation curve is unified
+
+New content and positional engines both use `engine/maturation_curve.py::maturation_schedule()` / `logistic_progress()`. Do not reimplement ramp logic in new engines — import from maturation_curve.
+
+## Historical movement stats are learned per-portfolio
+
+`engine/positional_engine.py::learn_movement_from_history(kw_df)` derives per-tier movement stats when `previous_position` is available. The positional page calls this automatically and passes results to `run_positional_forecast_mc`. Tiers with <10 samples fall back to `_BASE_GAIN_BY_TIER`.
+
+## Brand filtering is a pre-processing step
+
+Brand classification happens at Data Upload time (via AI or manual entry), tagging `kw_df["is_branded"]`. Forecast pages filter branded keywords out **before** running engines when `exclude_brand_from_forecasts = True`. This is not a post-hoc filter — it prevents distorting uplift math with keywords already at position 1.
 
 ## The FY-date reconstruction gotcha
 

@@ -5,6 +5,7 @@ from engine.constants import (
     CTR_BY_POSITION, CTR_11_14, CTR_15_20,
     DIFFICULTY_TIERS, TIME_TO_RANK, INTENT_PATTERNS,
 )
+from engine.maturation_curve import maturation_schedule
 
 
 def classify_difficulty(kd: int) -> str:
@@ -137,10 +138,16 @@ def run_new_content_forecast(
     traffic_multiplier: float = 1.0,
     include_informational: bool = True,
     ai_overview_ctr_penalty: float = 0.0,
+    seasonality: dict | None = None,
+    forecast_start_month: int | None = None,
+    aio_intent_penalties: dict | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Run the full new-content keyword forecast pipeline.
 
     Projects traffic from publishing new content targeting keywords you don't yet rank for.
+
+    AIO CTR penalties are applied per-keyword at the CTR computation step (Step 5).
+    Seasonality is applied to the monthly totals as the final step.
 
     Args:
         df: DataFrame with columns keyword, volume, kd.
@@ -151,7 +158,10 @@ def run_new_content_forecast(
         ctr_model: Optional CTR model dict (from CTR_MODELS).
         traffic_multiplier: Multiplier for traffic estimates (e.g. 0.7 conservative).
         include_informational: If False, drop informational-intent keywords.
-        ai_overview_ctr_penalty: Percentage CTR reduction for informational keywords (0-100).
+        ai_overview_ctr_penalty: Percentage CTR reduction for informational keywords (legacy).
+        seasonality: Dict {month_num: {traffic_mod: float}} applied to monthly totals.
+        forecast_start_month: Calendar month (1-12) of horizon month 1.
+        aio_intent_penalties: Dict {intent: penalty_pct} — supersedes ai_overview_ctr_penalty.
 
     Returns:
         keyword_df: Per-keyword results with all computed fields.
@@ -197,13 +207,21 @@ def run_new_content_forecast(
     positions = []
     ctrs = []
     estimated_traffic = []
+    # Build effective per-intent penalty dict (new API supersedes legacy)
+    _aio_penalties: dict = {}
+    if aio_intent_penalties:
+        _aio_penalties = {k.lower(): v for k, v in aio_intent_penalties.items()}
+    elif ai_overview_ctr_penalty > 0:
+        _aio_penalties = {"informational": ai_overview_ctr_penalty}
+
     for i, row in df.iterrows():
         if row["will_rank"]:
             pos = expected_position(da, row["kd"], seed + i + 2000)
             ctr = get_ctr(pos, ctr_model)
-            # Apply AI Overview CTR penalty to informational keywords
-            if ai_overview_ctr_penalty > 0 and row["intent"] == "informational":
-                ctr = ctr * (1 - ai_overview_ctr_penalty / 100)
+            # Apply AIO CTR penalty based on intent
+            penalty_pct = _aio_penalties.get(str(row["intent"]).lower(), 0.0)
+            if penalty_pct > 0:
+                ctr = ctr * (1 - penalty_pct / 100)
             traffic = round(row["volume"] * ctr / 100 * traffic_multiplier)
         else:
             pos = None
@@ -230,19 +248,39 @@ def run_new_content_forecast(
             traffic_starts.append(None)
 
     df["time_to_rank"] = ttr_values
-    df["traffic_starts_month"] = traffic_starts
+    # traffic_midpoint_month = publish_month + t_mid of the S-curve (kept for compat)
+    df["traffic_midpoint_month"] = [
+        row["publish_month"] + tier_maturation_params(row["tier"])[0]
+        if row["will_rank"] and row["time_to_rank"] is not None else None
+        for _, row in df.iterrows()
+    ]
+    # Backward-compat alias
+    df["traffic_starts_month"] = [
+        row["publish_month"] + (row["time_to_rank"] or 0)
+        if row["will_rank"] else None
+        for _, row in df.iterrows()
+    ]
 
-    # Step 7: Build month-by-month projection
-    monthly_traffic = []
-    for m in range(1, months + 1):
-        total = 0
-        for _, row in df.iterrows():
-            if row["will_rank"] and row["traffic_starts_month"] is not None:
-                if m >= row["traffic_starts_month"]:
-                    total += row["estimated_monthly_traffic"]
-        monthly_traffic.append({"month": m, "traffic": total})
+    # Step 7: S-curve phased maturation projection
+    monthly_totals = np.zeros(months)
+    for _, row in df.iterrows():
+        if not row["will_rank"] or row["estimated_monthly_traffic"] == 0:
+            continue
+        schedule = maturation_schedule(row["tier"], months, int(row["publish_month"]))
+        monthly_totals += row["estimated_monthly_traffic"] * schedule
 
-    monthly_df = pd.DataFrame(monthly_traffic)
+    # Apply seasonality to monthly totals
+    if seasonality and forecast_start_month is not None:
+        season_mults = np.array([
+            1.0 + seasonality.get(((forecast_start_month - 1 + m) % 12) + 1, {}).get("traffic_mod", 0.0)
+            for m in range(months)
+        ])
+        monthly_totals = monthly_totals * season_mults
+
+    monthly_df = pd.DataFrame({
+        "month": range(1, months + 1),
+        "traffic": monthly_totals.round(0).astype(int),
+    })
 
     # Add rank column (1-indexed ordering)
     df.insert(0, "rank", range(1, len(df) + 1))
@@ -251,3 +289,9 @@ def run_new_content_forecast(
     df.attrs["n_excluded_informational"] = n_excluded
 
     return df, monthly_df
+
+
+def tier_maturation_params(tier: str) -> tuple[float, float]:
+    """Re-export from maturation_curve for callers that import from here."""
+    from engine.maturation_curve import tier_maturation_params as _tmp
+    return _tmp(tier)

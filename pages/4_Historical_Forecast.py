@@ -2,7 +2,7 @@ import os
 import streamlit as st
 import pandas as pd
 
-from engine.historical_engine import run_historical_forecast, calculate_growth_rates
+from engine.historical_engine import run_historical_forecast, run_historical_forecast_v4, calculate_growth_rates
 from engine.revenue_engine import add_revenue, build_full_metrics_table, CURRENCY_SYMBOLS
 from utils.data_loader import load_traffic
 from utils.chart_builder import historical_comparison_chart, revenue_projection_chart
@@ -18,13 +18,35 @@ render_ai_settings()
 st.sidebar.header("Historical Forecast Settings")
 
 months = st.sidebar.slider("Forecast Horizon (months)", 3, 36, 12)
-methods = st.sidebar.multiselect(
-    "Forecasting Method",
-    ["Linear Regression", "Exponential Smoothing", "Simple Moving Average"],
-    default=["Linear Regression", "Exponential Smoothing", "Simple Moving Average"],
+
+st.sidebar.divider()
+st.sidebar.subheader("Advanced")
+use_v4 = st.sidebar.checkbox(
+    "Use v4 auto-gated model selection",
+    value=True,
+    help="Automatically selects Prophet/Holt's/Linear based on data length.",
+    key="hist_use_v4",
 )
-sma_window = st.sidebar.slider("SMA Window (months)", 2, 6, 3)
-alpha = st.sidebar.slider("Smoothing Alpha", 0.1, 0.9, 0.3, step=0.05)
+
+# V4-specific controls
+changepoint_prior_scale = st.sidebar.slider(
+    "Trend flexibility (Prophet)",
+    0.001, 0.5, 0.05, step=0.005,
+    key="hist_changepoint",
+    help="Higher = more flexible trend (Prophet only). 0.05 is recommended.",
+    disabled=not use_v4,
+)
+
+# Legacy multi-method controls (shown when v4 is off)
+methods = st.sidebar.multiselect(
+    "Forecasting Method (legacy)",
+    ["Linear Regression", "Exponential Smoothing", "Simple Moving Average"],
+    default=["Linear Regression", "Exponential Smoothing"],
+    key="hist_methods",
+    disabled=use_v4,
+)
+sma_window = st.sidebar.slider("SMA Window (months)", 2, 6, 3, disabled=use_v4)
+alpha = st.sidebar.slider("Smoothing Alpha", 0.1, 0.9, 0.3, step=0.05, disabled=use_v4)
 confidence = st.sidebar.slider("Confidence Band (%)", 5, 30, 15)
 
 st.sidebar.divider()
@@ -74,17 +96,49 @@ if df is not None:
 
 # ── Run Forecast ─────────────────────────────────────────────────────────────
 if df is not None:
-    if not methods:
-        st.warning("Please select at least one forecasting method.")
+    n_hist_months = len(df)
+    if use_v4:
+        if n_hist_months >= 24:
+            st.info(f"**Model selection:** Prophet (primary) + linear reference ({n_hist_months} months ≥ 24).")
+        elif n_hist_months >= 12:
+            st.info(f"**Model selection:** Holt's Exponential Smoothing — Prophet available but flagged low-confidence ({n_hist_months} months, 12–23).")
+        else:
+            st.warning(f"**Model selection:** Linear regression only ({n_hist_months} months < 12 — seasonality cannot be detected). Upload more historical data for better forecasts.")
+
+    can_run = use_v4 or bool(methods)
+    if not can_run:
+        st.warning("Please select at least one forecasting method or enable v4 auto-gating.")
     elif st.button("Generate Forecast", type="primary", key="hist_run"):
         with st.spinner("Running historical forecast..."):
-            result = run_historical_forecast(df, months, methods, sma_window, alpha, confidence)
+            if use_v4:
+                seasonality = st.session_state.get("seasonality")
+                result = run_historical_forecast_v4(
+                    df, months,
+                    changepoint_prior_scale=changepoint_prior_scale,
+                    alpha=alpha, confidence=confidence,
+                    seasonality=seasonality,
+                )
+                # Surface method info
+                chosen = result.attrs.get("chosen_method", "unknown")
+                reason = result.attrs.get("method_reason", "")
+                prophet_ok = result.attrs.get("prophet_available", False)
+                if not prophet_ok and chosen == "prophet":
+                    st.warning("Prophet unavailable — fell back to linear. Install `prophet` for full capability.")
+                # Adapt methods list so the chart helper knows what to render
+                active_methods = ["Linear Regression"]
+                if "exponential_smoothing" in result.columns:
+                    active_methods.append("Exponential Smoothing")
+                if "prophet" in result.columns:
+                    active_methods.append("Prophet")
+            else:
+                result = run_historical_forecast(df, months, methods, sma_window, alpha, confidence)
+                active_methods = methods
             growth = calculate_growth_rates(df["traffic"])
 
             st.session_state["hist_results"] = {
                 "result": result,
                 "growth": growth,
-                "methods": methods,
+                "methods": active_methods,
                 "enable_revenue": enable_revenue,
                 "currency": currency,
                 "cvr": cvr,

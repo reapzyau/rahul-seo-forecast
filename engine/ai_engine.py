@@ -222,6 +222,35 @@ def generate_content_roadmap(
     return _parse_llm_json(text), used_model
 
 
+def detect_brand_terms(
+    client: "OpenAI",
+    domain: str,
+    keywords: list[str],
+    model: str = "openai/gpt-4o-mini",
+) -> tuple[dict, str]:
+    """Detect branded keywords from domain name + keyword list using AI.
+
+    Args:
+        client: Bi Frost OpenAI-compatible client.
+        domain: The website domain (e.g. "example.com").
+        keywords: Top keywords by volume (up to 100 used).
+        model: Model ID from config/models.json.
+
+    Returns:
+        (result_dict, model_used) where result_dict has keys:
+            brand_terms: list[str]
+            confidence: float
+            reasoning: str
+    """
+    system, user_tmpl = _load_prompt("detect_brand")
+    kw_sample = "\n".join(f"- {kw}" for kw in keywords[:100])
+    user_input = user_tmpl.substitute(domain=domain, keyword_sample=kw_sample)
+    text, used_model = generate_with_fallback(
+        client, model, system, user_input, temperature=0.2,
+    )
+    return _parse_llm_json(text), used_model
+
+
 # ── AI Data Transformation ──────────────────────────────────────────────────
 
 
