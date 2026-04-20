@@ -55,12 +55,12 @@ keywords_affected = risk["keywords_affected"]
 total_keywords = risk["total_keywords"]
 exposure_pct = (keywords_affected / total_keywords * 100) if total_keywords > 0 else 0.0
 traffic_at_risk = risk["traffic_at_risk"]
-projected_loss = risk["projected_loss"]
 
 c1, c2, c3 = st.columns(3)
 c1.metric("Keywords Affected", f"{keywords_affected:,}")
 c2.metric("Exposure %", f"{exposure_pct:.1f}%")
-c3.metric("Traffic at Risk", f"{traffic_at_risk:,.0f}")
+c3.metric("Traffic at Risk (diagnostic)", f"{traffic_at_risk:,.0f}")
+st.caption("These are diagnostic exposure estimates — AIO CTR penalties are already applied inside the Positional and New Content forecast engines.")
 
 # ── Recommendations ─────────────────────────────────────────────────────────
 recs = aio_recommendations(risk)

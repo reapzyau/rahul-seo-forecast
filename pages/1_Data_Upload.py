@@ -19,6 +19,7 @@ from engine.brand_engine import classify_keywords_as_branded
 from engine.ai_engine import get_bifrost_client
 from engine.roadmap_ai_engine import (
     extract_roadmap_with_ai, estimate_extraction_tokens, ROADMAP_BUNDLE_SCHEMA,
+    load_roadmap_v2, compute_cache_key,
 )
 
 st.header("Data Upload")
@@ -316,27 +317,34 @@ with tab_roadmap:
                 _do_extract = st.button("Extract with AI", key="roadmap_ai_extract", type="primary")
 
             if _do_extract or "roadmap_bundle" not in st.session_state:
-                with st.spinner("Extracting roadmap structure with AI…"):
-                    try:
-                        _bundle, _used_model = extract_roadmap_with_ai(
-                            _ai_client,
-                            _raw_bytes,
-                            _ext,
-                            model=_ai_model,
-                            cache=_roadmap_cache,
-                        )
-                        st.session_state["roadmap_bundle"] = _bundle
-                        st.session_state["roadmap_used_model"] = _used_model
-                    except Exception as _e:
-                        st.error(f"AI extraction failed: {_e}. Falling back to legacy loader.")
+                _ck = compute_cache_key(_raw_bytes, None, _ai_model)
+                if not _do_extract and _ck in _roadmap_cache:
+                    _bundle = _roadmap_cache[_ck]["bundle"]
+                    _used_model = _roadmap_cache[_ck]["model"]
+                    st.session_state["roadmap_bundle"] = _bundle
+                    st.session_state["roadmap_content_plan"] = _bundle.get("content_plan", [])
+                    st.session_state["roadmap_used_model"] = _used_model
+                else:
+                    with st.spinner("Ingesting roadmap…"):
                         try:
-                            _legacy = load_roadmap(_raw_bytes)
-                            if _legacy:
-                                run_detection(store, roadmap_data=_legacy)
-                                st.session_state["roadmap_data"] = _legacy
-                                st.warning("Legacy extraction used — upload AI key for rich extraction.")
-                        except Exception as _e2:
-                            st.error(f"Legacy fallback also failed: {_e2}")
+                            _fname = f"roadmap.{_ext}"
+                            _bundle, _used_model = load_roadmap_v2(
+                                _ai_client, _raw_bytes, _fname, model=_ai_model,
+                            )
+                            _roadmap_cache[_ck] = {"bundle": _bundle, "model": _used_model}
+                            st.session_state["roadmap_bundle"] = _bundle
+                            st.session_state["roadmap_content_plan"] = _bundle.get("content_plan", [])
+                            st.session_state["roadmap_used_model"] = _used_model
+                        except Exception as _e:
+                            st.error(f"Roadmap ingestion failed: {_e}. Falling back to legacy loader.")
+                            try:
+                                _legacy = load_roadmap(_raw_bytes)
+                                if _legacy:
+                                    run_detection(store, roadmap_data=_legacy)
+                                    st.session_state["roadmap_data"] = _legacy
+                                    st.warning("Legacy extraction used — upload AI key for rich extraction.")
+                            except Exception as _e2:
+                                st.error(f"Legacy fallback also failed: {_e2}")
 
             _bundle = st.session_state.get("roadmap_bundle")
             if _bundle:
@@ -421,22 +429,31 @@ with tab_roadmap:
                 with col_reext:
                     if st.button("Re-extract (AI)", key="roadmap_reextract"):
                         if _nl_correction.strip():
-                            with st.spinner("Re-running AI extraction with correction…"):
-                                try:
-                                    _new_bundle, _new_model = extract_roadmap_with_ai(
-                                        _ai_client,
-                                        _raw_bytes,
-                                        _ext,
-                                        nl_correction=_nl_correction.strip(),
-                                        previous_extraction=_bundle,
-                                        model=_ai_model,
-                                        cache=_roadmap_cache,
-                                    )
-                                    st.session_state["roadmap_bundle"] = _new_bundle
-                                    st.session_state["roadmap_used_model"] = _new_model
-                                    st.rerun()
-                                except Exception as _e:
-                                    st.error(f"Re-extraction failed: {_e}")
+                            _ck2 = compute_cache_key(_raw_bytes, _nl_correction.strip(), _ai_model)
+                            if _ck2 in _roadmap_cache:
+                                _new_bundle = _roadmap_cache[_ck2]["bundle"]
+                                _new_model = _roadmap_cache[_ck2]["model"]
+                                st.session_state["roadmap_bundle"] = _new_bundle
+                                st.session_state["roadmap_content_plan"] = _new_bundle.get("content_plan", [])
+                                st.session_state["roadmap_used_model"] = _new_model
+                                st.rerun()
+                            else:
+                                with st.spinner("Re-running ingestion with correction…"):
+                                    try:
+                                        _fname = f"roadmap.{_ext}"
+                                        _new_bundle, _new_model = load_roadmap_v2(
+                                            _ai_client, _raw_bytes, _fname,
+                                            nl_correction=_nl_correction.strip(),
+                                            previous_bundle=_bundle,
+                                            model=_ai_model,
+                                        )
+                                        _roadmap_cache[_ck2] = {"bundle": _new_bundle, "model": _new_model}
+                                        st.session_state["roadmap_bundle"] = _new_bundle
+                                        st.session_state["roadmap_content_plan"] = _new_bundle.get("content_plan", [])
+                                        st.session_state["roadmap_used_model"] = _new_model
+                                        st.rerun()
+                                    except Exception as _e:
+                                        st.error(f"Re-extraction failed: {_e}")
                         else:
                             # No NL — try to parse JSON editor
                             try:
@@ -454,6 +471,8 @@ with tab_roadmap:
                             _to_apply = _bundle
                         run_detection(store, roadmap_data=_to_apply)
                         st.session_state["roadmap_data"] = _to_apply
+                        st.session_state["roadmap_bundle"] = _to_apply
+                        st.session_state["roadmap_content_plan"] = _to_apply.get("content_plan", [])
                         st.success("Roadmap assumptions applied.")
 
         else:
