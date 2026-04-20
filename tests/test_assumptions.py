@@ -7,7 +7,7 @@ import pytest
 from engine.assumptions import (
     ASSUMPTIONS,
     Assumption,
-    _detect_from_roadmap_bundle,
+    _detect_from_bundle_v2,
     assumptions_summary,
     clear_override,
     get_assumption,
@@ -308,34 +308,34 @@ def _fresh():
 class TestRoadmapBundleDetection:
     def test_detects_content_effort(self):
         store = _fresh()
-        _detect_from_roadmap_bundle(store, _SAMPLE_BUNDLE)
+        _detect_from_bundle_v2(store, _SAMPLE_BUNDLE)
         assert get_assumption(store, "content_effort_level") == "aggressive"
 
     def test_detects_monthly_hours(self):
         store = _fresh()
-        _detect_from_roadmap_bundle(store, _SAMPLE_BUNDLE)
+        _detect_from_bundle_v2(store, _SAMPLE_BUNDLE)
         assert get_assumption(store, "content_monthly_hours") == pytest.approx(30.0)
 
     def test_detects_timeline(self):
         store = _fresh()
-        _detect_from_roadmap_bundle(store, _SAMPLE_BUNDLE)
+        _detect_from_bundle_v2(store, _SAMPLE_BUNDLE)
         assert get_assumption(store, "timeline_months_covered") == 12
 
     def test_all_seven_focus_effort_detected(self):
         store = _fresh()
-        detected = _detect_from_roadmap_bundle(store, _SAMPLE_BUNDLE)
+        detected = _detect_from_bundle_v2(store, _SAMPLE_BUNDLE)
         effort_keys = [k for k in detected if k.endswith("_effort_level")]
         assert len(effort_keys) == 7
 
     def test_all_seven_focus_hours_detected(self):
         store = _fresh()
-        detected = _detect_from_roadmap_bundle(store, _SAMPLE_BUNDLE)
+        detected = _detect_from_bundle_v2(store, _SAMPLE_BUNDLE)
         hour_keys = [k for k in detected if k.endswith("_monthly_hours")]
         assert len(hour_keys) == 7
 
     def test_provenance_is_detected(self):
         store = _fresh()
-        _detect_from_roadmap_bundle(store, _SAMPLE_BUNDLE)
+        _detect_from_bundle_v2(store, _SAMPLE_BUNDLE)
         prov = get_provenance(store, "content_effort_level")
         assert prov["provenance"] == "detected"
 
@@ -347,7 +347,7 @@ class TestRoadmapBundleDetection:
     def test_bundle_does_not_overwrite_override(self):
         store = _fresh()
         override_assumption(store, "content_effort_level", "light")
-        _detect_from_roadmap_bundle(store, _SAMPLE_BUNDLE)
+        _detect_from_bundle_v2(store, _SAMPLE_BUNDLE)
         assert get_assumption(store, "content_effort_level") == "light"
 
 

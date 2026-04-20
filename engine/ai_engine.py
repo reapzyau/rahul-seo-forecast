@@ -1,13 +1,17 @@
 import json
+import logging
 from pathlib import Path
 from string import Template
 
 import numpy as np
 import pandas as pd
 
+from engine.transform_spec import apply_transform
 from utils.bifrost import call as _bfcall
 from utils.bifrost import call_with_fallback as _bfcall_with_fallback
 from utils.bifrost import get_client as _bfget_client
+
+_logger = logging.getLogger(__name__)
 
 _CONFIG_DIR = Path(__file__).resolve().parent.parent / "config"
 _PROMPT_DIR = Path(__file__).resolve().parent.parent / "prompts"
@@ -316,11 +320,35 @@ _SAFE_BUILTINS = {
 }
 
 
+def apply_transform_spec(df: pd.DataFrame, raw_text: str) -> pd.DataFrame:
+    """Parse a JSON transform spec from LLM output and apply it safely.
+
+    If the text is not valid JSON (e.g. LLM returned Python code instead),
+    falls back to execute_transform for backward compatibility during
+    the transition period.
+
+    Returns the transformed DataFrame.
+    """
+    text = raw_text.strip()
+    try:
+        spec = json.loads(text)
+        if not isinstance(spec, dict):
+            raise ValueError("Spec is not a JSON object")
+        _logger.info("Applying JSON transform spec (version %s)", spec.get("version", "?"))
+        return apply_transform(df, spec)
+    except (json.JSONDecodeError, ValueError):
+        _logger.warning(
+            "LLM returned non-JSON output; falling back to exec()-based transform. "
+            "Update the model or prompt if this happens repeatedly."
+        )
+        return execute_transform(df, text)
+
+
 def execute_transform(df: pd.DataFrame, code: str) -> pd.DataFrame:
     """Execute AI-generated transform code with restricted builtins.
 
-    Blocks dangerous patterns (os, subprocess, open, eval, exec, etc.)
-    before running the code in an isolated namespace.
+    Kept as fallback for the transition period while models adapt to
+    the JSON spec prompt. See engine/transform_spec.py for the preferred path.
     """
     for pattern in _BLOCKED_CODE_PATTERNS:
         if pattern in code:

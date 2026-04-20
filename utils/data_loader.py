@@ -4,7 +4,7 @@ import streamlit as st
 from engine.ai_engine import (
     KEYWORDS_TARGET_FORMAT,
     TRAFFIC_TARGET_FORMAT,
-    execute_transform,
+    apply_transform_spec,
     get_bifrost_client,
     transform_data,
 )
@@ -303,10 +303,10 @@ def _try_ai_transform(raw_df: pd.DataFrame, target_format: str, data_type: str) 
 
         if used_model != model:
             st.info(f"Fell back to {used_model} — selected model was unavailable")
-        with st.expander("AI-generated transform code", expanded=False):
-            st.code(code, language="python")
+        with st.expander("AI-generated transform spec", expanded=False):
+            st.code(code, language="json")
 
-        result = execute_transform(raw_df, code)
+        result = apply_transform_spec(raw_df, code)
         st.success(f"AI successfully transformed your data ({len(result)} rows)")
         return result
 

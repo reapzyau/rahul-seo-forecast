@@ -501,12 +501,11 @@ def _detect_from_roadmap(store: dict, roadmap_data: dict) -> list[str]:
 
     detected: list[str] = []
 
-    # v2 schema bundle (produced by engine/roadmap_ai_engine.py)
-    if roadmap_data.get("schema_version", "").startswith("2."):
+    # Any bundle that has per_focus goes through _detect_from_bundle_v2, which is
+    # a superset of the old _detect_from_roadmap_bundle — it also extracts
+    # client_metadata and strategy_restart_month when present.
+    if "per_focus" in roadmap_data or roadmap_data.get("schema_version", "").startswith("2."):
         detected.extend(_detect_from_bundle_v2(store, roadmap_data))
-    # Bundles with per_focus key (alternative AI extraction format)
-    elif "per_focus" in roadmap_data:
-        detected.extend(_detect_from_roadmap_bundle(store, roadmap_data))
     else:
         # Legacy flat format from utils/roadmap_loader.py
         mapping = {
@@ -520,33 +519,6 @@ def _detect_from_roadmap(store: dict, roadmap_data: dict) -> list[str]:
                 detected.append(key)
 
     recompute_rollups(store)
-    return detected
-
-
-def _detect_from_roadmap_bundle(store: dict, bundle: dict) -> list[str]:
-    """Flatten a per_focus bundle into per-focus assumption keys."""
-    detected: list[str] = []
-    per_focus = bundle.get("per_focus", {})
-
-    for focus_key in _FOCUS_KEYS:
-        focus_data = per_focus.get(focus_key, {})
-        effort = focus_data.get("effort_level")
-        hours = focus_data.get("monthly_hours")
-
-        if effort in ("light", "moderate", "aggressive"):
-            _set_detected(store, f"{focus_key}_effort_level", effort, "roadmap extraction")
-            detected.append(f"{focus_key}_effort_level")
-
-        if isinstance(hours, (int, float)) and hours >= 0:
-            _set_detected(store, f"{focus_key}_monthly_hours", float(hours), "roadmap extraction")
-            detected.append(f"{focus_key}_monthly_hours")
-
-    timeline = bundle.get("timeline", {})
-    months_covered = timeline.get("months_covered")
-    if isinstance(months_covered, (int, float)) and months_covered > 0:
-        _set_detected(store, "timeline_months_covered", int(months_covered), "roadmap extraction")
-        detected.append("timeline_months_covered")
-
     return detected
 
 
@@ -581,7 +553,7 @@ def _detect_from_bundle_v2(store: dict, bundle: dict) -> list[str]:
             _set_detected(store, key, effort, "roadmap extraction")
             detected.append(key)
         hours = focus_data.get("monthly_hours")
-        if isinstance(hours, (int, float)):
+        if isinstance(hours, (int, float)) and hours >= 0:
             key = f"{assumption_prefix}_monthly_hours"
             _set_detected(store, key, float(hours), "roadmap extraction")
             detected.append(key)
