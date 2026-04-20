@@ -8,6 +8,7 @@ from utils.data_loader import load_traffic
 from utils.chart_builder import historical_comparison_chart, revenue_projection_chart
 from utils.export import to_csv, to_html_report, traffic_template_csv
 from utils.sidebar import render_ai_settings
+from utils.session import HIST_N_MONTHS, SEASONALITY, HIST_RESULTS
 
 st.header("Historical Forecast")
 st.caption("Project traffic from your past organic data using statistical models.")
@@ -29,7 +30,7 @@ use_v4 = st.sidebar.checkbox(
 )
 
 # Infer prophet-active from previous render's data length (session state)
-_n_hist = st.session_state.get("hist_n_months", 0)
+_n_hist = st.session_state.get(HIST_N_MONTHS, 0)
 _prophet_active = use_v4 and _n_hist >= 24
 
 # V4-specific controls
@@ -87,7 +88,7 @@ elif use_sample:
     df = load_traffic(sample_path)
 
 if df is not None:
-    st.session_state["hist_n_months"] = len(df)
+    st.session_state[HIST_N_MONTHS] = len(df)
     # Build summary line
     summary_parts = [
         f"**{len(df)} months of data**",
@@ -117,7 +118,7 @@ if df is not None:
     elif st.button("Generate Forecast", type="primary", key="hist_run"):
         with st.spinner("Running historical forecast..."):
             if use_v4:
-                seasonality = st.session_state.get("seasonality")
+                seasonality = st.session_state.get(SEASONALITY)
                 result = run_historical_forecast_v4(
                     df, months,
                     changepoint_prior_scale=changepoint_prior_scale,
@@ -141,7 +142,7 @@ if df is not None:
                 active_methods = methods
             growth = calculate_growth_rates(df["traffic"])
 
-            st.session_state["hist_results"] = {
+            st.session_state[HIST_RESULTS] = {
                 "result": result,
                 "growth": growth,
                 "methods": active_methods,
@@ -153,8 +154,8 @@ if df is not None:
             }
 
 # ── Results ──────────────────────────────────────────────────────────────────
-if "hist_results" in st.session_state:
-    r = st.session_state["hist_results"]
+if HIST_RESULTS in st.session_state:
+    r = st.session_state[HIST_RESULTS]
     result = r["result"]
     growth = r["growth"]
 

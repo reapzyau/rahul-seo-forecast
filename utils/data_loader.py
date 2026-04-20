@@ -8,6 +8,7 @@ from engine.ai_engine import (
     TRAFFIC_TARGET_FORMAT,
     KEYWORDS_TARGET_FORMAT,
 )
+from utils.session import BIFROST_API_KEY, BIFROST_MODEL
 
 
 # Common column name mappings
@@ -289,11 +290,11 @@ def _try_ai_transform(raw_df: pd.DataFrame, target_format: str, data_type: str) 
     Returns:
         Transformed DataFrame, or None if AI is unavailable or transform fails.
     """
-    client = get_bifrost_client(st.session_state.get("bifrost_api_key"))
+    client = get_bifrost_client(st.session_state.get(BIFROST_API_KEY))
     if client is None:
         return None
 
-    model = st.session_state.get("bifrost_model", "openai/gpt-4o-mini")
+    model = st.session_state.get(BIFROST_MODEL, "openai/gpt-4o-mini")
 
     st.info(f"Data format doesn't match expected columns. Using AI to transform your {data_type} data...")
 

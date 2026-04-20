@@ -467,3 +467,13 @@ class TestPerFocusAndRollupSpec:
         terms = ["nike", "adidas", "puma"]
         override_assumption(store, "brand_terms", terms)
         assert get_assumption(store, "brand_terms") == terms
+
+
+def test_recompute_rollups_defined_exactly_once():
+    """Guard against the duplicate-definition bug resurfacing."""
+    import engine.assumptions as mod
+    import inspect
+    source = inspect.getsource(mod)
+    assert source.count("\ndef recompute_rollups(") == 1, (
+        "recompute_rollups is defined more than once in engine/assumptions.py"
+    )
