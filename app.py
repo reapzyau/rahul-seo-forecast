@@ -16,14 +16,19 @@ render_ai_settings()
 st.markdown("""
 Choose a page from the sidebar:
 
-- **Data Upload** — Upload GA4 organic and SEMrush keyword exports; configure seasonality and assumptions
-- **Positional Forecast** — Monte Carlo P10/P50/P90 uplift from improving existing rankings
-- **New Content Forecast** — Project traffic from new content targeting new keywords
-- **Historical Forecast** — Project traffic from your past organic data
-- **Combined Forecast** — Canonical hub: baseline + positional + new content \u2212 decay
-- **Diagnostics** — AIO risk exposure, keyword pipeline distribution, and decay projection
-- **Roadmap** — AI content roadmap and GAZMAN-style SEO task hours grid
-- **Deliverables** — Download the forecast grid XLSX, grade a past forecast, and read the methodology
+**Setup**
+- **1. Data Upload** — Upload GA4 organic and SEMrush keyword exports; configure seasonality and assumptions
+
+**Forecasts**
+- **2. Historical Forecast** — Project traffic from your past organic data using statistical models
+- **3. Positional Forecast** — Monte Carlo P10/P50/P90 uplift from improving existing rankings
+- **4. New Content Forecast** — Project traffic from new content targeting new keywords
+- **5. Combined Forecast** — Canonical hub: baseline + positional + new content \u2212 decay
+
+**Outputs & Diagnostics**
+- **6. Diagnostics** — AIO risk exposure, keyword pipeline distribution, and decay projection
+- **7. Roadmap** — AI content roadmap and GAZMAN-style SEO task hours grid
+- **8. Deliverables** — Download the forecast grid XLSX, grade a past forecast, and read the methodology
 """)
 
 st.divider()
