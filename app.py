@@ -14,21 +14,16 @@ st.title("SEO Traffic & Revenue Forecasting Engine")
 render_ai_settings()
 
 st.markdown("""
-Choose a forecasting mode from the sidebar:
+Choose a page from the sidebar:
 
-- **Data Upload** — Upload GA4 organic and SEMrush keyword exports (used across all pages)
+- **Data Upload** — Upload GA4 organic and SEMrush keyword exports; configure seasonality and assumptions
 - **Positional Forecast** — Monte Carlo P10/P50/P90 uplift from improving existing rankings
 - **New Content Forecast** — Project traffic from new content targeting new keywords
 - **Historical Forecast** — Project traffic from your past organic data
-- **Combined Forecast** — Canonical hub: baseline + positional + new content \u2212 decay \u2212 AIO erosion
-- **Seasonality** — Apply monthly modifiers and campaign events
-- **AI Overview Risk** — Current snapshot + projected erosion over the forecast horizon
-- **Keyword Pipeline** — Track keyword distribution across SERP pages over time
-- **Content Roadmap** — AI-powered content planning and prioritization
-- **SEO Roadmap** — Month-by-month task allocation in the GAZMAN format
-- **Forecast Grid Export** — Forecast / Actual / % Variance grid (P10/P50/P90 scenario selector)
-- **Forecast Variance** — Upload a snapshot, compare to actuals, grade the forecast
-- **Methodology** — How the models work
+- **Combined Forecast** — Canonical hub: baseline + positional + new content \u2212 decay
+- **Diagnostics** — AIO risk exposure, keyword pipeline distribution, and decay projection
+- **Roadmap** — AI content roadmap and GAZMAN-style SEO task hours grid
+- **Deliverables** — Download the forecast grid XLSX, grade a past forecast, and read the methodology
 """)
 
 st.divider()
