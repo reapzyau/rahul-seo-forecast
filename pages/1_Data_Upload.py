@@ -12,7 +12,8 @@ from utils.sidebar import render_ai_settings
 from utils.assumptions_panel import render_assumptions_panel, render_assumptions_banner
 from engine.assumptions import initialise_assumptions, run_detection, override_assumption, get_assumption, get_provenance
 from engine.seasonality_engine import (
-    learn_seasonality_from_ga4, blend_learned_and_default_seasonality, DEFAULT_SEASONALITY,
+    learn_seasonality_from_ga4, blend_learned_and_default_seasonality,
+    seasonality_for_portfolio, DEFAULT_SEASONALITY,
 )
 from engine.brand_engine import classify_keywords_as_branded
 from engine.ai_engine import get_bifrost_client
@@ -59,24 +60,15 @@ with tab_ga4:
         run_detection(store, ga4_df=ga4_df)
 
         # ── Seasonality Detection ─────────────────────────────────────
-        n_months = len(ga4_df)
-        learned = learn_seasonality_from_ga4(ga4_df)
-        if learned is not None:
-            if n_months >= 24:
-                blend_weight = 1.0
-                source = "learned"
-            elif n_months >= 12:
-                blend_weight = 0.5
-                source = "blended"
-            else:
-                blend_weight = 0.0
-                source = "defaulted"
+        seasonality_dict, season_meta = seasonality_for_portfolio(ga4_df)
+        source = season_meta["source"]
+        blend_weight = season_meta["blend_weight"]
+        n_months = season_meta["months_available"]
 
-            blended = blend_learned_and_default_seasonality(learned, DEFAULT_SEASONALITY, blend_weight)
-            st.session_state["seasonality"] = blended
-            st.session_state["learned_seasonality"] = learned
-            override_assumption(store, "seasonality_source", source, f"GA4 data ({n_months} months)")
-            override_assumption(store, "seasonality_blend_weight", blend_weight, f"GA4 data ({n_months} months)")
+        st.session_state["seasonality"] = seasonality_dict
+        st.session_state["learned_seasonality"] = learn_seasonality_from_ga4(ga4_df)
+        override_assumption(store, "seasonality_source", source, f"GA4 data ({n_months} months)")
+        override_assumption(store, "seasonality_blend_weight", blend_weight, f"GA4 data ({n_months} months)")
 
         date_min = ga4_df["date"].min()
         date_max = ga4_df["date"].max()

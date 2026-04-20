@@ -1448,14 +1448,14 @@ class TestLearnedSeasonality:
             traffic.append(base)
         return pd.DataFrame({"date": dates, "traffic": traffic})
 
-    def test_learns_november_boost(self):
+    def test_learn_seasonality_with_november_peak(self):
         from engine.seasonality_engine import learn_seasonality_from_ga4
         df = self._make_ga4_df(n_years=2, nov_boost=0.25)
         learned = learn_seasonality_from_ga4(df)
         assert learned is not None
         assert abs(learned[11]["traffic_mod"] - 0.25) < 0.03
 
-    def test_returns_none_below_12_months(self):
+    def test_learn_seasonality_requires_12_months(self):
         from engine.seasonality_engine import learn_seasonality_from_ga4
         df = self._make_ga4_df(n_years=1).head(6)
         assert learn_seasonality_from_ga4(df) is None
@@ -1484,6 +1484,38 @@ class TestLearnedSeasonality:
         for m in range(1, 13):
             assert abs(blended[m]["traffic_mod"] - learned[m]["traffic_mod"]) < 0.001
 
+    def test_blend_weight_half_is_midpoint(self):
+        from engine.seasonality_engine import (
+            learn_seasonality_from_ga4,
+            blend_learned_and_default_seasonality,
+            DEFAULT_SEASONALITY,
+        )
+        df = self._make_ga4_df()
+        learned = learn_seasonality_from_ga4(df)
+        blended = blend_learned_and_default_seasonality(learned, DEFAULT_SEASONALITY, 0.5)
+        for m in range(1, 13):
+            expected = round(
+                0.5 * learned[m]["traffic_mod"] + 0.5 * DEFAULT_SEASONALITY[m]["traffic_mod"], 4
+            )
+            assert abs(blended[m]["traffic_mod"] - expected) < 0.001
+
+    def test_au_holidays_df_has_black_friday_2025(self):
+        from engine.seasonality_engine import build_au_holidays_df
+        df = build_au_holidays_df(2025, 2025)
+        bf = df[df["holiday"] == "Black Friday"]
+        assert len(bf) == 1
+        ds = pd.to_datetime(bf["ds"].iloc[0])
+        assert ds.year == 2025
+        assert ds.month == 11
+        assert ds.weekday() == 4  # Friday
+
+    def test_au_holidays_df_covers_full_year_range(self):
+        from engine.seasonality_engine import build_au_holidays_df
+        df = build_au_holidays_df(2023, 2028)
+        years = pd.to_datetime(df["ds"]).dt.year.unique()
+        for y in range(2023, 2029):
+            assert y in years
+
     def test_au_holidays_has_all_required_events(self):
         from engine.seasonality_engine import AU_HOLIDAYS
         required = {
@@ -1493,12 +1525,6 @@ class TestLearnedSeasonality:
         found = set(AU_HOLIDAYS["holiday"].unique())
         for r in required:
             assert r in found, f"Missing holiday: {r}"
-
-    def test_au_holidays_spans_2023_2028(self):
-        from engine.seasonality_engine import AU_HOLIDAYS
-        years = pd.to_datetime(AU_HOLIDAYS["ds"]).dt.year.unique()
-        for y in range(2023, 2029):
-            assert y in years
 
     def test_au_holidays_has_correct_columns(self):
         from engine.seasonality_engine import AU_HOLIDAYS
@@ -1561,3 +1587,54 @@ class TestHistoricalV4:
         forecast = result[result["is_forecast"]]
         # A strong upward trend should produce non-flat forecasts
         assert forecast["exponential_smoothing"].iloc[-1] != forecast["exponential_smoothing"].iloc[0]
+
+    def test_method_selection_24_months_picks_prophet(self):
+        from engine.historical_engine import run_historical_forecast_v4
+        df = self._make_df(24)
+        result = run_historical_forecast_v4(df, months=6)
+        assert result.attrs["chosen_method"] == "prophet"
+
+    def test_method_selection_18_months_picks_holts_with_low_confidence(self):
+        from engine.historical_engine import run_historical_forecast_v4
+        df = self._make_df(18)
+        result = run_historical_forecast_v4(df, months=6)
+        assert result.attrs["chosen_method"] == "holts"
+        assert result.attrs["low_confidence"] is True
+
+    def test_method_selection_6_months_picks_linear_with_warning(self):
+        from engine.historical_engine import run_historical_forecast_v4
+        df = self._make_df(6)
+        result = run_historical_forecast_v4(df, months=3)
+        assert result.attrs["chosen_method"] == "linear"
+        assert "seasonality" in result.attrs["method_reason"].lower()
+
+    def test_fallback_to_holts_when_prophet_unavailable(self):
+        import unittest.mock as mock
+        from engine.historical_engine import run_historical_forecast_v4
+        df = self._make_df(24)
+        with mock.patch("engine.prophet_engine._PROPHET_AVAILABLE", False):
+            result = run_historical_forecast_v4(df, months=6)
+        assert len(result) == 30
+        assert "exponential_smoothing" in result.columns
+        assert result.attrs["prophet_available"] is False
+
+    @pytest.mark.skipif(
+        not __import__("engine.prophet_engine", fromlist=["_PROPHET_AVAILABLE"])._PROPHET_AVAILABLE,
+        reason="Prophet not installed",
+    )
+    def test_prophet_extends_dates_monotonically(self):
+        from engine.prophet_engine import run_prophet_forecast
+        df = self._make_df(24)
+        result = run_prophet_forecast(df, months=6)
+        assert result["date"].is_monotonic_increasing
+
+    @pytest.mark.skipif(
+        not __import__("engine.prophet_engine", fromlist=["_PROPHET_AVAILABLE"])._PROPHET_AVAILABLE,
+        reason="Prophet not installed",
+    )
+    def test_prophet_forecast_non_flat_on_trending_data(self):
+        from engine.prophet_engine import run_prophet_forecast
+        df = self._make_df(24, trend=500.0)
+        result = run_prophet_forecast(df, months=6)
+        forecast = result[result["is_forecast"]]
+        assert forecast["forecast"].iloc[-1] != forecast["forecast"].iloc[0]

@@ -327,6 +327,25 @@ The blended seasonality is stored in `st.session_state["seasonality"]` and passe
 
 ---
 
+## AU Holiday Calendar
+
+The `AU_HOLIDAY_RULES` constant in `engine/seasonality_engine.py` defines eight Australian retail events used to build a Prophet-format holiday DataFrame via `build_au_holidays_df(start_year, end_year)`.
+
+| Holiday | Rule | Lower Window | Upper Window |
+|---------|------|-------------|-------------|
+| EOFY | June 30 | -14 days | +1 day |
+| Click Frenzy May | Third Tuesday of May | -3 days | +3 days |
+| Click Frenzy Nov | Second Tuesday of November | -3 days | +3 days |
+| Black Friday | Fourth Friday of November | -2 days | +3 days |
+| Cyber Monday | Monday after Black Friday | -1 day | +1 day |
+| Christmas | December 25 | -10 days | +2 days |
+| Boxing Day Sales | December 26 | 0 days | +7 days |
+| Back to School | January 28 | -7 days | +7 days |
+
+Windows represent the days before (negative) and after (positive) the anchor date that are influenced by the event. The pre-built `AU_HOLIDAYS` constant covers 2023–2028 and is consumed by Prophet when `use_prophet=True` in the historical engine.
+
+---
+
 ## Brand Classification
 
 Keywords can be classified as branded or non-branded on the Data Upload page. Brand terms are detected via:

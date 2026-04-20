@@ -403,3 +403,67 @@ class TestRecomputeRollups:
         run_detection(store, roadmap_data=legacy)
         assert get_assumption(store, "effort_level") == "aggressive"
         assert get_assumption(store, "content_cadence") == 6
+
+
+# ── Prompt 6 spec-named tests ─────────────────────────────────────────────────
+
+_PER_FOCUS_EFFORT_KEYS = [
+    "content_effort_level", "technical_effort_level", "on_page_effort_level",
+    "off_page_effort_level", "local_effort_level", "analytics_effort_level",
+    "strategy_effort_level",
+]
+_PER_FOCUS_HOURS_KEYS = [
+    "content_monthly_hours", "technical_monthly_hours", "on_page_monthly_hours",
+    "off_page_monthly_hours", "local_monthly_hours", "analytics_monthly_hours",
+    "strategy_monthly_hours",
+]
+
+
+class TestPerFocusAndRollupSpec:
+    def test_new_per_focus_keys_registered(self):
+        for key in _PER_FOCUS_EFFORT_KEYS + _PER_FOCUS_HOURS_KEYS:
+            assert key in ASSUMPTIONS, f"{key} not in ASSUMPTIONS"
+
+    def test_defaults_for_new_keys(self):
+        store = fresh_store()
+        for key in _PER_FOCUS_EFFORT_KEYS:
+            assert get_assumption(store, key) == "moderate"
+        for key in _PER_FOCUS_HOURS_KEYS:
+            assert get_assumption(store, key) == pytest.approx(0.0)
+
+    def test_recompute_rollups_effort_level_is_max(self):
+        store = _fresh()
+        run_detection(store, roadmap_data=_SAMPLE_BUNDLE)
+        # content=aggressive, on_page=moderate, off_page=light → max = aggressive
+        assert get_assumption(store, "effort_level") == "aggressive"
+
+    def test_recompute_rollups_maintenance_clamped(self):
+        store = _fresh()
+        # Set very high hours to verify clamping at 1.0
+        bundle = {
+            "per_focus": {
+                "on_page": {"effort_level": "aggressive", "monthly_hours": 100.0},
+                "technical": {"effort_level": "moderate", "monthly_hours": 100.0},
+            }
+        }
+        run_detection(store, roadmap_data=bundle)
+        assert get_assumption(store, "maintenance_coverage") == pytest.approx(1.0)
+
+    def test_recompute_rollups_cadence_min_1(self):
+        store = _fresh()
+        bundle = {"per_focus": {"content": {"effort_level": "light", "monthly_hours": 0.0}}}
+        run_detection(store, roadmap_data=bundle)
+        assert get_assumption(store, "content_cadence") >= 1
+
+    def test_recompute_rollups_preserves_user_overrides_on_per_focus_keys(self):
+        store = _fresh()
+        override_assumption(store, "content_effort_level", "light")
+        run_detection(store, roadmap_data=_SAMPLE_BUNDLE)
+        # Per-focus override must survive roadmap detection
+        assert get_assumption(store, "content_effort_level") == "light"
+
+    def test_brand_terms_key_accepts_list_value(self):
+        store = fresh_store()
+        terms = ["nike", "adidas", "puma"]
+        override_assumption(store, "brand_terms", terms)
+        assert get_assumption(store, "brand_terms") == terms

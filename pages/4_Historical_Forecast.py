@@ -28,13 +28,17 @@ use_v4 = st.sidebar.checkbox(
     key="hist_use_v4",
 )
 
+# Infer prophet-active from previous render's data length (session state)
+_n_hist = st.session_state.get("hist_n_months", 0)
+_prophet_active = use_v4 and _n_hist >= 24
+
 # V4-specific controls
 changepoint_prior_scale = st.sidebar.slider(
     "Trend flexibility (Prophet)",
     0.001, 0.5, 0.05, step=0.005,
     key="hist_changepoint",
     help="Higher = more flexible trend (Prophet only). 0.05 is recommended.",
-    disabled=not use_v4,
+    disabled=not _prophet_active,
 )
 
 # Legacy multi-method controls (shown when v4 is off)
@@ -47,7 +51,8 @@ methods = st.sidebar.multiselect(
 )
 sma_window = st.sidebar.slider("SMA Window (months)", 2, 6, 3, disabled=use_v4)
 alpha = st.sidebar.slider("Smoothing Alpha", 0.1, 0.9, 0.3, step=0.05, disabled=use_v4)
-confidence = st.sidebar.slider("Confidence Band (%)", 5, 30, 15)
+# Prophet provides its own uncertainty intervals; confidence band only applies to linear/Holt's
+confidence = st.sidebar.slider("Confidence Band (%)", 5, 30, 15, disabled=_prophet_active)
 
 st.sidebar.divider()
 st.sidebar.subheader("Revenue Settings")
@@ -82,6 +87,7 @@ elif use_sample:
     df = load_traffic(sample_path)
 
 if df is not None:
+    st.session_state["hist_n_months"] = len(df)
     # Build summary line
     summary_parts = [
         f"**{len(df)} months of data**",
