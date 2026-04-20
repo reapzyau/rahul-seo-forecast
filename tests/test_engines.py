@@ -1372,38 +1372,40 @@ class TestMovementLearning:
 
 
 class TestMaturationCurve:
-    def test_logistic_at_t_mid(self):
+    def test_logistic_progress_at_midpoint_is_half(self):
         from engine.maturation_curve import logistic_progress
+        # At t == t_mid, sigmoid evaluates to exactly 0.5 regardless of k
+        assert abs(logistic_progress(5.0, 5.0, 1.0) - 0.5) < 0.001
         assert abs(logistic_progress(5.0, 5.0, 1.2) - 0.5) < 0.001
 
-    def test_monotonically_increases(self):
+    def test_logistic_progress_monotonically_increasing(self):
         from engine.maturation_curve import maturation_schedule
         schedule = maturation_schedule("Moderate", 24, 1)
         assert all(schedule[i] <= schedule[i + 1] for i in range(len(schedule) - 1))
 
-    def test_zero_before_publish(self):
+    def test_maturation_schedule_zero_before_publish(self):
         from engine.maturation_curve import maturation_schedule
-        schedule = maturation_schedule("Easy", 12, 4)
-        assert schedule[0] == 0.0
-        assert schedule[1] == 0.0
-        assert schedule[2] == 0.0
+        # publish_month=3: months 1, 2, 3 are 0 (elapsed ≤ 0); month 4 starts accumulating
+        schedule = maturation_schedule("Easy", 12, 3)
+        assert schedule[0] == 0.0  # month 1
+        assert schedule[1] == 0.0  # month 2
+        assert schedule[2] == 0.0  # month 3 (publish month itself: elapsed=0 → 0.0)
+        assert schedule[3] > 0.0   # month 4 (elapsed=1, first post-publish month)
 
-    def test_easy_faster_than_extreme(self):
+    def test_easy_tier_ramps_faster_than_extreme(self):
         from engine.maturation_curve import maturation_schedule
         easy = maturation_schedule("Easy", 12, 1)
         extreme = maturation_schedule("Extreme", 12, 1)
-        assert easy[5] > extreme[5]  # Easy reaches higher progress by month 6
+        assert easy[5] > extreme[5]  # by month 6, Easy is meaningfully ahead of Extreme
 
     def test_80_pct_shape_constraint(self):
-        """Curve should reach ~80% by three-quarters of the way through the ramp."""
-        from engine.maturation_curve import maturation_schedule, tier_maturation_params
-        # For Easy: t_mid=2.5, roughly at month 7 (≈3x t_mid) expect ≥80%
+        """S-curve should reach ~75%+ by three-quarters of the way through the ramp."""
+        from engine.maturation_curve import maturation_schedule
         schedule = maturation_schedule("Easy", 12, 1)
-        # 3 quarters of the ramp: month ~7 from publish_month=1 → index 6
         assert schedule[6] >= 0.75
 
-    def test_new_content_smoother_than_step(self):
-        """S-curve output should not have large month-to-month jumps."""
+    def test_new_content_no_discontinuity(self):
+        """No single-month jump should exceed 50% of that keyword's final traffic."""
         df = pd.DataFrame({
             "keyword": ["kw1"],
             "volume": [5000],
@@ -1411,12 +1413,11 @@ class TestMaturationCurve:
         })
         _, monthly = run_new_content_forecast(df, da=60, cadence=1, months=18, seed=42)
         traffic = monthly["traffic"].values.astype(float)
-        # No jump should exceed 50% of final traffic in a single month
         diffs = [abs(traffic[i] - traffic[i - 1]) for i in range(1, len(traffic))]
         final = max(traffic[-1], 1)
         assert all(d / final < 0.5 for d in diffs)
 
-    def test_positional_bands_still_ordered_with_scurve(self):
+    def test_positional_bands_still_ordered_after_scurve(self):
         from engine.positional_engine import run_positional_forecast_mc
         df = pd.DataFrame({
             "keyword": [f"kw_{i}" for i in range(30)],

@@ -76,19 +76,27 @@ CTR is based on SERP position using industry-average data:
 | 11–14 | 0.8 |
 | 15–20 | 0.3 |
 
-### Step 6: Time to Rank
+### Step 6: Maturation S-Curve
 
-Time to rank depends on the difficulty tier, with DA providing a small adjustment:
+Instead of a step function or linear ramp, traffic builds via a logistic (sigmoid) S-curve from the publish month:
 
-| Tier | Base Range (months) |
-|------|-------------------|
-| Easy | 2–3 |
-| Moderate | 4–6 |
-| Hard | 7–9 |
-| Very Hard | 10–12 |
-| Extreme | 12–14 |
+```
+progress(t) = 1 / (1 + exp(-k × (t - t_mid)))
+```
 
-Higher DA slightly reduces time to rank; lower DA slightly increases it.
+`t` is the elapsed months since publication, `t_mid` is the month at which 50% of steady-state traffic is reached, and `k` controls how steeply the curve rises. Both the new-content and positional engines use this same curve shape — new-content uses `t_mid` per difficulty tier; positional uses the Monte Carlo time-to-move sample as the stochastic `t_mid`.
+
+| Tier | t_mid (months) | k (steepness) |
+|------|---------------|---------------|
+| Easy | 2.5 | 1.8 |
+| Moderate | 5.0 | 1.2 |
+| Hard | 8.0 | 0.9 |
+| Very Hard | 11.0 | 0.7 |
+| Extreme | 13.0 | 0.5 |
+
+Higher DA provides a small reduction to time-to-rank (via the stochastic TTR draw); the S-curve shape itself is tier-fixed.
+
+The curve delivers roughly 10% of steady-state traffic by the first quarter of the ramp, ~50% at the midpoint, and ~80% by three-quarters — matching how organic traffic actually builds on a newly published or optimised page.
 
 ### Step 7: Traffic Estimation
 
