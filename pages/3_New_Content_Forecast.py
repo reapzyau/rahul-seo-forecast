@@ -8,6 +8,7 @@ from engine.ai_engine import (
     cluster_keywords,
     generate_content_roadmap,
     get_bifrost_client,
+    get_default_model,
 )
 from engine.assumptions import get_assumption, get_provenance
 from engine.constants import CTR_MODELS, FORECAST_SCENARIOS, SITE_PRESETS, TIER_COLORS
@@ -353,7 +354,7 @@ if NC_RESULT in st.session_state:
         tab_idx += 1
 
         client = get_bifrost_client(st.session_state.get(BIFROST_API_KEY))
-        ai_model = st.session_state.get(BIFROST_MODEL, "openai/gpt-4o-mini")
+        ai_model = st.session_state.get(BIFROST_MODEL, get_default_model())
 
         if client is None:
             st.info("Set your Bi Frost API key in the sidebar (AI Settings) to enable AI-powered insights.")

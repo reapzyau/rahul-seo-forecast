@@ -5,7 +5,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from engine.ai_engine import get_bifrost_client
+from engine.ai_engine import get_bifrost_client, get_default_model
 from engine.assumptions import (
     get_assumption,
     override_assumption,
@@ -248,7 +248,7 @@ with tab_semrush:
         )
 
         ai_key = st.session_state.get(BIFROST_API_KEY)
-        ai_model = st.session_state.get(BIFROST_MODEL, "openai/gpt-4o-mini")
+        ai_model = st.session_state.get(BIFROST_MODEL, get_default_model())
 
         col_detect, col_save = st.columns(2)
         with col_detect:
@@ -312,7 +312,7 @@ with tab_roadmap:
     st.caption("Accepts xlsx or CSV files. AI extraction requires Bi Frost API access; falls back to legacy scalar detection if unavailable.")
 
     _ai_client = get_bifrost_client(st.session_state.get(BIFROST_API_KEY))
-    _ai_model = st.session_state.get(BIFROST_MODEL, "openai/gpt-4o-mini")
+    _ai_model = st.session_state.get(BIFROST_MODEL, get_default_model())
     _ai_available = _ai_client is not None
     _roadmap_cache = st.session_state.setdefault(ROADMAP_AI_CACHE, {})
 
