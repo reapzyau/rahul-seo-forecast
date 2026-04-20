@@ -310,6 +310,49 @@ def seasonality_for_portfolio(ga4_df: pd.DataFrame) -> tuple[dict, dict]:
     return dict(DEFAULT_SEASONALITY), meta
 
 
+INDUSTRY_SEASONALITY_PRIORS: dict[str, dict[int, float]] = {
+    # Additive traffic_mod adjustments per month (on top of base seasonality).
+    # These are authored defaults, not data-derived — treat as priors, not facts.
+    "Accessories": {11: 0.05, 12: 0.08, 1: -0.03, 6: 0.03, 9: 0.04},
+    "Apparel": {11: 0.06, 12: 0.06, 1: -0.05, 3: 0.03, 9: 0.04},
+    "Beauty": {11: 0.04, 12: 0.05, 2: 0.03, 5: 0.03, 8: 0.02},
+    "Home": {11: 0.03, 12: 0.07, 1: 0.02, 3: 0.04, 6: 0.02},
+    "B2B SaaS": {1: 0.05, 2: 0.04, 9: 0.04, 10: 0.03, 11: -0.03, 12: -0.07},
+    "Automotive": {3: 0.05, 4: 0.04, 9: 0.05, 10: 0.04, 12: -0.03},
+    "Travel": {1: 0.06, 6: 0.08, 7: 0.10, 12: 0.05, 9: 0.05},
+    "Food & Beverage": {11: 0.04, 12: 0.06, 4: 0.03, 5: 0.02, 8: 0.03},
+    "Health": {1: 0.06, 2: 0.04, 9: 0.03, 5: 0.02, 11: 0.02},
+    "Finance": {6: 0.08, 7: 0.04, 6: 0.06, 1: 0.03, 7: 0.02},
+    "Other": {},
+}
+
+
+def apply_industry_bias(
+    seasonality: dict,
+    industry: str,
+    bias_weight: float = 1.0,
+) -> dict:
+    """Apply industry-specific traffic_mod adjustments on top of base seasonality.
+
+    Args:
+        seasonality: Base seasonality dict (month_num → {traffic_mod, ...}).
+        industry: Industry name from INDUSTRY_SEASONALITY_PRIORS keys.
+        bias_weight: 0.0 = no bias, 1.0 = full bias. Blends the adjustment.
+
+    Returns:
+        New seasonality dict with industry adjustments blended in.
+    """
+    priors = INDUSTRY_SEASONALITY_PRIORS.get(industry, {})
+    if not priors or bias_weight <= 0.0:
+        return seasonality
+
+    result = {}
+    for month, entry in seasonality.items():
+        adj = priors.get(month, 0.0) * bias_weight
+        result[month] = dict(entry, traffic_mod=round(entry.get("traffic_mod", 0.0) + adj, 4))
+    return result
+
+
 def build_campaign_list(campaign_text: str) -> list[dict]:
     """Parse campaign definitions from user text input.
 
