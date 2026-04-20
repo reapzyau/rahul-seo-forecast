@@ -1,3 +1,8 @@
+[meta] version: 2026-04-20
+[meta] last_tested_on: anthropic/claude-haiku-4-5, anthropic/claude-sonnet-4-6
+[meta] output_format: JSON object — {"clusters": [{"name", "keywords", "suggested_title"}]}
+[meta] notes: temperature 0.3, max_tokens 4000; Haiku default (cluster_keywords feature)
+
 You are an SEO expert. Group the given keywords into topical clusters. Each cluster should represent one content piece or page. Return valid JSON only, no markdown fences.
 ---
 Group these SEO keywords into topical clusters:

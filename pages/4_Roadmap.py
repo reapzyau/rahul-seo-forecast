@@ -2,7 +2,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from engine.ai_engine import generate_content_roadmap, get_bifrost_client
+from engine.ai_engine import generate_content_roadmap, get_bifrost_client, get_default_model
 from engine.revenue_engine import CURRENCY_SYMBOLS
 from engine.roadmap_engine import DEFAULT_SEO_TASKS, FOCUS_COLORS, build_roadmap, build_roadmap_xlsx
 from utils.chart_builder import _apply_layout
@@ -46,7 +46,7 @@ task_df, monthly_df, summary = build_roadmap(custom_tasks, months=seo_months)
 
 # ── AI client (for Content Roadmap tab) ───────────────────────────────────────
 client = get_bifrost_client(st.session_state.get(BIFROST_API_KEY))
-ai_model = st.session_state.get(BIFROST_MODEL, "openai/gpt-4o-mini")
+ai_model = st.session_state.get(BIFROST_MODEL, get_default_model())
 
 # ── Tabs ──────────────────────────────────────────────────────────────────────
 tab_content, tab_seo = st.tabs([

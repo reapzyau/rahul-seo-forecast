@@ -121,24 +121,25 @@ Per-run metadata (e.g. number of excluded keywords) is attached via `df.attrs["k
 `execute_transform()` in `engine/ai_engine.py` runs AI-generated pandas code via `exec()`.
 It applies a blocklist (`_BLOCKED_CODE_PATTERNS`) and restricted builtins before executing.
 
-**Do not remove these guards.** If you need a new transform capability, add it to `_SAFE_BUILTINS` explicitly rather than widening the allowlist.
-A better long-term approach: have the LLM return a JSON transform spec (rename map, filter rules) and interpret it in pure pandas with no `exec`.
+**Do not remove these guards.** Replacing `exec()` with a declarative JSON transform spec is planned for Phase 4 — see `engine/transform_spec.py` once that phase ships.
 
 ## AI integration (Bi Frost)
 
-- Client: `engine/ai_engine.get_bifrost_client()` — reads key from session state → secrets → env var
+- Client wrapper: `utils/bifrost.py` — follows the Bi Frost integration skill pattern; `get_client()`, `call()`, `call_with_fallback()`
+- `engine/ai_engine.get_bifrost_client()` is a re-export of `utils.bifrost.get_client` for backward compatibility
 - Base URL: `https://bifrost.pattern.com/v1` (Chat Completions API, not Responses)
-- All calls go through `_call_bifrost(client, model, instructions, user_input)` → `client.chat.completions.create()`
-- Fallback: `generate_with_fallback()` tries the selected model, then walks the chain in `config/models.json`
-- Model catalogue: `config/models.json` — single source of truth for model IDs, labels, and fallback chain
-- Prompts: `prompts/*.txt` — system instructions + user template separated by `---`, loaded via `_load_prompt()`
-- Default model: `openai/gpt-4o-mini` (set in `config/models.json`)
+- Fallback: `generate_with_fallback()` delegates to `utils.bifrost.call_with_fallback()`, which walks the chain in `config/models.json`
+- Model catalogue: `config/models.json` — single source of truth for model IDs, labels, fallback chain, and per-feature defaults
+- Per-feature model overrides live in `features.{feature_name}` in `config/models.json`; `get_model_for_feature()` resolves: user override → feature default → global default
+- Default model: `anthropic/claude-haiku-4-5` — fast and cheap; Sonnet used for complex extraction tasks
+- Prompts: `prompts/*.txt` — `[meta]` header block followed by system instructions, then `---`, then user template (`$variable` placeholders); loaded via `_load_prompt()`
 
 ### Adding a new AI feature
 
-1. Create `prompts/feature_name.txt` with system instructions and user template (use `$variable` placeholders)
-2. Add function in `engine/ai_engine.py` that calls `generate_with_fallback()` — returns `(result, used_model)` tuple
-3. In the page, handle the tuple and show fallback info if `used_model != ai_model`
+1. Create `prompts/feature_name.txt` with `[meta]` header block, system instructions, `---`, and user template (`$variable` placeholders)
+2. Add an entry in `config/models.json` under `features` to set the preferred model for this feature
+3. Add function in `engine/ai_engine.py` that calls `get_model_for_feature("feature_name", user_override=model)` and then `generate_with_fallback()` — returns `(result, used_model)` tuple
+4. In the page, handle the tuple and show fallback info if `used_model != ai_model`
 
 ### Changing models
 

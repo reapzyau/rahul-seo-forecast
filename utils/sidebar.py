@@ -3,7 +3,7 @@ import os
 import streamlit as st
 
 from engine.ai_engine import get_default_model, get_model_options
-from utils.session import BIFROST_API_KEY, BIFROST_MODEL
+from utils.session import BIFROST_API_KEY, BIFROST_MODEL, SESSION_COST_AUD
 
 
 def init_api_key_from_secrets() -> None:
@@ -53,3 +53,7 @@ def render_ai_settings() -> None:
         )
         label_idx = model_labels.index(selected_label)
         st.session_state[BIFROST_MODEL] = model_ids[label_idx]
+
+        cost = st.session_state.get(SESSION_COST_AUD, 0.0)
+        if cost > 0:
+            st.caption(f"~A${cost:.3f} estimated session AI cost")
