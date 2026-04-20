@@ -1587,3 +1587,54 @@ class TestHistoricalV4:
         forecast = result[result["is_forecast"]]
         # A strong upward trend should produce non-flat forecasts
         assert forecast["exponential_smoothing"].iloc[-1] != forecast["exponential_smoothing"].iloc[0]
+
+    def test_method_selection_24_months_picks_prophet(self):
+        from engine.historical_engine import run_historical_forecast_v4
+        df = self._make_df(24)
+        result = run_historical_forecast_v4(df, months=6)
+        assert result.attrs["chosen_method"] == "prophet"
+
+    def test_method_selection_18_months_picks_holts_with_low_confidence(self):
+        from engine.historical_engine import run_historical_forecast_v4
+        df = self._make_df(18)
+        result = run_historical_forecast_v4(df, months=6)
+        assert result.attrs["chosen_method"] == "holts"
+        assert result.attrs["low_confidence"] is True
+
+    def test_method_selection_6_months_picks_linear_with_warning(self):
+        from engine.historical_engine import run_historical_forecast_v4
+        df = self._make_df(6)
+        result = run_historical_forecast_v4(df, months=3)
+        assert result.attrs["chosen_method"] == "linear"
+        assert "seasonality" in result.attrs["method_reason"].lower()
+
+    def test_fallback_to_holts_when_prophet_unavailable(self):
+        import unittest.mock as mock
+        from engine.historical_engine import run_historical_forecast_v4
+        df = self._make_df(24)
+        with mock.patch("engine.prophet_engine._PROPHET_AVAILABLE", False):
+            result = run_historical_forecast_v4(df, months=6)
+        assert len(result) == 30
+        assert "exponential_smoothing" in result.columns
+        assert result.attrs["prophet_available"] is False
+
+    @pytest.mark.skipif(
+        not __import__("engine.prophet_engine", fromlist=["_PROPHET_AVAILABLE"])._PROPHET_AVAILABLE,
+        reason="Prophet not installed",
+    )
+    def test_prophet_extends_dates_monotonically(self):
+        from engine.prophet_engine import run_prophet_forecast
+        df = self._make_df(24)
+        result = run_prophet_forecast(df, months=6)
+        assert result["date"].is_monotonic_increasing
+
+    @pytest.mark.skipif(
+        not __import__("engine.prophet_engine", fromlist=["_PROPHET_AVAILABLE"])._PROPHET_AVAILABLE,
+        reason="Prophet not installed",
+    )
+    def test_prophet_forecast_non_flat_on_trending_data(self):
+        from engine.prophet_engine import run_prophet_forecast
+        df = self._make_df(24, trend=500.0)
+        result = run_prophet_forecast(df, months=6)
+        forecast = result[result["is_forecast"]]
+        assert forecast["forecast"].iloc[-1] != forecast["forecast"].iloc[0]
