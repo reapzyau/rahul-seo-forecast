@@ -6,10 +6,14 @@ from engine.keyword_pipeline_engine import (
     build_pipeline_snapshot,
 )
 from utils.export import to_csv
+from utils.page_base import setup_page
 from utils.session import NC_RESULT
 
-st.header("Keyword Ranking Pipeline")
-st.caption("Track keyword distribution across SERP pages and month-over-month movement.")
+setup_page(
+    "Keyword Ranking Pipeline",
+    "Track keyword distribution across SERP pages and month-over-month movement.",
+    show_assumptions_banner=False,
+)
 
 # ── Check for keyword forecast data ──────────────────────────────────────────
 kw_results = st.session_state.get(NC_RESULT)

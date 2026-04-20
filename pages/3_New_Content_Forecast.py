@@ -9,7 +9,7 @@ from engine.ai_engine import (
     generate_content_roadmap,
     get_bifrost_client,
 )
-from engine.assumptions import get_assumption, get_provenance, initialise_assumptions
+from engine.assumptions import get_assumption, get_provenance
 from engine.constants import CTR_MODELS, FORECAST_SCENARIOS, SITE_PRESETS, TIER_COLORS
 from engine.new_content_engine import run_new_content_forecast
 from engine.revenue_engine import CURRENCY_SYMBOLS, add_revenue, keyword_revenue_table
@@ -21,23 +21,19 @@ from utils.chart_builder import (
 )
 from utils.data_loader import load_keywords
 from utils.export import keyword_template_csv, to_csv, to_html_report
+from utils.page_base import setup_page
 from utils.session import (
-    ASSUMPTIONS,
     BIFROST_API_KEY,
     BIFROST_MODEL,
     NC_RESULT,
     ROADMAP_CONTENT_PLAN,
 )
-from utils.sidebar import render_ai_settings
 
-st.header("New Content Forecast")
-st.caption("Project traffic from new content targeting keywords you don't yet rank for.")
-
-render_ai_settings()
-
-# ── Assumptions store (read-only on this page) ────────────────────────────────
-_nc_store = st.session_state.setdefault(ASSUMPTIONS, {})
-initialise_assumptions(_nc_store)
+_nc_store = setup_page(
+    "New Content Forecast",
+    "Project traffic from new content targeting keywords you don't yet rank for.",
+    show_assumptions_banner=False,
+)
 
 # ── Sidebar ──────────────────────────────────────────────────────────────────
 st.sidebar.header("Keyword Forecast Settings")

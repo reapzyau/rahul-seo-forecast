@@ -4,8 +4,8 @@ import streamlit as st
 
 from engine.snapshot_engine import compare_to_actuals, load_snapshot, summarise_variance
 from utils.chart_builder import _apply_layout
+from utils.page_base import setup_page
 from utils.session import GA4_DF
-from utils.sidebar import render_ai_settings
 
 
 def _run_page(snapshot: dict, ga4_df: pd.DataFrame) -> None:
@@ -187,11 +187,7 @@ def _run_page(snapshot: dict, ga4_df: pd.DataFrame) -> None:
         st.info(rec)
 
 
-# ── Header ─────────────────────────────────────────────────────────────────
-st.header("Forecast Variance")
-st.caption("Compare a previous forecast snapshot against actual GA4 data.")
-
-render_ai_settings()
+setup_page("Forecast Variance", "Compare a previous forecast snapshot against actual GA4 data.", show_assumptions_banner=False)
 
 # ── Upload section ─────────────────────────────────────────────────────────
 snapshot_file = st.file_uploader(

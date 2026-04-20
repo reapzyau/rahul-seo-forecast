@@ -9,11 +9,14 @@ from engine.aio_risk_engine import (
 )
 from utils.chart_builder import _apply_layout, aio_risk_chart
 from utils.export import to_csv
+from utils.page_base import setup_page
 from utils.session import KW_DF
-from utils.sidebar import render_ai_settings
 
-st.header("AI Overview Risk")
-st.caption("Diagnostic view: understand your portfolio's AIO exposure. Traffic impact is already factored into your Positional and New Content forecasts.")
+setup_page(
+    "AI Overview Risk",
+    "Diagnostic view: understand your portfolio's AIO exposure. Traffic impact is already factored into your Positional and New Content forecasts.",
+    show_assumptions_banner=False,
+)
 
 st.info(
     "**v4 change:** AIO traffic impact is now applied per-stream as a CTR penalty inside the "
@@ -21,8 +24,6 @@ st.info(
     "your AIO exposure — use it to understand which keywords are at risk, not to calculate a "
     "separate deduction."
 )
-
-render_ai_settings()
 
 # ── Data check ──────────────────────────────────────────────────────────────
 kw_df = st.session_state.get(KW_DF)

@@ -8,7 +8,6 @@ import streamlit as st
 from engine.ai_engine import get_bifrost_client
 from engine.assumptions import (
     get_assumption,
-    initialise_assumptions,
     override_assumption,
     run_detection,
 )
@@ -28,9 +27,9 @@ from utils.assumptions_panel import render_assumptions_banner, render_assumption
 from utils.chart_builder import _apply_layout
 from utils.ga4_loader import load_ga4_organic
 from utils.keyword_loader import load_keyword_portfolio, split_existing_vs_new
+from utils.page_base import setup_page
 from utils.roadmap_loader import load_roadmap
 from utils.session import (
-    ASSUMPTIONS,
     BIFROST_API_KEY,
     BIFROST_MODEL,
     DETECTED_BRAND_TERMS,
@@ -48,16 +47,12 @@ from utils.session import (
     ROADMAP_USED_MODEL,
     SEASONALITY,
 )
-from utils.sidebar import render_ai_settings
 
-st.header("Data Upload")
-st.caption("Upload GA4 organic traffic, SEMrush keyword exports, and an optional roadmap file. Data flows to all downstream pages.")
-
-render_ai_settings()
-
-# ── Assumptions store ────────────────────────────────────────────────────────
-store = st.session_state.setdefault(ASSUMPTIONS, {})
-initialise_assumptions(store)
+store = setup_page(
+    "Data Upload",
+    "Upload GA4 organic traffic, SEMrush keyword exports, and an optional roadmap file. Data flows to all downstream pages.",
+    show_assumptions_banner=False,
+)
 
 # ── Tabs ─────────────────────────────────────────────────────────────────────
 tab_ga4, tab_semrush, tab_roadmap = st.tabs([

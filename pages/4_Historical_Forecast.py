@@ -12,13 +12,14 @@ from engine.revenue_engine import CURRENCY_SYMBOLS, add_revenue, build_full_metr
 from utils.chart_builder import historical_comparison_chart, revenue_projection_chart
 from utils.data_loader import load_traffic
 from utils.export import to_csv, to_html_report, traffic_template_csv
+from utils.page_base import setup_page
 from utils.session import HIST_N_MONTHS, HIST_RESULTS, SEASONALITY
-from utils.sidebar import render_ai_settings
 
-st.header("Historical Forecast")
-st.caption("Project traffic from your past organic data using statistical models.")
-
-render_ai_settings()
+setup_page(
+    "Historical Forecast",
+    "Project traffic from your past organic data using statistical models.",
+    show_assumptions_banner=False,
+)
 
 # ── Sidebar ──────────────────────────────────────────────────────────────────
 st.sidebar.header("Historical Forecast Settings")

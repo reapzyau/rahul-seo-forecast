@@ -4,11 +4,9 @@ import streamlit as st
 from engine.revenue_engine import CURRENCY_SYMBOLS
 from engine.roadmap_engine import DEFAULT_SEO_TASKS, FOCUS_COLORS, build_roadmap, build_roadmap_xlsx
 from utils.chart_builder import _apply_layout
-from utils.sidebar import render_ai_settings
+from utils.page_base import setup_page
 
-st.header("SEO Roadmap")
-st.caption("Month-by-month task allocation in the GAZMAN format.")
-render_ai_settings()
+setup_page("SEO Roadmap", "Month-by-month task allocation in the GAZMAN format.", show_assumptions_banner=False)
 
 # -- Sidebar Settings --------------------------------------------------------
 st.sidebar.header("Roadmap Settings")

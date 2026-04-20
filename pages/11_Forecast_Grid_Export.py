@@ -3,20 +3,13 @@ import calendar
 import pandas as pd
 import streamlit as st
 
-from engine.assumptions import get_assumption, initialise_assumptions
+from engine.assumptions import get_assumption
 from engine.revenue_engine import CURRENCY_SYMBOLS
-from utils.assumptions_panel import render_assumptions_banner
 from utils.forecast_grid import build_seo_forecast_grid
-from utils.session import ASSUMPTIONS, COMB_RESULTS, HIST_RESULTS, POS_RESULT
-from utils.sidebar import render_ai_settings
+from utils.page_base import setup_page
+from utils.session import COMB_RESULTS, HIST_RESULTS, POS_RESULT
 
-st.header("Forecast Grid Export")
-st.caption("Download the SEO row for the multi-channel plan in GAZMAN format.")
-render_ai_settings()
-
-store = st.session_state.setdefault(ASSUMPTIONS, {})
-initialise_assumptions(store)
-render_assumptions_banner(store)
+store = setup_page("Forecast Grid Export", "Download the SEO row for the multi-channel plan in GAZMAN format.")
 
 # -- Source selector ----------------------------------------------------------
 sources = []

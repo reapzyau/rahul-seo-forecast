@@ -1,6 +1,6 @@
 import streamlit as st
 
-from engine.assumptions import get_assumption, get_provenance, initialise_assumptions
+from engine.assumptions import get_assumption, get_provenance
 from engine.constants import CTR_MODELS, FORECAST_SCENARIOS, TIER_COLORS
 from engine.positional_engine import (
     learn_movement_from_history,
@@ -8,21 +8,12 @@ from engine.positional_engine import (
     run_positional_forecast_mc,
 )
 from engine.revenue_engine import CURRENCY_SYMBOLS, add_revenue
-from utils.assumptions_panel import render_assumptions_banner
 from utils.chart_builder import positional_uplift_chart, revenue_projection_chart
 from utils.export import to_csv, to_html_report
-from utils.session import ASSUMPTIONS, GA4_DF, KW_EXISTING, POS_RESULT
-from utils.sidebar import render_ai_settings
+from utils.page_base import setup_page
+from utils.session import GA4_DF, KW_EXISTING, POS_RESULT
 
-st.header("Positional Forecast")
-st.caption("Project uplift from moving existing keywords up the SERP.")
-
-render_ai_settings()
-
-# ── Assumptions store ────────────────────────────────────────────────────────
-store = st.session_state.setdefault(ASSUMPTIONS, {})
-initialise_assumptions(store)
-render_assumptions_banner(store)
+store = setup_page("Positional Forecast", "Project uplift from moving existing keywords up the SERP.")
 
 # ── Data check ──────────────────────────────────────────────────────────────
 kw_existing = st.session_state.get(KW_EXISTING)

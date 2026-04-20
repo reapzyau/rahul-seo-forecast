@@ -3,13 +3,14 @@ import streamlit as st
 
 from engine.ai_engine import generate_content_roadmap, get_bifrost_client
 from utils.export import to_csv
+from utils.page_base import setup_page
 from utils.session import BIFROST_API_KEY, BIFROST_MODEL, CONTENT_ROADMAP, NC_RESULT
-from utils.sidebar import render_ai_settings
 
-st.header("Content Roadmap")
-st.caption("AI-powered content planning and prioritization using your keyword forecast data.")
-
-render_ai_settings()
+setup_page(
+    "Content Roadmap",
+    "AI-powered content planning and prioritization using your keyword forecast data.",
+    show_assumptions_banner=False,
+)
 
 # ── Check prerequisites ──────────────────────────────────────────────────────
 client = get_bifrost_client(st.session_state.get(BIFROST_API_KEY))
