@@ -6,6 +6,7 @@ from engine.constants import (
     DIFFICULTY_TIERS, CTR_MODELS,
 )
 from engine.new_content_engine import get_ctr, classify_difficulty
+from engine.maturation_curve import TIER_MATURATION_PARAMS, logistic_progress
 
 # Offset for seeded RNG — avoids collisions with keyword engine seeds (1000-3000)
 _TTM_SEED_OFFSET = 4000
@@ -34,11 +35,60 @@ _TIME_TO_MOVE = {
 }
 
 
-def estimate_target_position(current_pos: int, kd: int, effort: str) -> int:
-    """Estimate where a keyword could realistically move given KD and effort level."""
+def learn_movement_from_history(kw_df: "pd.DataFrame") -> dict:
+    """Learn per-tier position gain stats from SEMrush previous_position data.
+
+    Args:
+        kw_df: DataFrame with 'previous_position', 'position', and 'kd' columns.
+
+    Returns:
+        Dict of {tier: {"mean_gain": float, "std_gain": float, "sample_size": int}}.
+        Only tiers with ≥10 samples are included.
+    """
+    if "previous_position" not in kw_df.columns or "position" not in kw_df.columns:
+        return {}
+
+    df = kw_df.dropna(subset=["previous_position", "position"]).copy()
+    df["movement"] = df["previous_position"].astype(float) - df["position"].astype(float)
+    # Filter outliers (>30 positions likely SEMrush glitches)
+    df = df[df["movement"].abs() <= 30]
+
+    stats: dict = {}
+    for tier in ["Easy", "Moderate", "Hard", "Very Hard", "Extreme"]:
+        tier_mask = df["kd"].apply(classify_difficulty) == tier
+        gains = df.loc[tier_mask, "movement"]
+        if len(gains) >= 10:
+            stats[tier] = {
+                "mean_gain": float(gains.mean()),
+                "std_gain": float(gains.std()),
+                "sample_size": int(len(gains)),
+            }
+    return stats
+
+
+def estimate_target_position(
+    current_pos: int,
+    kd: int,
+    effort: str,
+    historical_movement_stats: dict | None = None,
+) -> int:
+    """Estimate where a keyword could realistically move given KD and effort level.
+
+    When historical_movement_stats has ≥10 samples for a tier, learned gain is used
+    instead of the default tier table.
+    """
     tier = classify_difficulty(kd)
-    base_gain = _BASE_GAIN_BY_TIER[tier]
     effort_factor = _EFFORT_FACTORS[effort]
+
+    if (
+        historical_movement_stats
+        and tier in historical_movement_stats
+        and historical_movement_stats[tier]["sample_size"] >= 10
+    ):
+        base_gain = historical_movement_stats[tier]["mean_gain"]
+    else:
+        base_gain = _BASE_GAIN_BY_TIER[tier]
+
     gain = round(base_gain * effort_factor)
     return max(1, current_pos - gain)
 
@@ -50,6 +100,7 @@ def run_positional_forecast(
     ga4_baseline: float | None = None,
     ctr_model: dict | None = None,
     traffic_multiplier: float = 1.0,
+    historical_movement_stats: dict | None = None,
     seed: int = 42,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Backward-compatible wrapper around run_positional_forecast_mc.
@@ -66,6 +117,7 @@ def run_positional_forecast(
         traffic_multiplier=traffic_multiplier,
         ga4_baseline=ga4_baseline,
         use_attention_curve=True,
+        historical_movement_stats=historical_movement_stats,
         seed=seed,
     )
 
@@ -142,9 +194,22 @@ def run_positional_forecast_mc(
     traffic_multiplier: float = 1.0,
     ga4_baseline: int | None = None,
     use_attention_curve: bool = True,
+    historical_movement_stats: dict | None = None,
+    seasonality: dict | None = None,
+    forecast_start_month: int | None = None,
+    aio_intent_penalties: dict | None = None,
     seed: int = 42,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Monte Carlo positional forecast with P10/P50/P90 bands.
+
+    Seasonality is applied per-month to the uplift trials array before percentile
+    computation, so bands reflect seasonal variation.
+    AIO CTR penalties are applied per-keyword at the target-CTR step based on intent.
+
+    Args:
+        seasonality: Dict {month_num: {traffic_mod: float}} — applied to uplift.
+        forecast_start_month: Calendar month (1-12) of horizon month 1 (for seasonality).
+        aio_intent_penalties: Dict {intent: penalty_pct} e.g. {"informational": 45.0}.
 
     Returns:
         keyword_df: Per-keyword with uplift_p10/p50/p90.
@@ -177,7 +242,7 @@ def run_positional_forecast_mc(
     tiers = np.array([classify_difficulty(int(k)) for k in kds])
 
     det_targets = np.array([
-        estimate_target_position(int(p), int(k), effort)
+        estimate_target_position(int(p), int(k), effort, historical_movement_stats)
         for p, k in zip(positions, kds)
     ])
 
@@ -233,6 +298,20 @@ def run_positional_forecast_mc(
 
     # CTR at sampled targets
     target_ctrs = ctr_table[target_samples - 1]  # (n_trials, n_kw)
+
+    # Apply AIO CTR penalties per-keyword at the target-CTR step
+    if aio_intent_penalties:
+        # Need intent per keyword; fall back to 0 penalty if column missing
+        intent_col = "intent" if "intent" in df.columns else "primary_intent"
+        if intent_col in df.columns:
+            intents = df[intent_col].values
+            aio_penalty_per_kw = np.array([
+                aio_intent_penalties.get(str(intent).lower(), 0.0) / 100.0
+                for intent in intents
+            ])
+            # Apply: target_ctrs *= (1 - penalty)
+            target_ctrs = target_ctrs * (1.0 - aio_penalty_per_kw[np.newaxis, :])
+
     target_traffic = volumes[np.newaxis, :] * target_ctrs / 100.0 * traffic_multiplier * anchor_ratio
     uplift_per_kw = np.maximum(0.0, target_traffic - baseline_per_kw_anchored[np.newaxis, :])
     uplift_per_kw *= will_improve  # zero out non-improving keywords
@@ -247,13 +326,28 @@ def run_positional_forecast_mc(
     )
     ttm_samples = np.maximum(1.0, ttm_samples)
 
+    # Build per-tier S-curve t_mid/k arrays (shape: n_kw)
+    tier_t_mids = np.array([TIER_MATURATION_PARAMS[t][0] for t in tiers], dtype=float)
+    tier_ks = np.array([TIER_MATURATION_PARAMS[t][1] for t in tiers], dtype=float)
+
     # Monthly traffic across trials: (n_trials, months)
     monthly_trials = np.zeros((n_trials, months))
     for m in range(months):
-        month_num = m + 1
-        progress = np.clip((month_num - 1) / ttm_samples, 0.0, 1.0)
-        monthly_contrib = (uplift_per_kw * progress).sum(axis=1)
+        month_num = float(m + 1)
+        # S-curve progress per keyword (shape: n_kw), using tier params
+        # Each trial scales by whether the keyword improves (will_improve) via uplift_per_kw
+        s_progress = 1.0 / (1.0 + np.exp(-tier_ks * (month_num - tier_t_mids)))
+        # s_progress shape: (n_kw,); broadcast over trials: (n_trials, n_kw)
+        monthly_contrib = (uplift_per_kw * s_progress[np.newaxis, :]).sum(axis=1)
         monthly_trials[:, m] = monthly_contrib
+
+    # Apply seasonality to uplift trials (before percentile computation so bands reflect it)
+    if seasonality and forecast_start_month is not None:
+        season_mults = np.array([
+            1.0 + seasonality.get(((forecast_start_month - 1 + m) % 12) + 1, {}).get("traffic_mod", 0.0)
+            for m in range(months)
+        ])
+        monthly_trials *= season_mults[np.newaxis, :]
 
     # Per-keyword uplift summary (at full ramp = month == max(ttm))
     kw_uplift_at_ramp = uplift_per_kw.copy()
