@@ -485,25 +485,110 @@ def _detect_from_keywords(store: dict, kw_df) -> list[str]:
     return []
 
 
+_EFFORT_ORDER: dict[str, int] = {"light": 0, "moderate": 1, "aggressive": 2}
+_EFFORT_NAMES: list[str] = ["light", "moderate", "aggressive"]
+_FOCUS_KEYS: list[str] = ["content", "technical", "on_page", "off_page", "local", "analytics", "strategy"]
+
+
+def recompute_rollups(store: dict) -> None:
+    """After per-focus keys change, recompute the three backward-compat rollup keys.
+
+    Only runs when at least one per-focus key is in detected/overridden state —
+    avoids overwriting defaults when no roadmap has been ingested.
+    """
+    has_detected = any(
+        store.get(f"{f}_monthly_hours", {}).get(_PROV) in ("detected", "overridden")
+        or store.get(f"{f}_effort_level", {}).get(_PROV) in ("detected", "overridden")
+        for f in _FOCUS_KEYS
+    )
+    if not has_detected:
+        return
+
+    # effort_level = max of content, on_page, off_page (the three forecast-relevant focuses)
+    rollup_foci = ("content", "on_page", "off_page")
+    effort_vals = [get_assumption(store, f"{f}_effort_level") for f in rollup_foci]
+    max_idx = max(_EFFORT_ORDER.get(str(v), 1) for v in effort_vals)
+    _set_detected(store, "effort_level", _EFFORT_NAMES[max_idx], "computed from per-focus effort")
+
+    # positional_effort_level = max of on_page, off_page
+    pos_vals = [get_assumption(store, "on_page_effort_level"), get_assumption(store, "off_page_effort_level")]
+    pos_idx = max(_EFFORT_ORDER.get(str(v), 1) for v in pos_vals)
+    _set_detected(store, "positional_effort_level", _EFFORT_NAMES[pos_idx], "computed from on_page + off_page effort")
+
+    # content_cadence = round(content_monthly_hours / 10), min 1
+    # Only recompute if content hours were actually detected
+    content_hours = float(get_assumption(store, "content_monthly_hours"))
+    if content_hours > 0:
+        _set_detected(store, "content_cadence", max(1, round(content_hours / 10)), "computed from content_monthly_hours")
+
+    # total_monthly_hours = sum of per-focus hours
+    total = sum(float(get_assumption(store, f"{f}_monthly_hours")) for f in _FOCUS_KEYS)
+    _set_detected(store, "total_monthly_hours", round(total, 1), "sum of per-focus hours")
+
+    # maintenance_coverage = min(1.0, (on_page + technical) / 20) — 20h/month = full coverage
+    on_page_hrs = float(get_assumption(store, "on_page_monthly_hours"))
+    technical_hrs = float(get_assumption(store, "technical_monthly_hours"))
+    coverage = min(1.0, (on_page_hrs + technical_hrs) / 20.0)
+    _set_detected(store, "maintenance_coverage", round(coverage, 2), "computed from on_page + technical hours")
+
+
 def _detect_from_roadmap(store: dict, roadmap_data: dict) -> list[str]:
+    """Process roadmap data into assumption keys.
+
+    Handles v2 schema bundles (schema_version starts with "2."), bundles that
+    have a 'per_focus' key, and the legacy 3-scalar flat format.
+    """
+    if not isinstance(roadmap_data, dict):
+        return []
+
     detected: list[str] = []
 
-    # Handle v2 bundle format (schema_version starts with "2.")
+    # v2 schema bundle (produced by engine/roadmap_ai_engine.py)
     if roadmap_data.get("schema_version", "").startswith("2."):
         detected.extend(_detect_from_bundle_v2(store, roadmap_data))
-        recompute_rollups(store)
-        return detected
+    # Bundles with per_focus key (alternative AI extraction format)
+    elif "per_focus" in roadmap_data:
+        detected.extend(_detect_from_roadmap_bundle(store, roadmap_data))
+    else:
+        # Legacy flat format from utils/roadmap_loader.py
+        mapping = {
+            "effort_level": "roadmap import",
+            "content_cadence": "roadmap import",
+            "maintenance_coverage": "roadmap import",
+        }
+        for key, source in mapping.items():
+            if key in roadmap_data and roadmap_data[key] is not None:
+                _set_detected(store, key, roadmap_data[key], source)
+                detected.append(key)
 
-    # Legacy v1 format (3-scalar dict from utils/roadmap_loader.py)
-    mapping = {
-        "effort_level": "roadmap import",
-        "content_cadence": "roadmap import",
-        "maintenance_coverage": "roadmap import",
-    }
-    for key, source in mapping.items():
-        if key in roadmap_data and roadmap_data[key] is not None:
-            _set_detected(store, key, roadmap_data[key], source)
-            detected.append(key)
+    recompute_rollups(store)
+    return detected
+
+
+def _detect_from_roadmap_bundle(store: dict, bundle: dict) -> list[str]:
+    """Flatten a per_focus bundle into per-focus assumption keys."""
+    detected: list[str] = []
+    per_focus = bundle.get("per_focus", {})
+
+    for focus_key in _FOCUS_KEYS:
+        focus_data = per_focus.get(focus_key, {})
+        effort = focus_data.get("effort_level")
+        hours = focus_data.get("monthly_hours")
+
+        if effort in ("light", "moderate", "aggressive"):
+            _set_detected(store, f"{focus_key}_effort_level", effort, "roadmap extraction")
+            detected.append(f"{focus_key}_effort_level")
+
+        if isinstance(hours, (int, float)) and hours >= 0:
+            _set_detected(store, f"{focus_key}_monthly_hours", float(hours), "roadmap extraction")
+            detected.append(f"{focus_key}_monthly_hours")
+
+    timeline = bundle.get("timeline", {})
+    months_covered = timeline.get("months_covered")
+    if isinstance(months_covered, (int, float)) and months_covered > 0:
+        _set_detected(store, "timeline_months_covered", int(months_covered), "roadmap extraction")
+        detected.append("timeline_months_covered")
+
     return detected
 
 

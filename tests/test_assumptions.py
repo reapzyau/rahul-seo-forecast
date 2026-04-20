@@ -7,12 +7,14 @@ import pytest
 from engine.assumptions import (
     ASSUMPTIONS,
     Assumption,
+    _detect_from_roadmap_bundle,
     assumptions_summary,
     clear_override,
     get_assumption,
     get_provenance,
     initialise_assumptions,
     override_assumption,
+    recompute_rollups,
     run_detection,
 )
 
@@ -270,3 +272,134 @@ class TestSummary:
         store: dict = {}
         # get_assumption on uninitialised store falls back to ASSUMPTIONS default
         assert get_assumption(store, "blended_cr_pct") == ASSUMPTIONS["blended_cr_pct"].default
+
+
+# ── TestRoadmapBundleDetection ────────────────────────────────────────────────
+
+
+_SAMPLE_BUNDLE: dict = {
+    "per_focus": {
+        "content": {"effort_level": "aggressive", "monthly_hours": 30.0, "cadence": 3, "task_count": 2, "tasks": []},
+        "technical": {"effort_level": "light", "monthly_hours": 4.0, "cadence": 0, "task_count": 1, "tasks": []},
+        "on_page": {"effort_level": "moderate", "monthly_hours": 10.0, "cadence": 0, "task_count": 1, "tasks": []},
+        "off_page": {"effort_level": "light", "monthly_hours": 0.0, "cadence": 0, "task_count": 0, "tasks": []},
+        "local": {"effort_level": "moderate", "monthly_hours": 0.0, "cadence": 0, "task_count": 0, "tasks": []},
+        "analytics": {"effort_level": "light", "monthly_hours": 3.0, "cadence": 0, "task_count": 1, "tasks": []},
+        "strategy": {"effort_level": "light", "monthly_hours": 2.0, "cadence": 0, "task_count": 0, "tasks": []},
+    },
+    "timeline": {"months_covered": 12, "phasing_notes": "", "has_launch_dates": False},
+    "global_rollup": {
+        "total_monthly_hours": 49.0,
+        "effort_level": "moderate",
+        "maintenance_coverage": 0.7,
+        "content_cadence": 3,
+        "positional_effort_level": "moderate",
+    },
+    "recommendations": [],
+    "gaps": [],
+}
+
+
+def _fresh():
+    s: dict = {}
+    initialise_assumptions(s)
+    return s
+
+
+class TestRoadmapBundleDetection:
+    def test_detects_content_effort(self):
+        store = _fresh()
+        _detect_from_roadmap_bundle(store, _SAMPLE_BUNDLE)
+        assert get_assumption(store, "content_effort_level") == "aggressive"
+
+    def test_detects_monthly_hours(self):
+        store = _fresh()
+        _detect_from_roadmap_bundle(store, _SAMPLE_BUNDLE)
+        assert get_assumption(store, "content_monthly_hours") == pytest.approx(30.0)
+
+    def test_detects_timeline(self):
+        store = _fresh()
+        _detect_from_roadmap_bundle(store, _SAMPLE_BUNDLE)
+        assert get_assumption(store, "timeline_months_covered") == 12
+
+    def test_all_seven_focus_effort_detected(self):
+        store = _fresh()
+        detected = _detect_from_roadmap_bundle(store, _SAMPLE_BUNDLE)
+        effort_keys = [k for k in detected if k.endswith("_effort_level")]
+        assert len(effort_keys) == 7
+
+    def test_all_seven_focus_hours_detected(self):
+        store = _fresh()
+        detected = _detect_from_roadmap_bundle(store, _SAMPLE_BUNDLE)
+        hour_keys = [k for k in detected if k.endswith("_monthly_hours")]
+        assert len(hour_keys) == 7
+
+    def test_provenance_is_detected(self):
+        store = _fresh()
+        _detect_from_roadmap_bundle(store, _SAMPLE_BUNDLE)
+        prov = get_provenance(store, "content_effort_level")
+        assert prov["provenance"] == "detected"
+
+    def test_run_detection_with_bundle_populates_keys(self):
+        store = _fresh()
+        run_detection(store, roadmap_data=_SAMPLE_BUNDLE)
+        assert get_assumption(store, "on_page_effort_level") == "moderate"
+
+    def test_bundle_does_not_overwrite_override(self):
+        store = _fresh()
+        override_assumption(store, "content_effort_level", "light")
+        _detect_from_roadmap_bundle(store, _SAMPLE_BUNDLE)
+        assert get_assumption(store, "content_effort_level") == "light"
+
+
+class TestRecomputeRollups:
+    def test_effort_level_is_max_of_three_foci(self):
+        store = _fresh()
+        run_detection(store, roadmap_data=_SAMPLE_BUNDLE)
+        # content=aggressive, on_page=moderate, off_page=light → max = aggressive
+        assert get_assumption(store, "effort_level") == "aggressive"
+
+    def test_positional_effort_is_max_of_on_page_off_page(self):
+        store = _fresh()
+        run_detection(store, roadmap_data=_SAMPLE_BUNDLE)
+        # on_page=moderate, off_page=light → max = moderate
+        assert get_assumption(store, "positional_effort_level") == "moderate"
+
+    def test_content_cadence_computed_from_hours(self):
+        store = _fresh()
+        run_detection(store, roadmap_data=_SAMPLE_BUNDLE)
+        # 30 hours / 10 = 3
+        assert get_assumption(store, "content_cadence") == 3
+
+    def test_maintenance_coverage_from_on_page_technical(self):
+        store = _fresh()
+        run_detection(store, roadmap_data=_SAMPLE_BUNDLE)
+        # (10 + 4) / 20 = 0.7
+        assert get_assumption(store, "maintenance_coverage") == pytest.approx(0.7)
+
+    def test_total_monthly_hours_is_sum(self):
+        store = _fresh()
+        run_detection(store, roadmap_data=_SAMPLE_BUNDLE)
+        # 30 + 4 + 10 + 0 + 0 + 3 + 2 = 49
+        assert get_assumption(store, "total_monthly_hours") == pytest.approx(49.0)
+
+    def test_rollups_not_run_when_all_defaulted(self):
+        """recompute_rollups must no-op when no per-focus keys have been detected."""
+        store = _fresh()
+        recompute_rollups(store)
+        # effort_level should remain "moderate" (its default), not be re-detected
+        assert get_provenance(store, "effort_level")["provenance"] == "defaulted"
+
+    def test_override_survives_recompute(self):
+        store = _fresh()
+        override_assumption(store, "effort_level", "light")
+        run_detection(store, roadmap_data=_SAMPLE_BUNDLE)
+        # Override must not be overwritten by recompute
+        assert get_assumption(store, "effort_level") == "light"
+
+    def test_legacy_roadmap_format_still_works(self):
+        store = _fresh()
+        legacy = {"effort_level": "aggressive", "content_cadence": 6, "maintenance_coverage": 0.5}
+        run_detection(store, roadmap_data=legacy)
+        assert get_assumption(store, "effort_level") == "aggressive"
+        assert get_assumption(store, "content_cadence") == 6

@@ -8,7 +8,7 @@ from utils.export import to_csv, to_html_report
 from engine.constants import CTR_MODELS, FORECAST_SCENARIOS, TIER_COLORS
 from utils.sidebar import render_ai_settings
 from utils.assumptions_panel import render_assumptions_banner
-from engine.assumptions import initialise_assumptions, get_assumption, override_assumption
+from engine.assumptions import initialise_assumptions, get_assumption, get_provenance, override_assumption
 
 st.header("Positional Forecast")
 st.caption("Project uplift from moving existing keywords up the SERP.")
@@ -45,7 +45,12 @@ st.sidebar.header("Positional Forecast Settings")
 
 months = st.sidebar.slider("Forecast Horizon (months)", 6, 36, 12, key="pos_months")
 _effort_options = ["light", "moderate", "aggressive"]
-_default_effort = str(get_assumption(store, "effort_level"))
+# Prefer positional_effort_level (from roadmap AI extraction) over generic effort_level
+_pos_prov = get_provenance(store, "positional_effort_level")
+if _pos_prov["provenance"] != "defaulted":
+    _default_effort = str(get_assumption(store, "positional_effort_level"))
+else:
+    _default_effort = str(get_assumption(store, "effort_level"))
 _effort_idx = _effort_options.index(_default_effort) if _default_effort in _effort_options else 1
 effort = st.sidebar.selectbox(
     "Effort Level",
@@ -54,6 +59,8 @@ effort = st.sidebar.selectbox(
     key="pos_effort",
     help="How aggressively you plan to optimise existing content.",
 )
+if _pos_prov["provenance"] != "defaulted":
+    st.sidebar.caption(f"Pre-selected from roadmap ({_pos_prov['provenance']}). Adjust above to override.")
 
 st.sidebar.divider()
 st.sidebar.subheader("Forecast Model")
