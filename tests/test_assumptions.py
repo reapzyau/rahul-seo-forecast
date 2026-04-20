@@ -469,9 +469,11 @@ class TestPerFocusAndRollupSpec:
         assert get_assumption(store, "brand_terms") == terms
 
 
-class TestNoDuplicateDefinitions:
-    def test_recompute_rollups_defined_exactly_once(self):
-        import pathlib
-        src = pathlib.Path(__file__).parent.parent / "engine" / "assumptions.py"
-        count = src.read_text().count("def recompute_rollups(")
-        assert count == 1, f"recompute_rollups defined {count} times in assumptions.py (expected 1)"
+def test_recompute_rollups_defined_exactly_once():
+    """Guard against the duplicate-definition bug resurfacing."""
+    import engine.assumptions as mod
+    import inspect
+    source = inspect.getsource(mod)
+    assert source.count("\ndef recompute_rollups(") == 1, (
+        "recompute_rollups is defined more than once in engine/assumptions.py"
+    )
