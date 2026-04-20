@@ -1,5 +1,5 @@
-import streamlit as st
 import pandas as pd
+import streamlit as st
 
 from engine.combined_engine import run_combined_forecast
 from engine.decay_engine import calculate_portfolio_decay
@@ -9,25 +9,23 @@ from engine.revenue_engine import (
     compute_intent_weighted_cvr,
     intent_revenue_breakdown,
 )
-from utils.chart_builder import combined_three_stream_chart, combined_revenue_chart
+from utils.chart_builder import combined_revenue_chart, combined_three_stream_chart
 from utils.export import to_csv, to_html_report
-from utils.sidebar import render_ai_settings
-from utils.assumptions_panel import render_assumptions_banner
-from engine.assumptions import initialise_assumptions, get_assumption
+from utils.page_base import setup_page
+from utils.session import (
+    COMB_RESULTS,
+    GA4_DF,
+    KW_EXISTING,
+    NC_RESULT,
+    POS_RESULT,
+)
 
-st.header("Combined Forecast")
-st.caption("Layer multiple forecast streams into a single projection with intent-weighted revenue.")
-
-render_ai_settings()
-
-store = st.session_state.setdefault("assumptions", {})
-initialise_assumptions(store)
-render_assumptions_banner(store)
+store = setup_page("Combined Forecast", "Layer multiple forecast streams into a single projection with intent-weighted revenue.")
 
 # ── Data Availability ──────────────────────────────────────────────────────
-ga4_df = st.session_state.get("ga4_df")
-pos_result = st.session_state.get("pos_result")
-nc_result = st.session_state.get("kw_results")
+ga4_df = st.session_state.get(GA4_DF)
+pos_result = st.session_state.get(POS_RESULT)
+nc_result = st.session_state.get(NC_RESULT)
 
 has_ga4 = ga4_df is not None
 has_positional = (
@@ -194,7 +192,7 @@ if st.button("Generate Combined Forecast", type="primary", key="comb_run"):
 
         decay_df = None
         if include_decay:
-            kw_for_decay = st.session_state.get("kw_existing")
+            kw_for_decay = st.session_state.get(KW_EXISTING)
             if kw_for_decay is not None and not kw_for_decay.empty:
                 decay_df = calculate_portfolio_decay(
                     kw_for_decay, months, maintenance_coverage=maintenance_coverage,
@@ -230,7 +228,7 @@ if st.button("Generate Combined Forecast", type="primary", key="comb_run"):
             if total_traffic > 0:
                 ga4_rev_per_session = total_rev / total_traffic
 
-        st.session_state["comb_results"] = {
+        st.session_state[COMB_RESULTS] = {
             "combined_df": combined_df,
             "include_baseline": include_baseline,
             "include_positional": include_positional,
@@ -247,8 +245,8 @@ if st.button("Generate Combined Forecast", type="primary", key="comb_run"):
         }
 
 # ── Results ────────────────────────────────────────────────────────────────
-if "comb_results" in st.session_state:
-    r = st.session_state["comb_results"]
+if COMB_RESULTS in st.session_state:
+    r = st.session_state[COMB_RESULTS]
     combined_df = r["combined_df"]
     forecast_mask = combined_df["is_forecast"]
     forecast_df = combined_df[forecast_mask]

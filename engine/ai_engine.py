@@ -1,19 +1,21 @@
 import json
-import os
 from pathlib import Path
 from string import Template
 
 import numpy as np
 import pandas as pd
 
-try:
-    from openai import OpenAI
-except ImportError:
-    OpenAI = None
-
+from utils.bifrost import call as _bfcall
+from utils.bifrost import call_with_fallback as _bfcall_with_fallback
+from utils.bifrost import get_client as _bfget_client
 
 _CONFIG_DIR = Path(__file__).resolve().parent.parent / "config"
 _PROMPT_DIR = Path(__file__).resolve().parent.parent / "prompts"
+
+
+def get_bifrost_client(api_key: str | None = None) -> object | None:
+    """Return Bi Frost client. Thin wrapper kept for backward compatibility."""
+    return _bfget_client(api_key)
 
 
 # ── Config helpers ───────────────────────────────────────────────────────────
@@ -37,6 +39,20 @@ def get_fallback_chain() -> list[str]:
     return _load_models_config()["fallback_chain"]
 
 
+def get_model_for_feature(feature: str, user_override: str | None = None) -> str:
+    """Resolve which model to use for a given AI feature.
+
+    Resolution order:
+      1. user_override (from sidebar picker) — wins if not None
+      2. features.{feature} in config/models.json — feature-specific default
+      3. default in config/models.json — global default
+    """
+    if user_override:
+        return user_override
+    cfg = _load_models_config()
+    return cfg.get("features", {}).get(feature, cfg["default"])
+
+
 # ── Prompt loader ────────────────────────────────────────────────────────────
 
 
@@ -50,36 +66,6 @@ def _load_prompt(name: str) -> tuple[str, Template]:
     system = parts[0].strip()
     user = Template(parts[1].strip()) if len(parts) > 1 else Template("")
     return system, user
-
-
-# ── Client ───────────────────────────────────────────────────────────────────
-
-
-def get_bifrost_client(api_key: str | None = None) -> "OpenAI | None":
-    """Get Bi Frost OpenAI-compatible client.
-
-    Args:
-        api_key: Bi Frost virtual key. Falls back to Streamlit secrets,
-                 then BIFROST_API_KEY env var.
-    """
-    if OpenAI is None:
-        return None
-    key = api_key if api_key else None
-    if not key:
-        try:
-            import streamlit as st
-            if "BIFROST_API_KEY" in st.secrets:
-                key = st.secrets["BIFROST_API_KEY"] or None
-        except Exception:
-            pass
-    if not key:
-        key = os.environ.get("BIFROST_API_KEY")
-    if not key:
-        return None
-    base_url = "https://bifrost.pattern.com"
-    if not base_url.rstrip("/").endswith("/v1"):
-        base_url = base_url.rstrip("/") + "/v1"
-    return OpenAI(base_url=base_url, api_key=key)
 
 
 # ── LLM helpers ──────────────────────────────────────────────────────────────
@@ -107,90 +93,85 @@ def _strip_code_fences(text: str) -> str:
     return text
 
 
-def _call_bifrost(client: "OpenAI", model: str, instructions: str, user_input: str,
-                  temperature: float = 0.3, max_tokens: int = 4000) -> str:
-    """Call Bi Frost via Chat Completions API and return the response text."""
-    response = client.chat.completions.create(
-        model=model,
-        max_tokens=max_tokens,
-        temperature=temperature,
-        messages=[
-            {"role": "system", "content": instructions},
-            {"role": "user", "content": user_input},
-        ],
-    )
-    return response.choices[0].message.content
+def _call_bifrost(
+    client: "object",
+    model: str,
+    instructions: str,
+    user_input: str,
+    temperature: float = 0.3,
+    max_tokens: int = 4000,
+) -> str:
+    """Thin wrapper around utils.bifrost.call for backward compatibility."""
+    return _bfcall(client, model, instructions, user_input, temperature, max_tokens)
 
 
-def generate_with_fallback(client: "OpenAI", model: str, instructions: str,
-                           user_input: str, **kwargs) -> tuple[str, str]:
+def generate_with_fallback(
+    client: "object",
+    model: str,
+    instructions: str,
+    user_input: str,
+    **kwargs,
+) -> tuple[str, str]:
     """Call Bi Frost with automatic fallback through the model chain.
 
     Returns:
         (response_text, model_used) tuple.
     """
-    chain = get_fallback_chain()
-    models_to_try = [model] + [m for m in chain if m != model]
-    last_error = None
-    for attempt in models_to_try:
-        try:
-            return _call_bifrost(client, attempt, instructions, user_input, **kwargs), attempt
-        except Exception as e:
-            last_error = e
-            continue
-    raise RuntimeError(f"All models failed. Tried: {models_to_try}. Last error: {last_error}")
+    return _bfcall_with_fallback(client, model, instructions, user_input, **kwargs)
 
 
 # ── AI features ──────────────────────────────────────────────────────────────
 
 
 def cluster_keywords(
-    client: "OpenAI",
+    client: "object",
     keywords: list[str],
-    model: str = "openai/gpt-4o-mini",
+    model: str | None = None,
 ) -> tuple[dict, str]:
     """Group keywords into topical clusters using AI.
 
     Returns:
         (clusters_dict, model_used) tuple.
     """
+    resolved = get_model_for_feature("cluster_keywords", user_override=model)
     system, user_tmpl = _load_prompt("cluster_keywords")
     kw_list = "\n".join(f"- {kw}" for kw in keywords[:200])
     user_input = user_tmpl.substitute(kw_list=kw_list)
 
     text, used_model = generate_with_fallback(
-        client, model, system, user_input, temperature=0.3,
+        client, resolved, system, user_input, temperature=0.3,
     )
     return _parse_llm_json(text), used_model
 
 
 def check_cannibalization(
-    client: "OpenAI",
+    client: "object",
     keywords: list[str],
     existing_urls: list[str],
-    model: str = "openai/gpt-4o-mini",
+    model: str | None = None,
 ) -> tuple[list[dict], str]:
     """Check if proposed keywords conflict with existing URLs.
 
     Returns:
         (results_list, model_used) tuple.
     """
+    resolved = get_model_for_feature("check_cannibalization", user_override=model)
     system, user_tmpl = _load_prompt("check_cannibalization")
     kw_list = "\n".join(f"- {kw}" for kw in keywords[:100])
     url_list = "\n".join(f"- {url}" for url in existing_urls[:100])
     user_input = user_tmpl.substitute(kw_list=kw_list, url_list=url_list)
 
     text, used_model = generate_with_fallback(
-        client, model, system, user_input, temperature=0.2,
+        client, resolved, system, user_input, temperature=0.2,
     )
     return _parse_llm_json(text), used_model
 
 
 def generate_content_roadmap(
-    client: "OpenAI",
+    client: "object",
     keyword_df: pd.DataFrame,
     months: int,
-    model: str = "openai/gpt-4o-mini",
+    model: str | None = None,
     existing_roadmap_csv: str | None = None,
 ) -> tuple[list[dict], str]:
     """Generate an AI-powered content roadmap from keyword forecast data.
@@ -211,22 +192,23 @@ def generate_content_roadmap(
             + existing_roadmap_csv[:3000]
         )
 
+    resolved = get_model_for_feature("content_roadmap", user_override=model)
     system, user_tmpl = _load_prompt("content_roadmap")
     user_input = user_tmpl.substitute(
         data_str=data_str, existing_ctx=existing_ctx, months=months,
     )
 
     text, used_model = generate_with_fallback(
-        client, model, system, user_input, temperature=0.4,
+        client, resolved, system, user_input, temperature=0.4,
     )
     return _parse_llm_json(text), used_model
 
 
 def detect_brand_terms(
-    client: "OpenAI",
+    client: "object",
     domain: str,
     keywords: list[str],
-    model: str = "openai/gpt-4o-mini",
+    model: str | None = None,
 ) -> tuple[dict, str]:
     """Detect branded keywords from domain name + keyword list using AI.
 
@@ -242,11 +224,12 @@ def detect_brand_terms(
             confidence: float
             reasoning: str
     """
+    resolved = get_model_for_feature("brand_detection", user_override=model)
     system, user_tmpl = _load_prompt("detect_brand")
     kw_sample = "\n".join(f"- {kw}" for kw in keywords[:100])
     user_input = user_tmpl.substitute(domain=domain, keyword_sample=kw_sample)
     text, used_model = generate_with_fallback(
-        client, model, system, user_input, temperature=0.2,
+        client, resolved, system, user_input, temperature=0.2,
     )
     return _parse_llm_json(text), used_model
 
@@ -290,10 +273,10 @@ Rules:
 
 
 def transform_data(
-    client: "OpenAI",
+    client: "object",
     df: pd.DataFrame,
     target_format: str,
-    model: str = "openai/gpt-4o-mini",
+    model: str | None = None,
 ) -> tuple[str, str]:
     """Use AI to generate Python code that transforms uploaded data.
 
@@ -303,13 +286,14 @@ def transform_data(
     sample = df.head(15).to_csv(index=False)
     col_info = f"Columns: {list(df.columns)}\nShape: {df.shape}\nDtypes:\n{df.dtypes.to_string()}"
 
+    resolved = get_model_for_feature("transform_data", user_override=model)
     system, user_tmpl = _load_prompt("transform_data")
     user_input = user_tmpl.substitute(
         col_info=col_info, sample=sample, target_format=target_format,
     )
 
     text, used_model = generate_with_fallback(
-        client, model, system, user_input, temperature=0.1, max_tokens=2000,
+        client, resolved, system, user_input, temperature=0.1, max_tokens=2000,
     )
     return _strip_code_fences(text), used_model
 

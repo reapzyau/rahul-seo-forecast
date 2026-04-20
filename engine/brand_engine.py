@@ -7,6 +7,7 @@ Word-boundary matching prevents false matches (e.g. 'cable' won't match 'cableca
 from __future__ import annotations
 
 import re
+
 import pandas as pd
 
 
@@ -45,6 +46,27 @@ def classify_keywords_as_branded(
 
     df["is_branded"] = df["keyword"].apply(_is_branded)
     return df
+
+
+def extract_domain_from_semrush(kw_df: pd.DataFrame) -> str | None:
+    """Pick the most common URL host from the SEMrush export.
+
+    Returns None if no URL-like column is present or all values are empty.
+    """
+    from urllib.parse import urlparse
+
+    url_col = next(
+        (c for c in kw_df.columns if c.lower() in ("url", "page", "landing page")),
+        None,
+    )
+    if url_col is None:
+        return None
+
+    hosts = kw_df[url_col].dropna().apply(lambda u: urlparse(str(u)).netloc)
+    hosts = hosts[hosts != ""]
+    if hosts.empty:
+        return None
+    return hosts.value_counts().index[0]
 
 
 def split_branded_vs_non_branded(

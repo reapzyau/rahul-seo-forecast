@@ -1,12 +1,8 @@
 import numpy as np
 import pandas as pd
 
-from engine.constants import (
-    CTR_BY_POSITION, CTR_11_14, CTR_15_20,
-    DIFFICULTY_TIERS, CTR_MODELS,
-)
-from engine.new_content_engine import get_ctr, classify_difficulty
-from engine.maturation_curve import TIER_MATURATION_PARAMS, logistic_progress
+from engine.maturation_curve import TIER_MATURATION_PARAMS
+from engine.new_content_engine import classify_difficulty, get_ctr
 
 # Offset for seeded RNG — avoids collisions with keyword engine seeds (1000-3000)
 _TTM_SEED_OFFSET = 4000
@@ -245,7 +241,7 @@ def run_positional_forecast_mc(
 
     det_targets = np.array([
         estimate_target_position(int(p), int(k), effort, historical_movement_stats)
-        for p, k in zip(positions, kds)
+        for p, k in zip(positions, kds, strict=False)
     ])
 
     # CTR lookup table for positions 1-100
@@ -303,10 +299,8 @@ def run_positional_forecast_mc(
 
     # Apply AIO CTR penalties per-keyword at the target-CTR step
     if aio_intent_penalties:
-        # Need intent per keyword; fall back to 0 penalty if column missing
-        intent_col = "intent" if "intent" in df.columns else "primary_intent"
-        if intent_col in df.columns:
-            intents = df[intent_col].values
+        if "intent" in df.columns:
+            intents = df["intent"].values
             aio_penalty_per_kw = np.array([
                 aio_intent_penalties.get(str(intent).lower(), 0.0) / 100.0
                 for intent in intents

@@ -1,18 +1,25 @@
 import os
-import streamlit as st
+
 import pandas as pd
+import streamlit as st
 
-from engine.historical_engine import run_historical_forecast, run_historical_forecast_v4, calculate_growth_rates
-from engine.revenue_engine import add_revenue, build_full_metrics_table, CURRENCY_SYMBOLS
-from utils.data_loader import load_traffic
+from engine.historical_engine import (
+    calculate_growth_rates,
+    run_historical_forecast,
+    run_historical_forecast_v4,
+)
+from engine.revenue_engine import CURRENCY_SYMBOLS, add_revenue, build_full_metrics_table
 from utils.chart_builder import historical_comparison_chart, revenue_projection_chart
+from utils.data_loader import load_traffic
 from utils.export import to_csv, to_html_report, traffic_template_csv
-from utils.sidebar import render_ai_settings
+from utils.page_base import setup_page
+from utils.session import HIST_N_MONTHS, HIST_RESULTS, SEASONALITY
 
-st.header("Historical Forecast")
-st.caption("Project traffic from your past organic data using statistical models.")
-
-render_ai_settings()
+setup_page(
+    "Historical Forecast",
+    "Project traffic from your past organic data using statistical models.",
+    show_assumptions_banner=False,
+)
 
 # ── Sidebar ──────────────────────────────────────────────────────────────────
 st.sidebar.header("Historical Forecast Settings")
@@ -28,13 +35,17 @@ use_v4 = st.sidebar.checkbox(
     key="hist_use_v4",
 )
 
+# Infer prophet-active from previous render's data length (session state)
+_n_hist = st.session_state.get(HIST_N_MONTHS, 0)
+_prophet_active = use_v4 and _n_hist >= 24
+
 # V4-specific controls
 changepoint_prior_scale = st.sidebar.slider(
     "Trend flexibility (Prophet)",
     0.001, 0.5, 0.05, step=0.005,
     key="hist_changepoint",
     help="Higher = more flexible trend (Prophet only). 0.05 is recommended.",
-    disabled=not use_v4,
+    disabled=not _prophet_active,
 )
 
 # Legacy multi-method controls (shown when v4 is off)
@@ -47,7 +58,8 @@ methods = st.sidebar.multiselect(
 )
 sma_window = st.sidebar.slider("SMA Window (months)", 2, 6, 3, disabled=use_v4)
 alpha = st.sidebar.slider("Smoothing Alpha", 0.1, 0.9, 0.3, step=0.05, disabled=use_v4)
-confidence = st.sidebar.slider("Confidence Band (%)", 5, 30, 15)
+# Prophet provides its own uncertainty intervals; confidence band only applies to linear/Holt's
+confidence = st.sidebar.slider("Confidence Band (%)", 5, 30, 15, disabled=_prophet_active)
 
 st.sidebar.divider()
 st.sidebar.subheader("Revenue Settings")
@@ -82,6 +94,7 @@ elif use_sample:
     df = load_traffic(sample_path)
 
 if df is not None:
+    st.session_state[HIST_N_MONTHS] = len(df)
     # Build summary line
     summary_parts = [
         f"**{len(df)} months of data**",
@@ -111,7 +124,7 @@ if df is not None:
     elif st.button("Generate Forecast", type="primary", key="hist_run"):
         with st.spinner("Running historical forecast..."):
             if use_v4:
-                seasonality = st.session_state.get("seasonality")
+                seasonality = st.session_state.get(SEASONALITY)
                 result = run_historical_forecast_v4(
                     df, months,
                     changepoint_prior_scale=changepoint_prior_scale,
@@ -135,7 +148,7 @@ if df is not None:
                 active_methods = methods
             growth = calculate_growth_rates(df["traffic"])
 
-            st.session_state["hist_results"] = {
+            st.session_state[HIST_RESULTS] = {
                 "result": result,
                 "growth": growth,
                 "methods": active_methods,
@@ -147,8 +160,8 @@ if df is not None:
             }
 
 # ── Results ──────────────────────────────────────────────────────────────────
-if "hist_results" in st.session_state:
-    r = st.session_state["hist_results"]
+if HIST_RESULTS in st.session_state:
+    r = st.session_state[HIST_RESULTS]
     result = r["result"]
     growth = r["growth"]
 

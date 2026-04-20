@@ -1,6 +1,5 @@
 import pandas as pd
 
-
 CURRENCY_SYMBOLS = {
     "USD": "$",
     "EUR": "\u20ac",
@@ -143,15 +142,6 @@ def keyword_revenue_table(
     return result.reset_index(drop=True)
 
 
-def _get_intent_col(df: pd.DataFrame) -> str | None:
-    """Find intent column — positional engine uses 'primary_intent', new content uses 'intent'."""
-    if "primary_intent" in df.columns:
-        return "primary_intent"
-    if "intent" in df.columns:
-        return "intent"
-    return None
-
-
 def compute_intent_weighted_cvr(
     keyword_df: pd.DataFrame,
     base_cvr: float,
@@ -162,8 +152,7 @@ def compute_intent_weighted_cvr(
     informational keywords convert lower.  The returned CVR reflects
     the traffic-weighted mix of intents in the keyword set.
     """
-    intent_col = _get_intent_col(keyword_df)
-    if keyword_df.empty or intent_col is None:
+    if keyword_df.empty or "intent" not in keyword_df.columns:
         return base_cvr
 
     for col in ("uplift", "estimated_monthly_traffic", "volume"):
@@ -178,7 +167,7 @@ def compute_intent_weighted_cvr(
     if total <= 0:
         return base_cvr
 
-    intents = keyword_df[intent_col].fillna("commercial").str.lower()
+    intents = keyword_df["intent"].fillna("commercial").str.lower()
     blended = 0.0
     for intent, mult in INTENT_CVR_MULTIPLIERS.items():
         blended += (weights[intents == intent].sum() / total) * mult
@@ -195,8 +184,7 @@ def intent_revenue_breakdown(
     aov: float,
 ) -> pd.DataFrame:
     """Break down expected monthly revenue contribution by keyword intent."""
-    intent_col = _get_intent_col(keyword_df)
-    if keyword_df.empty or intent_col is None:
+    if keyword_df.empty or "intent" not in keyword_df.columns:
         return pd.DataFrame()
 
     for col in ("uplift", "estimated_monthly_traffic", "volume"):
@@ -206,7 +194,7 @@ def intent_revenue_breakdown(
     else:
         return pd.DataFrame()
 
-    intents = keyword_df[intent_col].fillna("commercial").str.lower()
+    intents = keyword_df["intent"].fillna("commercial").str.lower()
     rows = []
     for intent, mult in INTENT_CVR_MULTIPLIERS.items():
         mask = intents == intent

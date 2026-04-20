@@ -16,6 +16,11 @@ except ImportError:
     _PROPHET_AVAILABLE = False
 
 
+def is_prophet_available() -> bool:
+    """Return True if the Prophet library is installed and importable."""
+    return _PROPHET_AVAILABLE
+
+
 def _require_prophet() -> None:
     if not _PROPHET_AVAILABLE:
         raise ImportError(

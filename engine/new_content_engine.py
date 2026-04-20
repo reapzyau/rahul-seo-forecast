@@ -2,10 +2,14 @@ import numpy as np
 import pandas as pd
 
 from engine.constants import (
-    CTR_BY_POSITION, CTR_11_14, CTR_15_20,
-    DIFFICULTY_TIERS, TIME_TO_RANK, INTENT_PATTERNS,
+    CTR_11_14,
+    CTR_15_20,
+    CTR_BY_POSITION,
+    DIFFICULTY_TIERS,
+    INTENT_PATTERNS,
+    TIME_TO_RANK,
 )
-from engine.maturation_curve import maturation_schedule
+from engine.maturation_curve import maturation_schedule, tier_maturation_params
 
 
 def classify_difficulty(kd: int) -> str:
@@ -141,6 +145,7 @@ def run_new_content_forecast(
     seasonality: dict | None = None,
     forecast_start_month: int | None = None,
     aio_intent_penalties: dict | None = None,
+    roadmap_content_plan: list[dict] | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Run the full new-content keyword forecast pipeline.
 
@@ -162,6 +167,11 @@ def run_new_content_forecast(
         seasonality: Dict {month_num: {traffic_mod: float}} applied to monthly totals.
         forecast_start_month: Calendar month (1-12) of horizon month 1.
         aio_intent_penalties: Dict {intent: penalty_pct} — supersedes ai_overview_ctr_penalty.
+        roadmap_content_plan: List of content plan dicts from parse_pattern_native
+            (keys: url, content_type, month, is_new_page). When provided, keywords are
+            matched to plan URLs (substring: keyword in url.lower()). Matched keywords
+            use the plan's publish month; unmatched fall back to cadence-based assignment.
+            Optimisation URLs use t_mid=1.5 amplitude in S-curve; new pages use standard.
 
     Returns:
         keyword_df: Per-keyword results with all computed fields.
@@ -186,8 +196,27 @@ def run_new_content_forecast(
     # Step 2: Classify difficulty
     df["tier"] = df["kd"].apply(classify_difficulty)
 
-    # Step 3: Assign publish months based on cadence
-    df["publish_month"] = df.index // cadence + 1
+    # Step 3: Assign publish months — roadmap plan overrides cadence for matched keywords
+    if roadmap_content_plan:
+        plan_months: list[int] = []
+        plan_is_optimisation: list[bool] = []
+        for _, row in df.iterrows():
+            kw_lower = str(row["keyword"]).lower()
+            matched = next(
+                (item for item in roadmap_content_plan if kw_lower in str(item.get("url", "")).lower()),
+                None,
+            )
+            if matched and isinstance(matched.get("month"), (int, float)):
+                plan_months.append(int(matched["month"]))
+                plan_is_optimisation.append(matched.get("content_type") == "optimisation")
+            else:
+                plan_months.append(df.index.get_loc(_) // cadence + 1)
+                plan_is_optimisation.append(False)
+        df["publish_month"] = plan_months
+        df["_is_optimisation"] = plan_is_optimisation
+    else:
+        df["publish_month"] = df.index // cadence + 1
+        df["_is_optimisation"] = False
 
     # Step 4: Roll ranking probability dice (seeded per keyword)
     probabilities = []
@@ -266,8 +295,18 @@ def run_new_content_forecast(
     for _, row in df.iterrows():
         if not row["will_rank"] or row["estimated_monthly_traffic"] == 0:
             continue
-        schedule = maturation_schedule(row["tier"], months, int(row["publish_month"]))
-        monthly_totals += row["estimated_monthly_traffic"] * schedule
+        if row.get("_is_optimisation", False):
+            # Optimisation of existing copy: faster ramp (t_mid=1.5), lower amplitude (0.3)
+            from engine.maturation_curve import logistic_progress
+            pub = int(row["publish_month"])
+            sched = np.array([
+                0.3 * logistic_progress(max(0, m + 1 - pub), 1.5, 1.8) if m + 1 >= pub else 0.0
+                for m in range(months)
+            ])
+            monthly_totals += row["estimated_monthly_traffic"] * sched
+        else:
+            schedule = maturation_schedule(row["tier"], months, int(row["publish_month"]))
+            monthly_totals += row["estimated_monthly_traffic"] * schedule
 
     # Apply seasonality to monthly totals
     if seasonality and forecast_start_month is not None:
@@ -291,7 +330,3 @@ def run_new_content_forecast(
     return df, monthly_df
 
 
-def tier_maturation_params(tier: str) -> tuple[float, float]:
-    """Re-export from maturation_curve for callers that import from here."""
-    from engine.maturation_curve import tier_maturation_params as _tmp
-    return _tmp(tier)

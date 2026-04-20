@@ -1,4 +1,3 @@
-import numpy as np
 import pandas as pd
 
 from engine.historical_engine import linear_forecast
@@ -10,7 +9,6 @@ def run_combined_forecast(
     new_content_monthly: pd.DataFrame | None,
     months: int,
     decay_df: pd.DataFrame | None = None,
-    aio_erosion_df: pd.DataFrame | None = None,  # deprecated — AIO is now per-stream
 ) -> pd.DataFrame:
     """Layer every component into the canonical forecast.
 
@@ -19,10 +17,6 @@ def run_combined_forecast(
                     + positional_uplift[m]   (AIO already baked in via CTR penalty)
                     + new_content_uplift[m]  (AIO already baked in via CTR penalty)
                     - decay[m]               (portfolio-level, stays at combined level)
-
-    AIO erosion is no longer subtracted here — it is applied per-stream as a CTR
-    penalty in positional_engine and new_content_engine.
-    aio_erosion_df is accepted for backward compatibility but ignored in the math.
 
     P10/P50/P90 bands propagated from positional stream; decay is a deterministic subtraction.
 
@@ -65,7 +59,6 @@ def run_combined_forecast(
                 positional_monthly=positional_monthly,
                 new_content_monthly=new_content_monthly,
                 decay_df=decay_df,
-                aio_erosion_df=aio_erosion_df,
                 has_bands=has_bands,
             ))
     else:
@@ -79,7 +72,6 @@ def run_combined_forecast(
                 positional_monthly=positional_monthly,
                 new_content_monthly=new_content_monthly,
                 decay_df=decay_df,
-                aio_erosion_df=aio_erosion_df,
                 has_bands=has_bands,
             ))
 
@@ -88,7 +80,6 @@ def run_combined_forecast(
     # Uplift percentage (P50-based when bands available)
     forecast_mask = result["is_forecast"]
     result["uplift_pct"] = 0.0
-    combined_col = "combined_p50" if has_bands else "combined"
     pos_col = "positional_uplift_p50" if has_bands else "positional_uplift"
 
     result.loc[forecast_mask, "uplift_pct"] = result.loc[forecast_mask].apply(
@@ -133,11 +124,10 @@ def _hist_row(date, actual, baseline, has_bands):
 def _forecast_row(
     date, baseline_val, month,
     positional_monthly, new_content_monthly,
-    decay_df, aio_erosion_df, has_bands,
+    decay_df, has_bands,
 ):
     nc_uplift = _get_monthly_value(new_content_monthly, month, "traffic")
     decay = _get_monthly_value(decay_df, month, "cumulative_decay")
-    # aio_erosion_df accepted for compat but not used in math (AIO is per-stream now)
 
     row = {
         "date": date,

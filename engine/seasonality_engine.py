@@ -7,8 +7,6 @@ v4 additions:
 """
 
 import pandas as pd
-import numpy as np
-
 
 # Default retail seasonality patterns (monthly index 1-12)
 DEFAULT_SEASONALITY = {
@@ -97,53 +95,77 @@ def apply_seasonality(
     return df
 
 
-def _build_au_holidays() -> pd.DataFrame:
-    """Generate AU retail holiday DataFrame for years 2023-2028 (Prophet format)."""
+_MONTH_NAMES = [
+    "", "January", "February", "March", "April", "May", "June",
+    "July", "August", "September", "October", "November", "December",
+]
+
+# Public holiday rule definitions — used by build_au_holidays_df()
+AU_HOLIDAY_RULES = [
+    {"holiday": "EOFY",               "rule": "june_30",           "lower_window": -14, "upper_window": 1},
+    {"holiday": "Click Frenzy May",   "rule": "third_tuesday_may", "lower_window": -3,  "upper_window": 3},
+    {"holiday": "Click Frenzy Nov",   "rule": "second_tuesday_nov","lower_window": -3,  "upper_window": 3},
+    {"holiday": "Black Friday",       "rule": "fourth_friday_nov", "lower_window": -2,  "upper_window": 3},
+    {"holiday": "Cyber Monday",       "rule": "monday_after_bf",   "lower_window": -1,  "upper_window": 1},
+    {"holiday": "Christmas",          "rule": "dec_25",            "lower_window": -10, "upper_window": 2},
+    {"holiday": "Boxing Day Sales",   "rule": "dec_26",            "lower_window": 0,   "upper_window": 7},
+    {"holiday": "Back to School",     "rule": "jan_28",            "lower_window": -7,  "upper_window": 7},
+]
+
+
+def _resolve_holiday_date(rule: str, year: int) -> pd.Timestamp:
+    """Return the exact date for a holiday rule in the given year."""
+    if rule == "june_30":
+        return pd.Timestamp(year, 6, 30)
+    if rule == "dec_25":
+        return pd.Timestamp(year, 12, 25)
+    if rule == "dec_26":
+        return pd.Timestamp(year, 12, 26)
+    if rule == "jan_28":
+        return pd.Timestamp(year, 1, 28)
+    if rule == "third_tuesday_may":
+        first = pd.Timestamp(year, 5, 1)
+        days_to_tue = (1 - first.weekday()) % 7
+        return first + pd.Timedelta(days=days_to_tue + 14)
+    if rule == "second_tuesday_nov":
+        first = pd.Timestamp(year, 11, 1)
+        days_to_tue = (1 - first.weekday()) % 7
+        return first + pd.Timedelta(days=days_to_tue + 7)
+    if rule == "fourth_friday_nov":
+        first = pd.Timestamp(year, 11, 1)
+        days_to_fri = (4 - first.weekday()) % 7
+        return first + pd.Timedelta(days=days_to_fri + 21)
+    if rule == "monday_after_bf":
+        # Cyber Monday = Monday after Black Friday
+        bf = _resolve_holiday_date("fourth_friday_nov", year)
+        return bf + pd.Timedelta(days=3)
+    raise ValueError(f"Unknown holiday rule: {rule!r}")
+
+
+def build_au_holidays_df(start_year: int = 2023, end_year: int = 2028) -> pd.DataFrame:
+    """Expand AU_HOLIDAY_RULES into a Prophet-format holiday DataFrame.
+
+    Columns: holiday, ds, lower_window, upper_window
+
+    Args:
+        start_year: First year to generate dates for (inclusive).
+        end_year: Last year to generate dates for (inclusive).
+    """
     rows = []
-
-    def _add(name: str, ds: pd.Timestamp, lower: int, upper: int):
-        rows.append({"holiday": name, "ds": ds, "lower_window": lower, "upper_window": upper})
-
-    for year in range(2023, 2029):
-        # EOFY
-        _add("EOFY", pd.Timestamp(year, 6, 30), -14, 1)
-
-        # Click Frenzy May — third Tuesday of May
-        first_may = pd.Timestamp(year, 5, 1)
-        # weekday() 1 = Tuesday
-        days_to_tue = (1 - first_may.weekday()) % 7
-        third_tuesday_may = first_may + pd.Timedelta(days=days_to_tue + 14)
-        _add("Click Frenzy May", third_tuesday_may, -3, 3)
-
-        # Click Frenzy November — second Tuesday of November
-        first_nov = pd.Timestamp(year, 11, 1)
-        days_to_tue = (1 - first_nov.weekday()) % 7
-        second_tuesday_nov = first_nov + pd.Timedelta(days=days_to_tue + 7)
-        _add("Click Frenzy November", second_tuesday_nov, -3, 3)
-
-        # Black Friday — fourth Friday of November
-        first_nov = pd.Timestamp(year, 11, 1)
-        days_to_fri = (4 - first_nov.weekday()) % 7
-        black_friday = first_nov + pd.Timedelta(days=days_to_fri + 21)
-        _add("Black Friday", black_friday, -2, 3)
-
-        # Cyber Monday — Monday after Black Friday
-        cyber_monday = black_friday + pd.Timedelta(days=3)
-        _add("Cyber Monday", cyber_monday, -1, 1)
-
-        # Christmas
-        _add("Christmas", pd.Timestamp(year, 12, 25), -10, 2)
-
-        # Boxing Day Sales
-        _add("Boxing Day Sales", pd.Timestamp(year, 12, 26), 0, 7)
-
-        # Back to School (AU — late Jan)
-        _add("Back to School", pd.Timestamp(year, 1, 28), -7, 7)
-
+    for year in range(start_year, end_year + 1):
+        for rule_def in AU_HOLIDAY_RULES:
+            ds = _resolve_holiday_date(rule_def["rule"], year)
+            rows.append({
+                "holiday": rule_def["holiday"],
+                "ds": ds,
+                "lower_window": rule_def["lower_window"],
+                "upper_window": rule_def["upper_window"],
+            })
     return pd.DataFrame(rows)
 
 
-AU_HOLIDAYS = _build_au_holidays()
+# Pre-built constant for the default range — avoids rebuilding on every import
+AU_HOLIDAYS = build_au_holidays_df(2023, 2028)
 
 
 def learn_seasonality_from_ga4(ga4_df: pd.DataFrame) -> dict | None:
@@ -192,9 +214,9 @@ def learn_seasonality_from_ga4(ga4_df: pd.DataFrame) -> dict | None:
                 aov_idx = month_rows["aov"].mean() / aov_avg
                 aov_mod = round(aov_idx - 1.0, 4)
 
-        default_label = DEFAULT_SEASONALITY.get(m, {}).get("label", f"Month {m}")
+        month_name = _MONTH_NAMES[m] if m <= 12 else f"Month {m}"
         learned[m] = {
-            "label": default_label,
+            "label": f"{month_name} (learned)",
             "traffic_mod": traffic_mod,
             "cr_mod": cr_mod,
             "aov_mod": aov_mod,
@@ -219,22 +241,114 @@ def blend_learned_and_default_seasonality(
         Blended seasonality dict in the same schema.
     """
     blended: dict = {}
+    pct_learned = int(round(blend_weight * 100))
+    pct_default = 100 - pct_learned
     for m in range(1, 13):
-        l = learned.get(m, {})
+        learned_m = learned.get(m, {})
         d = default.get(m, {"traffic_mod": 0, "cr_mod": 0, "aov_mod": 0, "label": f"Month {m}"})
+        month_name = _MONTH_NAMES[m] if m <= 12 else f"Month {m}"
+        if blend_weight >= 1.0:
+            label = f"{month_name} (learned)"
+        elif blend_weight <= 0.0:
+            label = d.get("label", f"Month {m}")
+        else:
+            label = f"{month_name} ({pct_learned}% learned / {pct_default}% default)"
         blended[m] = {
-            "label": d.get("label", f"Month {m}"),
+            "label": label,
             "traffic_mod": round(
-                blend_weight * l.get("traffic_mod", 0) + (1 - blend_weight) * d.get("traffic_mod", 0), 4
+                blend_weight * learned_m.get("traffic_mod", 0) + (1 - blend_weight) * d.get("traffic_mod", 0), 4
             ),
             "cr_mod": round(
-                blend_weight * l.get("cr_mod", 0) + (1 - blend_weight) * d.get("cr_mod", 0), 4
+                blend_weight * learned_m.get("cr_mod", 0) + (1 - blend_weight) * d.get("cr_mod", 0), 4
             ),
             "aov_mod": round(
-                blend_weight * l.get("aov_mod", 0) + (1 - blend_weight) * d.get("aov_mod", 0), 4
+                blend_weight * learned_m.get("aov_mod", 0) + (1 - blend_weight) * d.get("aov_mod", 0), 4
             ),
         }
     return blended
+
+
+def seasonality_for_portfolio(ga4_df: pd.DataFrame) -> tuple[dict, dict]:
+    """Derive the best seasonality dict for a given GA4 dataset.
+
+    Selection logic:
+        ≥24 months → fully learned   (blend_weight=1.0)
+        12–23 months → 50/50 blend   (blend_weight=0.5)
+        <12 months → AU retail defaults with a warning in meta
+
+    Returns:
+        (seasonality_dict, meta) where meta = {
+            "source": "learned" | "blended" | "default",
+            "blend_weight": float,
+            "months_available": int,
+        }
+    """
+    n_months = len(ga4_df) if ga4_df is not None else 0
+    meta: dict = {"months_available": n_months}
+
+    if n_months >= 24:
+        learned = learn_seasonality_from_ga4(ga4_df)
+        if learned is not None:
+            blended = blend_learned_and_default_seasonality(learned, DEFAULT_SEASONALITY, 1.0)
+            meta.update({"source": "learned", "blend_weight": 1.0})
+            return blended, meta
+
+    if n_months >= 12:
+        learned = learn_seasonality_from_ga4(ga4_df)
+        if learned is not None:
+            blended = blend_learned_and_default_seasonality(learned, DEFAULT_SEASONALITY, 0.5)
+            meta.update({"source": "blended", "blend_weight": 0.5})
+            return blended, meta
+
+    meta.update({
+        "source": "default",
+        "blend_weight": 0.0,
+        "warning": f"Only {n_months} months available — using AU retail defaults (need ≥12 to learn)",
+    })
+    return dict(DEFAULT_SEASONALITY), meta
+
+
+INDUSTRY_SEASONALITY_PRIORS: dict[str, dict[int, float]] = {
+    # Additive traffic_mod adjustments per month (on top of base seasonality).
+    # These are authored defaults, not data-derived — treat as priors, not facts.
+    "Accessories": {11: 0.05, 12: 0.08, 1: -0.03, 6: 0.03, 9: 0.04},
+    "Apparel": {11: 0.06, 12: 0.06, 1: -0.05, 3: 0.03, 9: 0.04},
+    "Beauty": {11: 0.04, 12: 0.05, 2: 0.03, 5: 0.03, 8: 0.02},
+    "Home": {11: 0.03, 12: 0.07, 1: 0.02, 3: 0.04, 6: 0.02},
+    "B2B SaaS": {1: 0.05, 2: 0.04, 9: 0.04, 10: 0.03, 11: -0.03, 12: -0.07},
+    "Automotive": {3: 0.05, 4: 0.04, 9: 0.05, 10: 0.04, 12: -0.03},
+    "Travel": {1: 0.06, 6: 0.08, 7: 0.10, 12: 0.05, 9: 0.05},
+    "Food & Beverage": {11: 0.04, 12: 0.06, 4: 0.03, 5: 0.02, 8: 0.03},
+    "Health": {1: 0.06, 2: 0.04, 9: 0.03, 5: 0.02, 11: 0.02},
+    "Finance": {6: 0.08, 7: 0.04, 8: 0.06, 1: 0.03, 2: 0.02},
+    "Other": {},
+}
+
+
+def apply_industry_bias(
+    seasonality: dict,
+    industry: str,
+    bias_weight: float = 1.0,
+) -> dict:
+    """Apply industry-specific traffic_mod adjustments on top of base seasonality.
+
+    Args:
+        seasonality: Base seasonality dict (month_num → {traffic_mod, ...}).
+        industry: Industry name from INDUSTRY_SEASONALITY_PRIORS keys.
+        bias_weight: 0.0 = no bias, 1.0 = full bias. Blends the adjustment.
+
+    Returns:
+        New seasonality dict with industry adjustments blended in.
+    """
+    priors = INDUSTRY_SEASONALITY_PRIORS.get(industry, {})
+    if not priors or bias_weight <= 0.0:
+        return seasonality
+
+    result = {}
+    for month, entry in seasonality.items():
+        adj = priors.get(month, 0.0) * bias_weight
+        result[month] = dict(entry, traffic_mod=round(entry.get("traffic_mod", 0.0) + adj, 4))
+    return result
 
 
 def build_campaign_list(campaign_text: str) -> list[dict]:

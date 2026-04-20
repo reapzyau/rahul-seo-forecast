@@ -1,30 +1,40 @@
 import os
-import streamlit as st
+
 import pandas as pd
+import streamlit as st
 
-from engine.assumptions import initialise_assumptions, get_assumption, get_provenance
-from engine.new_content_engine import run_new_content_forecast
-from engine.revenue_engine import add_revenue, keyword_revenue_table, CURRENCY_SYMBOLS
-from utils.data_loader import load_keywords
-from utils.chart_builder import (
-    traffic_projection_chart,
-    keyword_schedule_chart,
-    scenario_comparison_chart,
-    revenue_projection_chart,
+from engine.ai_engine import (
+    check_cannibalization,
+    cluster_keywords,
+    generate_content_roadmap,
+    get_bifrost_client,
+    get_default_model,
 )
-from utils.export import to_csv, to_html_report, keyword_template_csv
-from engine.constants import TIER_COLORS, SITE_PRESETS, CTR_MODELS, FORECAST_SCENARIOS
-from engine.ai_engine import get_bifrost_client, cluster_keywords, check_cannibalization, generate_content_roadmap
-from utils.sidebar import render_ai_settings
+from engine.assumptions import get_assumption, get_provenance
+from engine.constants import CTR_MODELS, FORECAST_SCENARIOS, SITE_PRESETS, TIER_COLORS
+from engine.new_content_engine import run_new_content_forecast
+from engine.revenue_engine import CURRENCY_SYMBOLS, add_revenue, keyword_revenue_table
+from utils.chart_builder import (
+    keyword_schedule_chart,
+    revenue_projection_chart,
+    scenario_comparison_chart,
+    traffic_projection_chart,
+)
+from utils.data_loader import load_keywords
+from utils.export import keyword_template_csv, to_csv, to_html_report
+from utils.page_base import setup_page
+from utils.session import (
+    BIFROST_API_KEY,
+    BIFROST_MODEL,
+    NC_RESULT,
+    ROADMAP_CONTENT_PLAN,
+)
 
-st.header("New Content Forecast")
-st.caption("Project traffic from new content targeting keywords you don't yet rank for.")
-
-render_ai_settings()
-
-# ── Assumptions store (read-only on this page) ────────────────────────────────
-_nc_store = st.session_state.setdefault("assumptions", {})
-initialise_assumptions(_nc_store)
+_nc_store = setup_page(
+    "New Content Forecast",
+    "Project traffic from new content targeting keywords you don't yet rank for.",
+    show_assumptions_banner=False,
+)
 
 # ── Sidebar ──────────────────────────────────────────────────────────────────
 st.sidebar.header("Keyword Forecast Settings")
@@ -159,6 +169,10 @@ if df is not None:
 
 # ── Run Forecast ─────────────────────────────────────────────────────────────
 if df is not None:
+    _roadmap_plan = st.session_state.get(ROADMAP_CONTENT_PLAN) or None
+    if _roadmap_plan:
+        st.info(f"Roadmap content plan active: {len(_roadmap_plan)} URL(s) will drive publish-month assignment.")
+
     if st.button("Generate Forecast", type="primary", key="kw_run"):
         with st.spinner("Running keyword forecast..."):
             keyword_df, monthly_df = run_new_content_forecast(
@@ -167,6 +181,7 @@ if df is not None:
                 traffic_multiplier=traffic_multiplier,
                 include_informational=not exclude_informational,
                 ai_overview_ctr_penalty=informational_ctr_penalty,
+                roadmap_content_plan=_roadmap_plan,
             )
 
             # Run scenarios if enabled
@@ -177,8 +192,8 @@ if df is not None:
                         df, da, c, months, seed,
                         ctr_model=ctr_model,
                         traffic_multiplier=traffic_multiplier,
-                        exclude_informational=exclude_informational,
-                        informational_ctr_penalty=informational_ctr_penalty,
+                        include_informational=not exclude_informational,
+                        ai_overview_ctr_penalty=informational_ctr_penalty,
                     )
                     scenarios[c] = s_monthly
 
@@ -189,7 +204,7 @@ if df is not None:
             else:
                 rev_table = None
 
-            st.session_state["kw_results"] = {
+            st.session_state[NC_RESULT] = {
                 "keyword_df": keyword_df,
                 "monthly_df": monthly_df,
                 "scenarios": scenarios,
@@ -207,8 +222,8 @@ if df is not None:
             }
 
 # ── Results ──────────────────────────────────────────────────────────────────
-if "kw_results" in st.session_state:
-    r = st.session_state["kw_results"]
+if NC_RESULT in st.session_state:
+    r = st.session_state[NC_RESULT]
     keyword_df = r["keyword_df"]
     monthly_df = r["monthly_df"]
 
@@ -338,8 +353,8 @@ if "kw_results" in st.session_state:
     with tabs[tab_idx]:
         tab_idx += 1
 
-        client = get_bifrost_client(st.session_state.get("bifrost_api_key"))
-        ai_model = st.session_state.get("bifrost_model", "openai/gpt-4o-mini")
+        client = get_bifrost_client(st.session_state.get(BIFROST_API_KEY))
+        ai_model = st.session_state.get(BIFROST_MODEL, get_default_model())
 
         if client is None:
             st.info("Set your Bi Frost API key in the sidebar (AI Settings) to enable AI-powered insights.")

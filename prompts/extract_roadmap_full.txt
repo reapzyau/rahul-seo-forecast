@@ -1,0 +1,74 @@
+[meta] version: 2026-04-20
+[meta] last_tested_on: anthropic/claude-sonnet-4-6
+[meta] output_format: JSON matching v2.0 bundle schema (inline schema in user template); used for unknown-format files only
+[meta] notes: temperature 0.3, max_tokens 6000; Sonnet default (roadmap_extraction feature)
+
+You are an SEO operations analyst. Extract structured roadmap data from a file that did not match any known format. Your extraction must match the v2 bundle schema exactly. Return valid JSON only — no markdown fences, no text outside the JSON.
+
+Focus taxonomy (map ALL tasks into exactly one of these seven):
+- content: article production, content calendars, copywriting, blog posts
+- technical: audits, Core Web Vitals, site speed, crawl error remediation, schema
+- on_page: page optimisation, internal linking, metadata, title tags, on-page copy
+- off_page: link building, digital PR, outreach, guest posts, link reclamation
+- local: GMB optimisation, local citations, local landing pages
+- analytics: reporting, tracking, GA4/GSC dashboards, data analysis
+- strategy: planning, review meetings, roadmap work, competitor analysis
+
+Effort classification (monthly-equivalent hours per focus):
+- light: ≤ 8 hours/month
+- moderate: 9–20 hours/month
+- aggressive: > 20 hours/month
+
+Occurrence → monthly-equivalent conversion:
+- Monthly: 1.0× hours
+- Bi-Monthly: 0.5×
+- Quarterly: 0.33×
+- Bi-Annual: 0.167×
+- Annual / One-Off: 0.083×
+
+All seven focus area keys must appear in per_focus even if empty (monthly_hours = 0.0, task_count = 0).
+---
+Raw roadmap content:
+$roadmap_content
+
+$correction_context
+
+Return JSON matching this schema:
+{
+  "schema_version": "2.0",
+  "format_detected": "unknown",
+  "extraction_method": "ai",
+  "source_summary": {
+    "total_tasks_detected": 0,
+    "focus_areas_detected": [],
+    "timeline_months_covered": 12,
+    "parsing_confidence": 0.75
+  },
+  "client_metadata": {
+    "client_name": "",
+    "industry": "Unknown",
+    "retainer_aud_monthly": 0.0,
+    "project_start_date": null,
+    "cms": ""
+  },
+  "per_focus": {
+    "content": {"effort_level": "moderate", "monthly_hours": 0.0, "cadence": 0, "task_count": 0, "tasks": []},
+    "technical": {"effort_level": "moderate", "monthly_hours": 0.0, "cadence": 0, "task_count": 0, "tasks": []},
+    "on_page": {"effort_level": "moderate", "monthly_hours": 0.0, "cadence": 0, "task_count": 0, "tasks": []},
+    "off_page": {"effort_level": "moderate", "monthly_hours": 0.0, "cadence": 0, "task_count": 0, "tasks": []},
+    "local": {"effort_level": "moderate", "monthly_hours": 0.0, "cadence": 0, "task_count": 0, "tasks": []},
+    "analytics": {"effort_level": "moderate", "monthly_hours": 0.0, "cadence": 0, "task_count": 0, "tasks": []},
+    "strategy": {"effort_level": "moderate", "monthly_hours": 0.0, "cadence": 0, "task_count": 0, "tasks": []}
+  },
+  "content_plan": [],
+  "timeline": {"months_covered": 12, "phasing_notes": "", "has_launch_dates": false, "strategy_restart_month": null},
+  "global_rollup": {
+    "total_monthly_hours": 0.0,
+    "effort_level": "moderate",
+    "maintenance_coverage": 0.0,
+    "content_cadence": 0,
+    "positional_effort_level": "moderate"
+  },
+  "recommendations": [],
+  "gaps": []
+}
