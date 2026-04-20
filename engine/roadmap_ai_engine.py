@@ -78,16 +78,52 @@ def _cache_key(raw_bytes: bytes, nl_correction: str | None, model: str) -> str:
     return h.hexdigest()[:16]
 
 
+_SKIP_SHEET_PATTERNS = ("menu", "stephs sheet")
+
+
 def _read_roadmap_file(raw_bytes: bytes, file_extension: str) -> pd.DataFrame:
-    """Parse roadmap file bytes into a DataFrame."""
+    """Parse roadmap file bytes into a DataFrame.
+
+    For multi-sheet xlsx files, concatenates all non-menu sheets with a
+    __sheet__ marker column so the AI sees the full roadmap structure.
+    header=None is used so rows containing labels like "Client Name" are kept.
+    """
     buf = io.BytesIO(raw_bytes)
     ext = file_extension.lower().lstrip(".")
 
     if ext in ("xlsx", "xls"):
         try:
-            df = pd.read_excel(buf, engine="openpyxl")
+            xl = pd.ExcelFile(buf, engine="openpyxl")
         except Exception as exc:
             raise ValueError(f"Cannot read Excel file: {exc}") from exc
+
+        sheets_to_read = [
+            s for s in xl.sheet_names
+            if not any(p in s.lower() for p in _SKIP_SHEET_PATTERNS)
+        ]
+
+        frames = []
+        for sheet in sheets_to_read:
+            try:
+                sdf = xl.parse(sheet, header=None)
+            except Exception:
+                continue
+            if sdf.empty:
+                continue
+            sdf.insert(0, "__sheet__", sheet)
+            frames.append(sdf)
+
+        if not frames:
+            raise ValueError("No usable sheets found in workbook")
+
+        max_cols = max(f.shape[1] for f in frames)
+        aligned = []
+        for f in frames:
+            for i in range(f.shape[1], max_cols):
+                f[i] = None
+            aligned.append(f)
+        df = pd.concat(aligned, ignore_index=True)
+
     elif ext == "tsv":
         try:
             df = pd.read_csv(buf, sep="\t")
@@ -109,16 +145,34 @@ def _read_roadmap_file(raw_bytes: bytes, file_extension: str) -> pd.DataFrame:
     return df
 
 
-def _df_to_markdown(df: pd.DataFrame, max_chars: int = 4000) -> tuple[str, bool]:
-    """Convert DataFrame to a compact markdown table, truncated to max_chars."""
-    cols = list(df.columns)
-    header = "| " + " | ".join(str(c) for c in cols) + " |"
-    sep = "| " + " | ".join("---" for _ in cols) + " |"
-    rows_md = [
-        "| " + " | ".join(str(v) for v in row.values) + " |"
-        for _, row in df.iterrows()
-    ]
-    full = "\n".join([header, sep] + rows_md)
+def _df_to_markdown(df: pd.DataFrame, max_chars: int = 12000) -> tuple[str, bool]:
+    """Convert DataFrame to a compact markdown representation, truncated to max_chars.
+
+    Drops fully-empty rows and columns. When a __sheet__ marker column is present
+    (added by _read_roadmap_file for multi-sheet xlsx), groups output by sheet.
+    """
+    df = df.dropna(how="all", axis=0)
+    if len(df) > 0:
+        df = df.dropna(how="all", axis=1)
+
+    lines: list[str] = []
+    if "__sheet__" in df.columns:
+        for sheet, group in df.groupby("__sheet__", sort=False):
+            g = group.drop(columns=["__sheet__"]).dropna(how="all", axis=1)
+            lines.append(f"\n## Sheet: {sheet}\n")
+            for _, row in g.iterrows():
+                vals = [str(v).strip() for v in row.values if pd.notna(v) and str(v).strip()]
+                if vals:
+                    lines.append(" | ".join(vals))
+    else:
+        cols = list(df.columns)
+        lines.append("| " + " | ".join(str(c) for c in cols) + " |")
+        lines.append("| " + " | ".join("---" for _ in cols) + " |")
+        for _, row in df.iterrows():
+            vals = [str(v) if pd.notna(v) else "" for v in row.values]
+            lines.append("| " + " | ".join(vals) + " |")
+
+    full = "\n".join(lines)
     if len(full) <= max_chars:
         return full, False
     return full[:max_chars] + "\n... [truncated]", True
@@ -156,7 +210,7 @@ def extract_roadmap_with_ai(
         return cache[key]["bundle"], cache[key]["model"]
 
     df = _read_roadmap_file(raw_roadmap_bytes, file_extension)
-    roadmap_md, truncated = _df_to_markdown(df, max_chars=4000)
+    roadmap_md, truncated = _df_to_markdown(df, max_chars=12000)
 
     system, user_tmpl = _load_prompt("extract_roadmap")
     schema_str = json.dumps(ROADMAP_BUNDLE_SCHEMA, indent=2)
@@ -194,6 +248,144 @@ def extract_roadmap_with_ai(
     if cache is not None:
         cache[key] = {"bundle": bundle, "model": used_model}
 
+    return bundle, used_model
+
+
+MAX_ENRICHMENT_INPUT_CHARS = 4000
+MAX_EXTRACTION_INPUT_CHARS = 12000
+
+
+def compute_cache_key(raw_bytes: bytes, nl_correction: str | None, model: str) -> str:
+    """Public alias for _cache_key — pages use this to check before calling load_roadmap_v2."""
+    return _cache_key(raw_bytes, nl_correction, model)
+
+
+def _bundle_summary_for_enrichment(bundle: dict) -> str:
+    """Compact text summary of a parsed bundle for the enrichment prompt."""
+    parts = [
+        f"Format: {bundle.get('format_detected', 'unknown')}",
+        f"Timeline: {bundle.get('timeline', {})}",
+        "Per-focus:",
+    ]
+    for focus, data in bundle.get("per_focus", {}).items():
+        parts.append(
+            f"  {focus}: {data.get('monthly_hours', 0):.1f} h/mo, "
+            f"{data.get('effort_level', '?')}, {data.get('task_count', 0)} tasks"
+        )
+    cp = bundle.get("content_plan", [])
+    if cp:
+        parts.append(f"Content plan: {len(cp)} launches, sample: {cp[:3]}")
+    return "\n".join(parts)[:MAX_ENRICHMENT_INPUT_CHARS]
+
+
+def _extract_raw_task_text(bundle: dict) -> str:
+    """Flat text list of all per-focus tasks for the enrichment prompt."""
+    lines = []
+    for focus, data in bundle.get("per_focus", {}).items():
+        for task in data.get("tasks", []):
+            lines.append(f"[{focus}] {task.get('name', '?')}: {task.get('description', '')}")
+    return "\n".join(lines)[:MAX_ENRICHMENT_INPUT_CHARS]
+
+
+def _reclassify_task(bundle: dict, task_name: str, from_focus: str, to_focus: str) -> None:
+    """Move a task from one focus to another, re-summing hours."""
+    per_focus = bundle.get("per_focus", {})
+    src = per_focus.get(from_focus, {})
+    dst = per_focus.get(to_focus, {})
+    if not src or not dst:
+        return
+    src_tasks = src.get("tasks", [])
+    matched = [t for t in src_tasks if t.get("name") == task_name]
+    if not matched:
+        return
+    task = matched[0]
+    task_hours = float(task.get("hours", 0) or 0)
+    src["tasks"] = [t for t in src_tasks if t.get("name") != task_name]
+    src["monthly_hours"] = max(0.0, src.get("monthly_hours", 0) - task_hours)
+    src["task_count"] = len(src["tasks"])
+    dst.setdefault("tasks", []).append(task)
+    dst["monthly_hours"] = dst.get("monthly_hours", 0) + task_hours
+    dst["task_count"] = len(dst["tasks"])
+
+
+def enrich_bundle_with_ai(
+    client,
+    bundle: dict,
+    model: str = "openai/gpt-4o-mini",
+) -> tuple[dict, str]:
+    """Add recommendations, gaps, and focus corrections to a deterministic bundle.
+
+    Does NOT modify per_focus hours, content_plan, or client_metadata.
+    Returns (enriched_bundle, used_model). When client is None, returns bundle unchanged.
+    """
+    if client is None:
+        return bundle, "no-client"
+
+    system, user_tmpl = _load_prompt("enrich_roadmap")
+    user_input = user_tmpl.substitute(
+        bundle_summary=_bundle_summary_for_enrichment(bundle),
+        raw_task_text=_extract_raw_task_text(bundle),
+    )
+    text, used_model = generate_with_fallback(
+        client, model, system, user_input, temperature=0.2,
+    )
+    enrichment = _parse_llm_json(text)
+
+    bundle["recommendations"] = enrichment.get("recommendations", [])
+    bundle["gaps"] = enrichment.get("gaps", [])
+
+    for correction in enrichment.get("focus_corrections", []):
+        task_name = correction.get("task_name")
+        from_focus = correction.get("from_focus")
+        to_focus = correction.get("to_focus")
+        if task_name and from_focus and to_focus:
+            _reclassify_task(bundle, task_name, from_focus, to_focus)
+
+    return bundle, used_model
+
+
+def extract_roadmap_full_ai(
+    client,
+    raw_bytes: bytes,
+    file_extension: str,
+    nl_correction: str | None = None,
+    previous_bundle: dict | None = None,
+    model: str = "openai/gpt-4o-mini",
+) -> tuple[dict, str]:
+    """Full AI extraction for unknown-format roadmaps.
+
+    Unlike extract_roadmap_with_ai (which uses the v1 schema prompt), this uses
+    the v2 bundle schema prompt and is the preferred path for unknown formats.
+    """
+    if client is None:
+        raise ValueError("AI client required for unknown-format roadmap extraction")
+
+    try:
+        df = _read_roadmap_file(raw_bytes, file_extension)
+    except Exception as exc:
+        raise ValueError(f"Could not read file: {exc}") from exc
+
+    roadmap_content = _df_to_markdown(df, max_chars=MAX_EXTRACTION_INPUT_CHARS)[0]
+
+    correction_ctx = ""
+    if nl_correction and previous_bundle:
+        correction_ctx = (
+            f'User correction to previous extraction:\n"{nl_correction}"\n\n'
+            f"Previous extraction:\n{json.dumps(previous_bundle, indent=2)[:2000]}"
+        )
+    elif nl_correction:
+        correction_ctx = f'User correction:\n"{nl_correction}"'
+
+    system, user_tmpl = _load_prompt("extract_roadmap_full")
+    user_input = user_tmpl.substitute(
+        roadmap_content=roadmap_content,
+        correction_context=correction_ctx,
+    )
+    text, used_model = generate_with_fallback(
+        client, model, system, user_input, temperature=0.3, max_tokens=6000,
+    )
+    bundle = _parse_llm_json(text)
+    bundle["extraction_date"] = datetime.now(timezone.utc).isoformat()
     return bundle, used_model
 
 
@@ -235,24 +427,31 @@ def load_roadmap_v2(
 
     if fmt == "pattern_native":
         bundle = parse_pattern_native(raw_bytes)
+        if client is not None:
+            bundle, used_model = enrich_bundle_with_ai(client, bundle, model=model)
+            return bundle, used_model
         return bundle, "deterministic"
 
     if fmt == "task_table":
         df = pd.read_csv(io.BytesIO(raw_bytes)) if ext == "csv" else pd.read_excel(io.BytesIO(raw_bytes))
         legacy = parse_task_table(df)
-        return wrap_legacy_task_table_as_bundle(legacy), "deterministic"
+        bundle = wrap_legacy_task_table_as_bundle(legacy)
+        if client is not None:
+            bundle, used_model = enrich_bundle_with_ai(client, bundle, model=model)
+            return bundle, used_model
+        return bundle, "deterministic"
 
     if fmt == "param_table":
         df = pd.read_csv(io.BytesIO(raw_bytes)) if ext == "csv" else pd.read_excel(io.BytesIO(raw_bytes))
         legacy = parse_param_table(df)
         return wrap_legacy_param_table_as_bundle(legacy), "deterministic"
 
-    # Unknown format — fall back to AI extraction
+    # Unknown format — use full AI extraction (v2 schema)
     if client is not None:
-        return extract_roadmap_with_ai(
+        return extract_roadmap_full_ai(
             client, raw_bytes, ext,
             nl_correction=nl_correction,
-            previous_extraction=previous_bundle,
+            previous_bundle=previous_bundle,
             model=model,
         )
 

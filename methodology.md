@@ -515,13 +515,31 @@ All forecast parameters are tracked in a centralised assumptions store (`engine/
 | `positional_effort_level` | moderate | Computed rollup: max(on_page, off_page effort) |
 | `timeline_months_covered` | 12 | AI roadmap extraction |
 
-### AI Roadmap Ingestion
+### Roadmap Ingestion (v2)
 
-Upload a roadmap CSV or XLSX on the **Data Upload → Roadmap** tab. With Bi Frost API access, the file is sent to an LLM that extracts a rich per-focus-area bundle.
+Upload a roadmap CSV or XLSX on the **Data Upload → Roadmap** tab. The entry point is `engine.roadmap_ai_engine.load_roadmap_v2()` which dispatches based on format detection.
+
+#### Format detection
+
+| Format | Detection rule | Parser |
+|--------|---------------|--------|
+| `pattern_native` | XLSX with "Breakdown" sheet + ≥3 of the expected Pattern SOW sheets | `engine.roadmap_native_parser.parse_pattern_native()` — deterministic |
+| `task_table` | CSV/XLSX with Task, Focus, Occurrence, Hours columns | Legacy `parse_task_table()`, wrapped as v2 bundle |
+| `param_table` | CSV/XLSX with cadence, effort_level, maintenance_coverage columns | Legacy `parse_param_table()`, wrapped as v2 bundle |
+| `unknown` | Everything else | Full AI extraction via `extract_roadmap_full_ai()` |
+
+Deterministic bundles (pattern_native, task_table) are then enriched with AI recommendations and gap detection when a Bi Frost client is available.
+
+#### Content plan → New Content engine
+
+The `content_plan` array from a v2 bundle is stored in `st.session_state["roadmap_content_plan"]`. When a user runs the New Content Forecast, this plan is passed to `run_new_content_forecast(roadmap_content_plan=...)`. Keywords are matched to plan URLs by substring (`keyword.lower() in url.lower()`):
+- Matched keywords use the plan's `publish_month` instead of cadence-based assignment.
+- Optimisation-type URLs use a faster S-curve (`t_mid=1.5`, amplitude capped at 0.3).
+- Unmatched keywords fall back to standard cadence assignment.
 
 #### Per-focus breakdown
 
-The AI classifies every roadmap task into one of seven focus areas (Content, Technical, On-Page, Off-Page, Local, Analytics, Strategy) and computes monthly-equivalent hours using the occurrence conversion table:
+The AI (or deterministic parser) classifies every roadmap task into one of seven focus areas (Content, Technical, On-Page, Off-Page, Local, Analytics, Strategy) and computes monthly-equivalent hours using the occurrence conversion table:
 
 | Occurrence | Monthly equivalent |
 |---|---|

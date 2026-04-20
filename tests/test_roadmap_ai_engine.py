@@ -319,3 +319,166 @@ class TestEstimateTokens:
         t1 = estimate_extraction_tokens("short")
         t2 = estimate_extraction_tokens("x" * 4000)
         assert t2 > t1
+
+
+# ── TestEnrichBundleWithAi ────────────────────────────────────────────────────
+
+
+def _make_enrichment_client(enrichment: dict):
+    """Fake client that returns canned enrichment JSON."""
+    import json
+
+    class _FakeCompletion:
+        class _Choice:
+            class _Message:
+                content = json.dumps(enrichment)
+            message = _Message()
+        choices = [_Choice()]
+
+    class _FakeClient:
+        class chat:
+            class completions:
+                @staticmethod
+                def create(**_):
+                    return _FakeCompletion()
+
+    return _FakeClient()
+
+
+_CANNED_ENRICHMENT = {
+    "recommendations": [
+        {"severity": "warning", "focus_area": "off_page", "message": "No link-building tasks detected."}
+    ],
+    "gaps": [
+        {"focus_area": "off_page", "note": "Zero hours allocated."}
+    ],
+    "focus_corrections": [],
+    "effort_verification": [
+        {"focus": "content", "claimed": "aggressive", "verified": "aggressive", "note": ""}
+    ],
+}
+
+
+class TestEnrichBundleWithAi:
+    def _base_bundle(self) -> dict:
+        import copy
+        return copy.deepcopy(_CANNED_BUNDLE)
+
+    def test_enrich_adds_recommendations_and_gaps(self):
+        from engine.roadmap_ai_engine import enrich_bundle_with_ai
+        client = _make_enrichment_client(_CANNED_ENRICHMENT)
+        bundle, used_model = enrich_bundle_with_ai(client, self._base_bundle())
+        assert len(bundle["recommendations"]) >= 1
+        assert len(bundle["gaps"]) >= 1
+        assert isinstance(used_model, str)
+
+    def test_enrich_does_not_modify_per_focus_hours(self):
+        from engine.roadmap_ai_engine import enrich_bundle_with_ai
+        client = _make_enrichment_client(_CANNED_ENRICHMENT)
+        bundle = self._base_bundle()
+        original_hours = bundle["per_focus"]["content"]["monthly_hours"]
+        enrich_bundle_with_ai(client, bundle)
+        assert bundle["per_focus"]["content"]["monthly_hours"] == original_hours
+
+    def test_enrich_skips_when_client_none(self):
+        from engine.roadmap_ai_engine import enrich_bundle_with_ai
+        bundle = self._base_bundle()
+        bundle["recommendations"] = []
+        result, model = enrich_bundle_with_ai(None, bundle)
+        assert result["recommendations"] == []  # unchanged
+        assert model == "no-client"
+
+    def test_focus_correction_moves_task(self):
+        from engine.roadmap_ai_engine import _reclassify_task
+        bundle = {
+            "per_focus": {
+                "strategy": {
+                    "monthly_hours": 5.0,
+                    "task_count": 1,
+                    "tasks": [{"name": "Monthly Report", "hours": 3}],
+                },
+                "analytics": {
+                    "monthly_hours": 2.0,
+                    "task_count": 0,
+                    "tasks": [],
+                },
+            }
+        }
+        _reclassify_task(bundle, "Monthly Report", "strategy", "analytics")
+        assert bundle["per_focus"]["strategy"]["task_count"] == 0
+        assert bundle["per_focus"]["strategy"]["monthly_hours"] == pytest.approx(2.0)
+        assert bundle["per_focus"]["analytics"]["task_count"] == 1
+        assert bundle["per_focus"]["analytics"]["monthly_hours"] == pytest.approx(5.0)
+
+    def test_focus_correction_noop_on_missing_task(self):
+        from engine.roadmap_ai_engine import _reclassify_task
+        bundle = {
+            "per_focus": {
+                "strategy": {"monthly_hours": 5.0, "task_count": 1, "tasks": [{"name": "Other Task", "hours": 3}]},
+                "analytics": {"monthly_hours": 0.0, "task_count": 0, "tasks": []},
+            }
+        }
+        _reclassify_task(bundle, "Non-existent Task", "strategy", "analytics")
+        assert bundle["per_focus"]["strategy"]["task_count"] == 1  # unchanged
+
+
+class TestLoadRoadmapV2WithEnrichment:
+    def test_load_roadmap_v2_calls_enrichment_when_client_provided(self):
+        from engine.roadmap_ai_engine import load_roadmap_v2
+        client = _make_enrichment_client(_CANNED_ENRICHMENT)
+        raw = _make_csv_bytes()
+        bundle, used_model = load_roadmap_v2(client, raw, "roadmap.csv")
+        # task_table format → deterministic parse + enrichment
+        assert "recommendations" in bundle
+        assert used_model != "deterministic"  # enrichment model was used
+
+    def test_load_roadmap_v2_skips_enrichment_when_client_none(self):
+        from engine.roadmap_ai_engine import load_roadmap_v2
+        raw = _make_csv_bytes()
+        bundle, used_model = load_roadmap_v2(None, raw, "roadmap.csv")
+        assert used_model == "deterministic"
+
+    def test_load_roadmap_v2_raises_clearly_on_unknown_without_client(self):
+        from engine.roadmap_ai_engine import load_roadmap_v2
+        raw = b"col1,col2\nvalue1,value2\n"  # doesn't match any known format
+        with pytest.raises(NotImplementedError, match="Unknown roadmap format"):
+            load_roadmap_v2(None, raw, "mystery.csv")
+
+    def test_full_ai_extraction_uses_correction_context(self):
+        from engine.roadmap_ai_engine import extract_roadmap_full_ai
+        captured = {}
+
+        class _CapturingClient:
+            class chat:
+                class completions:
+                    @staticmethod
+                    def create(**kwargs):
+                        captured["messages"] = kwargs.get("messages", [])
+
+                        class _R:
+                            class _C:
+                                class _M:
+                                    content = json.dumps({
+                                        "schema_version": "2.0",
+                                        "per_focus": {
+                                            k: {"effort_level": "moderate", "monthly_hours": 0.0, "cadence": 0, "task_count": 0, "tasks": []}
+                                            for k in ("content", "technical", "on_page", "off_page", "local", "analytics", "strategy")
+                                        },
+                                        "source_summary": {}, "client_metadata": {},
+                                        "content_plan": [], "timeline": {}, "global_rollup": {},
+                                        "recommendations": [], "gaps": [],
+                                    })
+                                message = _M()
+                            choices = [_C()]
+                        return _R()
+
+        raw = _make_csv_bytes()
+        prev = {"schema_version": "2.0", "per_focus": {}}
+        extract_roadmap_full_ai(
+            _CapturingClient(), raw, "csv",
+            nl_correction="Technical audit is quarterly",
+            previous_bundle=prev,
+        )
+        user_msg = captured["messages"][-1]["content"]
+        assert "Technical audit is quarterly" in user_msg
+        assert "Previous extraction" in user_msg
