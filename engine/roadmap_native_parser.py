@@ -312,8 +312,14 @@ def _parse_content_plan(ws) -> list[dict]:
         focus = str(row[4]).strip() if len(row) > 4 and row[4] else ""
         priority = str(row[5]).strip() if len(row) > 5 and row[5] else ""
         content_desc = str(row[6]).strip() if len(row) > 6 and row[6] else ""
-        word_count = int(row[7]) if len(row) > 7 and row[7] else 0
-        seo_hours = float(row[8]) if len(row) > 8 and row[8] else 0.0
+        try:
+            word_count = int(row[7]) if len(row) > 7 and row[7] is not None else 0
+        except (ValueError, TypeError):
+            word_count = 0
+        try:
+            seo_hours = float(row[8]) if len(row) > 8 and row[8] is not None else 0.0
+        except (ValueError, TypeError):
+            seo_hours = 0.0
 
         content_desc_lower = content_desc.lower()
         is_new_page = "new page" in content_desc_lower
@@ -361,12 +367,16 @@ def _parse_task_sheet(ws) -> list[dict]:
         focus_val = row[1] if len(row) > 1 else None
         occ_val = row[2] if len(row) > 2 else None
         hrs_val = row[3] if len(row) > 3 else None
+        try:
+            hours = float(hrs_val) if hrs_val is not None else 0.0
+        except (ValueError, TypeError):
+            hours = 0.0
         tasks.append(
             {
                 "task": str(task_val).strip() if task_val is not None else "",
                 "focus": str(focus_val).strip() if focus_val is not None else "",
                 "occurrence": str(occ_val).strip() if occ_val is not None else "",
-                "hours": float(hrs_val) if hrs_val is not None else 0.0,
+                "hours": hours,
             }
         )
     return tasks

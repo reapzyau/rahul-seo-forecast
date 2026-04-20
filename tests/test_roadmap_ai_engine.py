@@ -274,35 +274,35 @@ class TestFlattening:
     """Test that bundle → assumptions store mapping produces ≥15 keys."""
 
     def test_bundle_flattens_to_assumption_keys(self):
-        from engine.assumptions import _detect_from_roadmap_bundle, initialise_assumptions
+        from engine.assumptions import _detect_from_bundle_v2, initialise_assumptions
 
         store: dict = {}
         initialise_assumptions(store)
-        detected = _detect_from_roadmap_bundle(store, _CANNED_BUNDLE)
+        detected = _detect_from_bundle_v2(store, _CANNED_BUNDLE)
         assert len(detected) >= 15  # 7 effort + 7 hours + 1 timeline
 
     def test_content_effort_detected(self):
-        from engine.assumptions import _detect_from_roadmap_bundle, get_assumption, initialise_assumptions
+        from engine.assumptions import _detect_from_bundle_v2, get_assumption, initialise_assumptions
 
         store: dict = {}
         initialise_assumptions(store)
-        _detect_from_roadmap_bundle(store, _CANNED_BUNDLE)
+        _detect_from_bundle_v2(store, _CANNED_BUNDLE)
         assert get_assumption(store, "content_effort_level") == "aggressive"
 
     def test_monthly_hours_detected(self):
-        from engine.assumptions import _detect_from_roadmap_bundle, get_assumption, initialise_assumptions
+        from engine.assumptions import _detect_from_bundle_v2, get_assumption, initialise_assumptions
 
         store: dict = {}
         initialise_assumptions(store)
-        _detect_from_roadmap_bundle(store, _CANNED_BUNDLE)
+        _detect_from_bundle_v2(store, _CANNED_BUNDLE)
         assert get_assumption(store, "content_monthly_hours") == pytest.approx(32.0)
 
     def test_timeline_detected(self):
-        from engine.assumptions import _detect_from_roadmap_bundle, get_assumption, initialise_assumptions
+        from engine.assumptions import _detect_from_bundle_v2, get_assumption, initialise_assumptions
 
         store: dict = {}
         initialise_assumptions(store)
-        _detect_from_roadmap_bundle(store, _CANNED_BUNDLE)
+        _detect_from_bundle_v2(store, _CANNED_BUNDLE)
         assert get_assumption(store, "timeline_months_covered") == 12
 
 
