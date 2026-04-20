@@ -192,8 +192,8 @@ if df is not None:
                         df, da, c, months, seed,
                         ctr_model=ctr_model,
                         traffic_multiplier=traffic_multiplier,
-                        exclude_informational=exclude_informational,
-                        informational_ctr_penalty=informational_ctr_penalty,
+                        include_informational=not exclude_informational,
+                        ai_overview_ctr_penalty=informational_ctr_penalty,
                     )
                     scenarios[c] = s_monthly
 

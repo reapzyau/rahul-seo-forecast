@@ -1,5 +1,6 @@
 import streamlit as st
 
+from engine.aio_risk_engine import INTENT_AIO_CTR_PENALTY
 from engine.assumptions import get_assumption, get_provenance
 from engine.constants import CTR_MODELS, FORECAST_SCENARIOS, TIER_COLORS
 from engine.positional_engine import (
@@ -85,6 +86,7 @@ aio_penalty = st.sidebar.slider(
     key="pos_aio_penalty",
     help="Estimated CTR reduction for keywords affected by AI Overviews.",
 )
+aio_intent_penalties = {**INTENT_AIO_CTR_PENALTY, "informational": aio_penalty / 100}
 
 st.sidebar.divider()
 st.sidebar.subheader("Monte Carlo Settings")
@@ -151,6 +153,7 @@ if st.button("Generate Forecast", type="primary", key="pos_run"):
             traffic_multiplier=traffic_multiplier,
             use_attention_curve=use_attention_curve,
             historical_movement_stats=movement_stats or None,
+            aio_intent_penalties=aio_intent_penalties,
             seed=42,
         )
 
