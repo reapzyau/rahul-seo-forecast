@@ -1271,11 +1271,11 @@ class TestIntentWeightedRevenue:
         assert len(table) == 4  # one row per intent in INTENT_CVR_MULTIPLIERS
 
 
-# ── Movement Learning (Task 5) ────────────────────────────────────────────
+# ── Movement Learning ────────────────────────────────────────────────────────
 
 
 class TestMovementLearning:
-    def test_learn_movement_produces_means(self):
+    def test_learn_movement_returns_per_tier_stats(self):
         from engine.positional_engine import learn_movement_from_history
         df = pd.DataFrame({
             "keyword": [f"kw_{i}" for i in range(40)],
@@ -1288,27 +1288,22 @@ class TestMovementLearning:
         assert abs(stats["Easy"]["mean_gain"] - 5.0) < 0.01
         assert stats["Easy"]["sample_size"] == 20
 
-    def test_outlier_filter_removes_large_movements(self):
+    def test_learn_movement_filters_outliers(self):
         from engine.positional_engine import learn_movement_from_history
+        # Row 0: previous=70, position=20 → delta=50 (>30, outlier, excluded)
+        # Rows 1-14: previous=15, position=10 → delta=5 (valid)
         df = pd.DataFrame({
             "keyword": [f"kw_{i}" for i in range(15)],
             "kd": [20] * 15,
-            "previous_position": [50] + [15] * 14,
-            "position": [10] + [10] * 14,  # First row: gain=40 (outlier)
+            "previous_position": [70] + [15] * 14,
+            "position": [20] + [10] * 14,
         })
         stats = learn_movement_from_history(df)
-        # Easy tier; outlier (gain=40) should be filtered, only 14 samples remain
+        # Only 14 valid samples; the 50-position jump is excluded
         assert stats["Easy"]["sample_size"] == 14
         assert abs(stats["Easy"]["mean_gain"] - 5.0) < 0.01
 
-    def test_missing_previous_position_returns_empty(self):
-        from engine.positional_engine import learn_movement_from_history
-        df = pd.DataFrame({
-            "keyword": ["kw1"], "kd": [20], "position": [10],
-        })
-        assert learn_movement_from_history(df) == {}
-
-    def test_fewer_than_10_samples_excluded(self):
+    def test_learn_movement_skips_small_samples(self):
         from engine.positional_engine import learn_movement_from_history
         df = pd.DataFrame({
             "keyword": [f"kw_{i}" for i in range(8)],
@@ -1317,15 +1312,39 @@ class TestMovementLearning:
             "position": [10] * 8,
         })
         stats = learn_movement_from_history(df)
-        assert "Easy" not in stats  # Only 8 samples < 10 threshold
+        assert "Easy" not in stats  # 8 samples < 10 threshold
 
-    def test_learned_stats_change_target_position(self):
+    def test_learn_movement_missing_column_returns_empty(self):
+        from engine.positional_engine import learn_movement_from_history
+        df = pd.DataFrame({
+            "keyword": ["kw1"], "kd": [20], "position": [10],
+        })
+        assert learn_movement_from_history(df) == {}
+
+    def test_estimate_target_uses_learned_stats_when_available(self):
         from engine.positional_engine import estimate_target_position
         stats_high = {"Easy": {"mean_gain": 10.0, "std_gain": 1.0, "sample_size": 20}}
         stats_low = {"Easy": {"mean_gain": 2.0, "std_gain": 1.0, "sample_size": 20}}
         target_high = estimate_target_position(20, 15, "moderate", stats_high)
         target_low = estimate_target_position(20, 15, "moderate", stats_low)
-        assert target_high < target_low  # Higher gain → lower (better) target position
+        assert target_high < target_low  # Higher learned gain → better (lower) position
+
+    def test_estimate_target_falls_back_when_tier_has_few_samples(self):
+        from engine.positional_engine import estimate_target_position
+        # Easy: 15 samples → use learned (mean=10); Extreme: 2 samples → fall back to default
+        mixed_stats = {
+            "Easy": {"mean_gain": 10.0, "std_gain": 1.0, "sample_size": 15},
+            "Extreme": {"mean_gain": 99.0, "std_gain": 1.0, "sample_size": 2},
+        }
+        # Easy keyword (kd=15): should use learned mean=10, giving a bigger gain
+        target_easy_learned = estimate_target_position(20, 15, "moderate", mixed_stats)
+        target_easy_default = estimate_target_position(20, 15, "moderate", None)
+        assert target_easy_learned < target_easy_default  # learned gain > default → better position
+
+        # Extreme keyword (kd=90): 2 samples < 10, falls back to _BASE_GAIN_BY_TIER
+        target_extreme_mixed = estimate_target_position(20, 90, "moderate", mixed_stats)
+        target_extreme_default = estimate_target_position(20, 90, "moderate", None)
+        assert target_extreme_mixed == target_extreme_default  # fallback produces same result
 
     def test_forecast_with_learned_stats_differs_from_defaults(self):
         from engine.positional_engine import run_positional_forecast_mc
@@ -1346,54 +1365,47 @@ class TestMovementLearning:
             df, months=12, n_trials=200, seed=42,
             historical_movement_stats=big_gain_stats,
         )
-        # With much larger gains, final uplift should differ
         assert monthly_learned.iloc[-1]["uplift_p50"] != monthly_default.iloc[-1]["uplift_p50"]
-
-    def test_fallback_when_sample_size_below_10(self):
-        from engine.positional_engine import estimate_target_position
-        stats_thin = {"Easy": {"mean_gain": 99.0, "std_gain": 1.0, "sample_size": 5}}
-        target_thin = estimate_target_position(20, 15, "moderate", stats_thin)
-        target_default = estimate_target_position(20, 15, "moderate", None)
-        # With <10 samples, falls back to default so targets match
-        assert target_thin == target_default
 
 
 # ── Maturation Curve (Task 4) ─────────────────────────────────────────────
 
 
 class TestMaturationCurve:
-    def test_logistic_at_t_mid(self):
+    def test_logistic_progress_at_midpoint_is_half(self):
         from engine.maturation_curve import logistic_progress
+        # At t == t_mid, sigmoid evaluates to exactly 0.5 regardless of k
+        assert abs(logistic_progress(5.0, 5.0, 1.0) - 0.5) < 0.001
         assert abs(logistic_progress(5.0, 5.0, 1.2) - 0.5) < 0.001
 
-    def test_monotonically_increases(self):
+    def test_logistic_progress_monotonically_increasing(self):
         from engine.maturation_curve import maturation_schedule
         schedule = maturation_schedule("Moderate", 24, 1)
         assert all(schedule[i] <= schedule[i + 1] for i in range(len(schedule) - 1))
 
-    def test_zero_before_publish(self):
+    def test_maturation_schedule_zero_before_publish(self):
         from engine.maturation_curve import maturation_schedule
-        schedule = maturation_schedule("Easy", 12, 4)
-        assert schedule[0] == 0.0
-        assert schedule[1] == 0.0
-        assert schedule[2] == 0.0
+        # publish_month=3: months 1, 2, 3 are 0 (elapsed ≤ 0); month 4 starts accumulating
+        schedule = maturation_schedule("Easy", 12, 3)
+        assert schedule[0] == 0.0  # month 1
+        assert schedule[1] == 0.0  # month 2
+        assert schedule[2] == 0.0  # month 3 (publish month itself: elapsed=0 → 0.0)
+        assert schedule[3] > 0.0   # month 4 (elapsed=1, first post-publish month)
 
-    def test_easy_faster_than_extreme(self):
+    def test_easy_tier_ramps_faster_than_extreme(self):
         from engine.maturation_curve import maturation_schedule
         easy = maturation_schedule("Easy", 12, 1)
         extreme = maturation_schedule("Extreme", 12, 1)
-        assert easy[5] > extreme[5]  # Easy reaches higher progress by month 6
+        assert easy[5] > extreme[5]  # by month 6, Easy is meaningfully ahead of Extreme
 
     def test_80_pct_shape_constraint(self):
-        """Curve should reach ~80% by three-quarters of the way through the ramp."""
-        from engine.maturation_curve import maturation_schedule, tier_maturation_params
-        # For Easy: t_mid=2.5, roughly at month 7 (≈3x t_mid) expect ≥80%
+        """S-curve should reach ~75%+ by three-quarters of the way through the ramp."""
+        from engine.maturation_curve import maturation_schedule
         schedule = maturation_schedule("Easy", 12, 1)
-        # 3 quarters of the ramp: month ~7 from publish_month=1 → index 6
         assert schedule[6] >= 0.75
 
-    def test_new_content_smoother_than_step(self):
-        """S-curve output should not have large month-to-month jumps."""
+    def test_new_content_no_discontinuity(self):
+        """No single-month jump should exceed 50% of that keyword's final traffic."""
         df = pd.DataFrame({
             "keyword": ["kw1"],
             "volume": [5000],
@@ -1401,12 +1413,11 @@ class TestMaturationCurve:
         })
         _, monthly = run_new_content_forecast(df, da=60, cadence=1, months=18, seed=42)
         traffic = monthly["traffic"].values.astype(float)
-        # No jump should exceed 50% of final traffic in a single month
         diffs = [abs(traffic[i] - traffic[i - 1]) for i in range(1, len(traffic))]
         final = max(traffic[-1], 1)
         assert all(d / final < 0.5 for d in diffs)
 
-    def test_positional_bands_still_ordered_with_scurve(self):
+    def test_positional_bands_still_ordered_after_scurve(self):
         from engine.positional_engine import run_positional_forecast_mc
         df = pd.DataFrame({
             "keyword": [f"kw_{i}" for i in range(30)],
