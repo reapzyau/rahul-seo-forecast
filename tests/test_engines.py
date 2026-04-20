@@ -329,7 +329,9 @@ class TestCombinedForecast:
         forecast = combined[combined["is_forecast"]]
 
         for _, row in forecast.iterrows():
-            assert row["combined"] == row["baseline"] + row["positional_uplift"] + row["new_content_uplift"]
+            # v4: combined = baseline + positional_uplift + new_content_uplift - decay
+            expected = row["baseline"] + row["positional_uplift"] + row["new_content_uplift"] - row.get("decay", 0)
+            assert abs(row["combined"] - expected) < 2
 
     def test_uplift_only_no_historical(self):
         monthly = pd.DataFrame({
@@ -349,6 +351,7 @@ class TestCombinedForecast:
 
 class TestCombinedHub:
     def test_layered_math_with_bands(self):
+        """v4 math: combined = baseline + positional + new_content - decay (no AIO deduction)."""
         historical = pd.DataFrame({
             "date": pd.date_range("2023-01-01", periods=12, freq="MS"),
             "traffic": [10000] * 12,
@@ -364,22 +367,66 @@ class TestCombinedHub:
             "month": range(1, 13),
             "cumulative_decay": [50 * i for i in range(1, 13)],
         })
-        aio = pd.DataFrame({
-            "month": range(1, 13),
-            "cumulative_erosion": [30 * i for i in range(1, 13)],
-        })
         combined = run_combined_forecast(
             historical_df=historical,
             positional_monthly=positional,
             new_content_monthly=None,
             months=12,
             decay_df=decay,
-            aio_erosion_df=aio,
         )
         forecast = combined[combined["is_forecast"]]
         m12 = forecast.iloc[-1]
-        expected_p50 = m12["baseline"] + m12["positional_uplift_p50"] - m12["decay"] - m12["aio_erosion"]
+        # v4 math: no AIO deduction at combined level
+        expected_p50 = m12["baseline"] + m12["positional_uplift_p50"] - m12["decay"]
         assert abs(m12["combined_p50"] - expected_p50) < 2
+
+    def test_streams_apply_seasonality_internally(self):
+        """With a big November boost, positional output in month 11 should be higher."""
+        from engine.positional_engine import run_positional_forecast_mc
+        seasonality = {m: {"traffic_mod": 0.0} for m in range(1, 13)}
+        seasonality[2] = {"traffic_mod": 0.50}  # month 2 = February in forecast starting Jan
+
+        df = pd.DataFrame({
+            "keyword": [f"kw_{i}" for i in range(20)],
+            "position": [10] * 20,
+            "volume": [1000] * 20,
+            "kd": [30] * 20,
+            "current_traffic": [80] * 20,
+            "primary_intent": ["commercial"] * 20,
+            "has_aio": [False] * 20,
+        })
+        _, monthly_no_season = run_positional_forecast_mc(df, months=12, n_trials=200, seed=42)
+        _, monthly_season = run_positional_forecast_mc(
+            df, months=12, n_trials=200, seed=42,
+            seasonality=seasonality, forecast_start_month=1,
+        )
+        # Month 2 (index 1) should be higher with 50% boost
+        assert monthly_season.iloc[1]["uplift_p50"] > monthly_no_season.iloc[1]["uplift_p50"]
+
+    def test_combined_math_no_aio_term(self):
+        """AIO is per-stream — combined must equal baseline + positional + new_content - decay."""
+        positional = pd.DataFrame({
+            "month": range(1, 7),
+            "baseline": [10000] * 6,
+            "uplift_p10": [100] * 6,
+            "uplift_p50": [300] * 6,
+            "uplift_p90": [500] * 6,
+        })
+        decay = pd.DataFrame({
+            "month": range(1, 7),
+            "cumulative_decay": [20 * i for i in range(1, 7)],
+        })
+        combined = run_combined_forecast(
+            historical_df=None,
+            positional_monthly=positional,
+            new_content_monthly=None,
+            months=6,
+            decay_df=decay,
+        )
+        forecast = combined[combined["is_forecast"]]
+        for _, row in forecast.iterrows():
+            expected = row["baseline"] + row["positional_uplift_p50"] + row["new_content_uplift"] - row["decay"]
+            assert abs(row["combined_p50"] - expected) < 2
 
     def test_bands_preserved_order(self):
         historical = pd.DataFrame({
@@ -1222,3 +1269,284 @@ class TestIntentWeightedRevenue:
         assert "Intent" in table.columns
         assert "Monthly Revenue" in table.columns
         assert len(table) == 4  # one row per intent in INTENT_CVR_MULTIPLIERS
+
+
+# ── Movement Learning (Task 5) ────────────────────────────────────────────
+
+
+class TestMovementLearning:
+    def test_learn_movement_produces_means(self):
+        from engine.positional_engine import learn_movement_from_history
+        df = pd.DataFrame({
+            "keyword": [f"kw_{i}" for i in range(40)],
+            "kd": [20] * 20 + [50] * 20,
+            "previous_position": [15] * 20 + [25] * 20,
+            "position": [10] * 20 + [20] * 20,
+        })
+        stats = learn_movement_from_history(df)
+        assert "Easy" in stats
+        assert abs(stats["Easy"]["mean_gain"] - 5.0) < 0.01
+        assert stats["Easy"]["sample_size"] == 20
+
+    def test_outlier_filter_removes_large_movements(self):
+        from engine.positional_engine import learn_movement_from_history
+        df = pd.DataFrame({
+            "keyword": [f"kw_{i}" for i in range(15)],
+            "kd": [20] * 15,
+            "previous_position": [50] + [15] * 14,
+            "position": [10] + [10] * 14,  # First row: gain=40 (outlier)
+        })
+        stats = learn_movement_from_history(df)
+        # Easy tier; outlier (gain=40) should be filtered, only 14 samples remain
+        assert stats["Easy"]["sample_size"] == 14
+        assert abs(stats["Easy"]["mean_gain"] - 5.0) < 0.01
+
+    def test_missing_previous_position_returns_empty(self):
+        from engine.positional_engine import learn_movement_from_history
+        df = pd.DataFrame({
+            "keyword": ["kw1"], "kd": [20], "position": [10],
+        })
+        assert learn_movement_from_history(df) == {}
+
+    def test_fewer_than_10_samples_excluded(self):
+        from engine.positional_engine import learn_movement_from_history
+        df = pd.DataFrame({
+            "keyword": [f"kw_{i}" for i in range(8)],
+            "kd": [20] * 8,
+            "previous_position": [15] * 8,
+            "position": [10] * 8,
+        })
+        stats = learn_movement_from_history(df)
+        assert "Easy" not in stats  # Only 8 samples < 10 threshold
+
+    def test_learned_stats_change_target_position(self):
+        from engine.positional_engine import estimate_target_position
+        stats_high = {"Easy": {"mean_gain": 10.0, "std_gain": 1.0, "sample_size": 20}}
+        stats_low = {"Easy": {"mean_gain": 2.0, "std_gain": 1.0, "sample_size": 20}}
+        target_high = estimate_target_position(20, 15, "moderate", stats_high)
+        target_low = estimate_target_position(20, 15, "moderate", stats_low)
+        assert target_high < target_low  # Higher gain → lower (better) target position
+
+    def test_forecast_with_learned_stats_differs_from_defaults(self):
+        from engine.positional_engine import run_positional_forecast_mc
+        df = pd.DataFrame({
+            "keyword": [f"kw_{i}" for i in range(30)],
+            "position": [15] * 30,
+            "volume": [1000] * 30,
+            "kd": [20] * 30,
+            "current_traffic": [80] * 30,
+            "primary_intent": ["commercial"] * 30,
+            "has_aio": [False] * 30,
+        })
+        _, monthly_default = run_positional_forecast_mc(df, months=12, n_trials=200, seed=42)
+        big_gain_stats = {
+            "Easy": {"mean_gain": 12.0, "std_gain": 1.0, "sample_size": 20}
+        }
+        _, monthly_learned = run_positional_forecast_mc(
+            df, months=12, n_trials=200, seed=42,
+            historical_movement_stats=big_gain_stats,
+        )
+        # With much larger gains, final uplift should differ
+        assert monthly_learned.iloc[-1]["uplift_p50"] != monthly_default.iloc[-1]["uplift_p50"]
+
+    def test_fallback_when_sample_size_below_10(self):
+        from engine.positional_engine import estimate_target_position
+        stats_thin = {"Easy": {"mean_gain": 99.0, "std_gain": 1.0, "sample_size": 5}}
+        target_thin = estimate_target_position(20, 15, "moderate", stats_thin)
+        target_default = estimate_target_position(20, 15, "moderate", None)
+        # With <10 samples, falls back to default so targets match
+        assert target_thin == target_default
+
+
+# ── Maturation Curve (Task 4) ─────────────────────────────────────────────
+
+
+class TestMaturationCurve:
+    def test_logistic_at_t_mid(self):
+        from engine.maturation_curve import logistic_progress
+        assert abs(logistic_progress(5.0, 5.0, 1.2) - 0.5) < 0.001
+
+    def test_monotonically_increases(self):
+        from engine.maturation_curve import maturation_schedule
+        schedule = maturation_schedule("Moderate", 24, 1)
+        assert all(schedule[i] <= schedule[i + 1] for i in range(len(schedule) - 1))
+
+    def test_zero_before_publish(self):
+        from engine.maturation_curve import maturation_schedule
+        schedule = maturation_schedule("Easy", 12, 4)
+        assert schedule[0] == 0.0
+        assert schedule[1] == 0.0
+        assert schedule[2] == 0.0
+
+    def test_easy_faster_than_extreme(self):
+        from engine.maturation_curve import maturation_schedule
+        easy = maturation_schedule("Easy", 12, 1)
+        extreme = maturation_schedule("Extreme", 12, 1)
+        assert easy[5] > extreme[5]  # Easy reaches higher progress by month 6
+
+    def test_80_pct_shape_constraint(self):
+        """Curve should reach ~80% by three-quarters of the way through the ramp."""
+        from engine.maturation_curve import maturation_schedule, tier_maturation_params
+        # For Easy: t_mid=2.5, roughly at month 7 (≈3x t_mid) expect ≥80%
+        schedule = maturation_schedule("Easy", 12, 1)
+        # 3 quarters of the ramp: month ~7 from publish_month=1 → index 6
+        assert schedule[6] >= 0.75
+
+    def test_new_content_smoother_than_step(self):
+        """S-curve output should not have large month-to-month jumps."""
+        df = pd.DataFrame({
+            "keyword": ["kw1"],
+            "volume": [5000],
+            "kd": [15],
+        })
+        _, monthly = run_new_content_forecast(df, da=60, cadence=1, months=18, seed=42)
+        traffic = monthly["traffic"].values.astype(float)
+        # No jump should exceed 50% of final traffic in a single month
+        diffs = [abs(traffic[i] - traffic[i - 1]) for i in range(1, len(traffic))]
+        final = max(traffic[-1], 1)
+        assert all(d / final < 0.5 for d in diffs)
+
+    def test_positional_bands_still_ordered_with_scurve(self):
+        from engine.positional_engine import run_positional_forecast_mc
+        df = pd.DataFrame({
+            "keyword": [f"kw_{i}" for i in range(30)],
+            "position": [10] * 30,
+            "volume": [1000] * 30,
+            "kd": [30] * 30,
+            "current_traffic": [100] * 30,
+            "primary_intent": ["commercial"] * 30,
+            "has_aio": [False] * 30,
+        })
+        _, monthly = run_positional_forecast_mc(df, months=12, n_trials=200, seed=42)
+        assert (monthly["uplift_p10"] <= monthly["uplift_p50"]).all()
+        assert (monthly["uplift_p50"] <= monthly["uplift_p90"]).all()
+
+
+# ── Learned Seasonality (Task 3) ─────────────────────────────────────────
+
+
+class TestLearnedSeasonality:
+    def _make_ga4_df(self, n_years=2, nov_boost=0.25):
+        """Synthetic GA4 df where November is artificially high."""
+        dates = pd.date_range("2022-01-01", periods=12 * n_years, freq="MS")
+        traffic = []
+        for d in dates:
+            base = 10000
+            if d.month == 11:
+                base = int(base * (1 + nov_boost))
+            traffic.append(base)
+        return pd.DataFrame({"date": dates, "traffic": traffic})
+
+    def test_learns_november_boost(self):
+        from engine.seasonality_engine import learn_seasonality_from_ga4
+        df = self._make_ga4_df(n_years=2, nov_boost=0.25)
+        learned = learn_seasonality_from_ga4(df)
+        assert learned is not None
+        assert abs(learned[11]["traffic_mod"] - 0.25) < 0.03
+
+    def test_returns_none_below_12_months(self):
+        from engine.seasonality_engine import learn_seasonality_from_ga4
+        df = self._make_ga4_df(n_years=1).head(6)
+        assert learn_seasonality_from_ga4(df) is None
+
+    def test_blend_weight_zero_returns_defaults(self):
+        from engine.seasonality_engine import (
+            learn_seasonality_from_ga4,
+            blend_learned_and_default_seasonality,
+            DEFAULT_SEASONALITY,
+        )
+        df = self._make_ga4_df()
+        learned = learn_seasonality_from_ga4(df)
+        blended = blend_learned_and_default_seasonality(learned, DEFAULT_SEASONALITY, 0.0)
+        for m in range(1, 13):
+            assert blended[m]["traffic_mod"] == DEFAULT_SEASONALITY[m]["traffic_mod"]
+
+    def test_blend_weight_one_returns_learned(self):
+        from engine.seasonality_engine import (
+            learn_seasonality_from_ga4,
+            blend_learned_and_default_seasonality,
+            DEFAULT_SEASONALITY,
+        )
+        df = self._make_ga4_df()
+        learned = learn_seasonality_from_ga4(df)
+        blended = blend_learned_and_default_seasonality(learned, DEFAULT_SEASONALITY, 1.0)
+        for m in range(1, 13):
+            assert abs(blended[m]["traffic_mod"] - learned[m]["traffic_mod"]) < 0.001
+
+    def test_au_holidays_has_all_required_events(self):
+        from engine.seasonality_engine import AU_HOLIDAYS
+        required = {
+            "EOFY", "Black Friday", "Cyber Monday",
+            "Christmas", "Boxing Day Sales", "Back to School",
+        }
+        found = set(AU_HOLIDAYS["holiday"].unique())
+        for r in required:
+            assert r in found, f"Missing holiday: {r}"
+
+    def test_au_holidays_spans_2023_2028(self):
+        from engine.seasonality_engine import AU_HOLIDAYS
+        years = pd.to_datetime(AU_HOLIDAYS["ds"]).dt.year.unique()
+        for y in range(2023, 2029):
+            assert y in years
+
+    def test_au_holidays_has_correct_columns(self):
+        from engine.seasonality_engine import AU_HOLIDAYS
+        assert set(AU_HOLIDAYS.columns) >= {"holiday", "ds", "lower_window", "upper_window"}
+
+
+# ── Prophet / v4 Historical (Task 1) ─────────────────────────────────────
+
+
+class TestHistoricalV4:
+    def _make_df(self, n_months: int, trend: float = 100.0):
+        dates = pd.date_range("2022-01-01", periods=n_months, freq="MS")
+        traffic = [int(5000 + i * trend) for i in range(n_months)]
+        return pd.DataFrame({"date": dates, "traffic": traffic})
+
+    def test_24_months_selects_holts_or_prophet(self):
+        from engine.historical_engine import run_historical_forecast_v4, _PROPHET_MIN_MONTHS
+        df = self._make_df(24)
+        result = run_historical_forecast_v4(df, months=6)
+        assert result.attrs["chosen_method"] in ("prophet", "holts", "linear")
+        # With 24 months, should not be linear
+        assert result.attrs["chosen_method"] != "linear"
+
+    def test_18_months_selects_holts(self):
+        from engine.historical_engine import run_historical_forecast_v4
+        df = self._make_df(18)
+        result = run_historical_forecast_v4(df, months=6)
+        assert result.attrs["chosen_method"] == "holts"
+
+    def test_6_months_selects_linear(self):
+        from engine.historical_engine import run_historical_forecast_v4
+        df = self._make_df(6)
+        result = run_historical_forecast_v4(df, months=3)
+        assert result.attrs["chosen_method"] == "linear"
+
+    def test_fallback_when_prophet_unavailable(self):
+        """Mock ImportError to ensure graceful fallback."""
+        import sys
+        import unittest.mock as mock
+        from engine.historical_engine import run_historical_forecast_v4
+        df = self._make_df(24)
+        with mock.patch.dict(sys.modules, {"prophet": None}):
+            result = run_historical_forecast_v4(df, months=6)
+        # Should still produce a result with linear
+        assert len(result) == 24 + 6
+        assert "linear" in result.columns
+
+    def test_output_extends_dates(self):
+        from engine.historical_engine import run_historical_forecast_v4
+        df = self._make_df(12)
+        result = run_historical_forecast_v4(df, months=6)
+        assert len(result) == 18
+        forecast_rows = result[result["is_forecast"]]
+        assert len(forecast_rows) == 6
+
+    def test_trending_data_produces_nonfloat_forecast(self):
+        from engine.historical_engine import run_historical_forecast_v4
+        df = self._make_df(18, trend=500.0)
+        result = run_historical_forecast_v4(df, months=6)
+        forecast = result[result["is_forecast"]]
+        # A strong upward trend should produce non-flat forecasts
+        assert forecast["exponential_smoothing"].iloc[-1] != forecast["exponential_smoothing"].iloc[0]

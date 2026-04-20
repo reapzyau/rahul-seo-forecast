@@ -110,16 +110,49 @@ The month-by-month projection sums all keywords whose traffic has started by tha
 
 The historical forecast uses your past traffic data to project future trends.
 
-### Linear Regression
+### v4 Data-Length Gating (run_historical_forecast_v4)
 
-Fits a straight line to your historical data using least-squares regression (`numpy.polyfit` with degree 1). The slope represents your average monthly traffic change.
+The v4 engine automatically selects the best model based on available data length:
+
+| Data Length | Primary Model | Notes |
+|------------|--------------|-------|
+| ≥24 months | Prophet | Seasonal + holiday-aware; AU holidays applied |
+| 12–23 months | Holt's Exponential Smoothing | Prophet attempted but flagged low-confidence |
+| <12 months | Linear Regression | Seasonality cannot be detected; warns user |
+
+The v4 function returns `result.attrs["chosen_method"]` and `result.attrs["method_reason"]` so the UI can display which model was chosen and why.
+
+### Prophet & AU Holidays
+
+Facebook Prophet is used as the primary model when ≥24 months of data are available. Configuration:
+
+- `yearly_seasonality=True` — captures annual seasonal patterns
+- `weekly_seasonality=False` — monthly data doesn't have weekly cycles
+- `changepoint_prior_scale=0.05` — controls trend flexibility; exposed as a sidebar slider (0.001–0.5)
+- Australian retail holidays are injected as a Prophet holiday DataFrame (see `engine/seasonality_engine.AU_HOLIDAYS`)
+
+**AU Holidays included (2023–2028):**
+- EOFY (June 30, window: -14 to +1)
+- Click Frenzy May (3rd Tuesday of May, ±3 days)
+- Click Frenzy November (2nd Tuesday of November, ±3 days)
+- Black Friday (4th Friday of November, -2 to +3 days)
+- Cyber Monday (Monday after Black Friday, ±1 day)
+- Christmas (Dec 25, -10 to +2 days)
+- Boxing Day Sales (Dec 26, 0 to +7 days)
+- Back to School (Jan 28, ±7 days)
+
+Prophet is an optional dependency. If not installed, the engine falls back to Holt's or linear gracefully.
+
+### Linear Regression (legacy/fallback)
+
+Fits a straight line to historical data using `numpy.polyfit` degree 1.
 
 - **Confidence bands** are calculated as ± X% of the projected value (configurable, default 15%).
 - Best for data with a clear upward or downward trend.
 
 ### Exponential Smoothing
 
-Simple exponential smoothing weights recent data more heavily:
+Holt's linear trend method (double exponential smoothing) weights recent data more heavily:
 
 ```
 smoothed[t] = alpha * actual[t] + (1 - alpha) * smoothed[t-1]
@@ -127,19 +160,10 @@ smoothed[t] = alpha * actual[t] + (1 - alpha) * smoothed[t-1]
 
 - **Alpha** (0.1–0.9) controls how much weight is given to recent data.
 - Higher alpha = more reactive to recent changes.
-- Lower alpha = smoother, more stable trend.
-- Extrapolation uses a weighted average of trend differences from the smoothed series.
 
 ### Simple Moving Average (SMA)
 
-Averages the last N months (configurable window, default 3). For forecasting, each predicted value is fed back into the window:
-
-```
-forecast[t] = mean(values[t-window:t])
-```
-
-- Smooths out short-term fluctuations.
-- Responsive to recent changes but can lag behind sharp trends.
+Averages the last N months (configurable window, default 3). For forecasting, each predicted value is fed back into the window.
 
 ### Growth Rates
 
@@ -263,6 +287,70 @@ Recommendations are generated based on exposure percentage:
 
 ---
 
+## Learned Seasonality
+
+When GA4 data is uploaded with ≥12 months of traffic history, the tool learns seasonality indices automatically:
+
+```
+monthly_index[m] = avg_traffic_for_month_m / overall_avg_traffic
+traffic_mod[m] = monthly_index[m] - 1.0
+```
+
+**Blend logic:**
+- ≥24 months → fully learned (blend weight 1.0)
+- 12–23 months → 50/50 blend with AU retail defaults
+- <12 months → AU retail defaults only
+
+The blended seasonality is stored in `st.session_state["seasonality"]` and passed to positional, new content, and historical engines at run time. The Data Upload page shows a comparison chart of learned vs. default modifiers.
+
+---
+
+## Brand Classification
+
+Keywords can be classified as branded or non-branded on the Data Upload page. Brand terms are detected via:
+1. **AI detection** — the AI analyses the domain name + top 100 keywords by volume and returns suspected brand terms
+2. **Manual entry** — the analyst can add/remove terms in the text area
+
+Matching uses case-insensitive word-boundary regex — "cable" will match "cable melbourne" but NOT "excable".
+
+Branded keywords are tagged with `is_branded = True` in `st.session_state["kw_df"]`. By default (`exclude_brand_from_forecasts = True`), they are excluded from positional forecasts because branded keywords already rank at position 1 and applying uplift math to them distorts results.
+
+---
+
+## Data-Driven Movement (previous_position)
+
+When SEMrush exports include a `previous_position` column, the positional engine learns per-tier movement stats from your actual history:
+
+```
+movement = previous_position - position  (positive = improvement)
+```
+
+Outliers (movement >30 positions) are filtered as likely SEMrush data glitches. Tiers with ≥10 samples use learned mean gain instead of the default tier table. The Positional Forecast page shows which mode is active.
+
+---
+
+## Phased Maturation S-Curve
+
+v4 replaces the v3 linear ramp and step function with a logistic S-curve:
+
+```
+progress(t) = 1 / (1 + exp(-k × (t - t_mid)))
+```
+
+Parameters per difficulty tier:
+
+| Tier | t_mid (months) | k (steepness) |
+|------|---------------|---------------|
+| Easy | 2.5 | 1.8 |
+| Moderate | 5.0 | 1.2 |
+| Hard | 8.0 | 0.9 |
+| Very Hard | 11.0 | 0.7 |
+| Extreme | 13.0 | 0.5 |
+
+The S-curve hits roughly 10% progress by quarter-1, 40% by half, and 80% by three-quarters of the ramp period. Applied to both positional and new content engines.
+
+---
+
 ## Mode 6: Keyword Decay
 
 Pages that rank today don't keep ranking tomorrow without maintenance. The decay engine models traffic loss on unmaintained pages using position-bucketed annual rates:
@@ -315,9 +403,16 @@ This brings the aggregate uplift from v2's ~75% down to a realistic 30–50% ran
 
 ---
 
-## Mode 9: Time-Varying AIO Erosion
+## Mode 9: AIO Impact — Per-Stream CTR Penalty (v4)
 
-v3 models AI Overview coverage as spreading over the forecast horizon at ~2.5% of queries per month. Intent-specific CTR penalties apply:
+In v4, AI Overview impact is applied per-stream as a CTR penalty at the keyword level, rather than as a separate post-hoc deduction from Combined.
+
+**How it works:**
+- When running Positional or New Content forecasts, pass `aio_intent_penalties` to the engine
+- The penalty is applied at the CTR computation step for each keyword based on its intent
+- Result: the forecast traffic is already net of AIO impact; no separate deduction needed
+
+Default intent penalties (same values as v3):
 
 | Intent | CTR Penalty |
 |--------|-------------|
@@ -326,7 +421,9 @@ v3 models AI Overview coverage as spreading over the forecast horizon at ~2.5% o
 | Transactional | 5% |
 | Navigational | 0% |
 
-Keywords already flagged as AIO-affected lose CTR from month 1. Previously unaffected keywords become affected over time via compound probability: `P(affected by month m) = 1 - (1 - growth_rate)^m`.
+**The AI Overview Risk page (page 7)** is now a diagnostic view only. It shows exposure analysis and projected erosion for visibility — the actual traffic impact is already baked into Positional and New Content forecasts. "Projected Monthly Loss" is no longer shown as a KPI on that page.
+
+The spreading AIO erosion model (`project_aio_erosion` in `engine/aio_risk_engine.py`) remains available for the diagnostic view but is not used in Combined math.
 
 ---
 
@@ -367,6 +464,10 @@ All forecast parameters are tracked in a centralised assumptions store (`engine/
 | `aio_ctr_penalty_informational` | 45% | — |
 | `decay_rate_top3` | 8%/yr | — |
 | `decay_rate_top10` | 12%/yr | — |
+| `brand_terms` | [] | AI detection or user entry |
+| `exclude_brand_from_forecasts` | True | — |
+| `seasonality_source` | "defaulted" | Auto-detected from GA4 data length |
+| `seasonality_blend_weight` | 0.0 | Auto-detected from GA4 data length |
 
 ### Roadmap ingestion
 

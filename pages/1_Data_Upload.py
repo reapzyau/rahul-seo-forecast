@@ -9,7 +9,11 @@ from utils.roadmap_loader import load_roadmap
 from utils.chart_builder import _apply_layout
 from utils.sidebar import render_ai_settings
 from utils.assumptions_panel import render_assumptions_panel, render_assumptions_banner
-from engine.assumptions import initialise_assumptions, run_detection
+from engine.assumptions import initialise_assumptions, run_detection, override_assumption, get_assumption
+from engine.seasonality_engine import (
+    learn_seasonality_from_ga4, blend_learned_and_default_seasonality, DEFAULT_SEASONALITY,
+)
+from engine.brand_engine import classify_keywords_as_branded
 
 st.header("Data Upload")
 st.caption("Upload GA4 organic traffic, SEMrush keyword exports, and an optional roadmap file. Data flows to all downstream pages.")
@@ -48,6 +52,26 @@ with tab_ga4:
     if ga4_df is not None:
         st.session_state["ga4_df"] = ga4_df
         run_detection(store, ga4_df=ga4_df)
+
+        # ── Seasonality Detection ─────────────────────────────────────
+        n_months = len(ga4_df)
+        learned = learn_seasonality_from_ga4(ga4_df)
+        if learned is not None:
+            if n_months >= 24:
+                blend_weight = 1.0
+                source = "learned"
+            elif n_months >= 12:
+                blend_weight = 0.5
+                source = "blended"
+            else:
+                blend_weight = 0.0
+                source = "defaulted"
+
+            blended = blend_learned_and_default_seasonality(learned, DEFAULT_SEASONALITY, blend_weight)
+            st.session_state["seasonality"] = blended
+            st.session_state["learned_seasonality"] = learned
+            override_assumption(store, "seasonality_source", source, f"GA4 data ({n_months} months)")
+            override_assumption(store, "seasonality_blend_weight", blend_weight, f"GA4 data ({n_months} months)")
 
         date_min = ga4_df["date"].min()
         date_max = ga4_df["date"].max()
@@ -172,6 +196,88 @@ with tab_semrush:
         st.subheader("Keyword Preview")
         st.dataframe(kw_df.head(20), use_container_width=True, hide_index=True)
 
+        # ── Brand Classification ──────────────────────────────────────
+        st.divider()
+        st.subheader("Brand Classification")
+
+        # Detect domain from URL column if present
+        detected_domain = ""
+        url_cols = [c for c in kw_df.columns if "url" in c.lower() or "page" in c.lower()]
+        if url_cols:
+            sample_urls = kw_df[url_cols[0]].dropna().head(50)
+            from urllib.parse import urlparse
+            domains = [urlparse(str(u)).netloc for u in sample_urls if u]
+            domains = [d for d in domains if d]
+            if domains:
+                from collections import Counter
+                detected_domain = Counter(domains).most_common(1)[0][0]
+
+        domain_input = st.text_input(
+            "Domain", value=detected_domain, key="brand_domain",
+            help="Used to give the AI context for brand detection.",
+        )
+
+        current_terms = get_assumption(store, "brand_terms") or []
+        terms_text = st.text_area(
+            "Brand terms (one per line)",
+            value="\n".join(current_terms),
+            key="brand_terms_area",
+            height=100,
+            help="Add or edit brand terms. The AI can auto-detect them.",
+        )
+
+        ai_key = st.session_state.get("bifrost_api_key")
+        ai_model = st.session_state.get("ai_model", "openai/gpt-4o-mini")
+
+        col_detect, col_save = st.columns(2)
+        with col_detect:
+            if st.button("Detect Brand Terms (AI)", key="brand_detect_btn", disabled=not ai_key):
+                try:
+                    from engine.ai_engine import get_bifrost_client, detect_brand_terms
+                    client = get_bifrost_client(ai_key)
+                    top_kws = kw_df.sort_values("volume", ascending=False)["keyword"].head(100).tolist()
+                    result_dict, used_model = detect_brand_terms(client, domain_input, top_kws, ai_model)
+                    detected = result_dict.get("brand_terms", [])
+                    confidence = result_dict.get("confidence", 0)
+                    reasoning = result_dict.get("reasoning", "")
+                    st.session_state["detected_brand_terms"] = detected
+                    st.success(
+                        f"Detected {len(detected)} brand terms "
+                        f"(confidence: {confidence:.0%}) via {used_model}.\n\n"
+                        f"_{reasoning}_"
+                    )
+                except Exception as e:
+                    st.error(f"Brand detection failed: {e}")
+            elif not ai_key:
+                st.caption("Add your Bi Frost API key in the AI Settings panel to enable auto-detection.")
+
+        # Merge auto-detected with manual
+        if "detected_brand_terms" in st.session_state:
+            existing_manual = [t.strip() for t in terms_text.split("\n") if t.strip()]
+            merged = list(dict.fromkeys(existing_manual + st.session_state["detected_brand_terms"]))
+            terms_text = "\n".join(merged)
+
+        with col_save:
+            if st.button("Save Brand Terms", key="brand_save_btn"):
+                saved_terms = [t.strip() for t in terms_text.split("\n") if t.strip()]
+                prov = "AI-detected" if "detected_brand_terms" in st.session_state else "user-overridden"
+                override_assumption(store, "brand_terms", saved_terms, prov)
+                # Classify keywords
+                updated_kw = classify_keywords_as_branded(
+                    st.session_state["kw_df"], saved_terms
+                )
+                st.session_state["kw_df"] = updated_kw
+                if "kw_existing" in st.session_state:
+                    st.session_state["kw_existing"] = classify_keywords_as_branded(
+                        st.session_state["kw_existing"], saved_terms
+                    )
+                n_branded = updated_kw["is_branded"].sum()
+                n_total = len(updated_kw)
+                st.success(
+                    f"Saved. {n_branded} branded / {n_total} total keywords "
+                    f"({n_branded / n_total * 100:.1f}%)."
+                )
+
     elif uploaded_semrush is not None:
         st.error("Could not parse the uploaded SEMrush file. Please check the format.")
 
@@ -215,6 +321,39 @@ with tab_roadmap:
             f"effort={rd.get('effort_level', '—')}, "
             f"maintenance={rd.get('maintenance_coverage', '—')}"
         )
+
+# ── Seasonality Tuning ────────────────────────────────────────────────────────
+st.divider()
+st.subheader("Seasonality Tuning")
+st.caption(
+    "Monthly modifiers applied to all forecast streams. "
+    "Auto-detected from GA4 when ≥12 months available; "
+    "falls back to AU retail defaults otherwise."
+)
+
+seasonality = st.session_state.get("seasonality", DEFAULT_SEASONALITY)
+learned_seasonality = st.session_state.get("learned_seasonality")
+source = get_assumption(store, "seasonality_source")
+blend_weight = get_assumption(store, "seasonality_blend_weight")
+
+if source == "learned":
+    st.success(f"Seasonality fully learned from GA4 data (blend weight: {blend_weight:.0%}).")
+elif source == "blended":
+    st.info(f"Seasonality blended: {blend_weight:.0%} GA4 data + {1-blend_weight:.0%} AU retail defaults.")
+else:
+    st.info("Seasonality using AU retail defaults (upload ≥12 months of GA4 data to learn from your data).")
+
+if learned_seasonality:
+    with st.expander("Compare learned vs. AU retail defaults"):
+        import plotly.graph_objects as go_s
+        months_labels = [seasonality[m]["label"].split(" ")[0] for m in range(1, 13)]
+        learned_vals = [learned_seasonality[m]["traffic_mod"] * 100 for m in range(1, 13)]
+        default_vals = [DEFAULT_SEASONALITY[m]["traffic_mod"] * 100 for m in range(1, 13)]
+        fig_s = go_s.Figure()
+        fig_s.add_trace(go_s.Bar(name="Learned from GA4", x=months_labels, y=learned_vals, marker_color="#2563EB"))
+        fig_s.add_trace(go_s.Bar(name="AU Retail Default", x=months_labels, y=default_vals, marker_color="#9CA3AF"))
+        fig_s = _apply_layout(fig_s, "Seasonality: Learned vs Default", "Month", "Traffic Modifier (%)")
+        st.plotly_chart(fig_s, use_container_width=True)
 
 # ── Data Status Footer ────────────────────────────────────────────────────────
 st.divider()

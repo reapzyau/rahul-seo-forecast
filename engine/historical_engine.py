@@ -1,6 +1,10 @@
 import numpy as np
 import pandas as pd
 
+# Gating thresholds for model selection based on historical data length
+_PROPHET_MIN_MONTHS = 24
+_HOLTS_MIN_MONTHS = 12
+
 
 def linear_forecast(
     dates: pd.Series,
@@ -220,6 +224,109 @@ def calculate_yoy(
                 df.at[df.index[i], pct_col] = round((curr_val - prev_val) / prev_val * 100, 1)
 
     return df
+
+
+def run_historical_forecast_v4(
+    df: pd.DataFrame,
+    months: int,
+    changepoint_prior_scale: float = 0.05,
+    sma_window: int = 3,
+    alpha: float = 0.3,
+    confidence: float = 15.0,
+    seasonality: dict | None = None,
+    aio_intent_penalties: dict | None = None,
+) -> pd.DataFrame:
+    """Data-length-gated historical forecast (v4).
+
+    Selects the primary model based on available data:
+      ≥24 months  → Prophet (primary) + linear reference line
+      12–23 months → Holt's exponential smoothing (primary), Prophet attempted
+      <12 months   → linear regression only; warns that seasonality can't be detected
+
+    A 'primary_method' column indicates which model was chosen per row.
+    Seasonality is applied to the forecast portion when provided.
+    AIO erosion doesn't apply to historical directly (history already reflects reality).
+
+    Args:
+        df: DataFrame with 'date' and 'traffic' (+ optional metrics).
+        months: Forecast horizon in months.
+        changepoint_prior_scale: Prophet trend flexibility (0.001–0.5).
+        sma_window: Fallback SMA window size.
+        alpha: Holt's smoothing factor.
+        confidence: Confidence band % for linear/Holt's.
+        seasonality: Dict of month_number → {traffic_mod, ...} applied to forecast.
+        aio_intent_penalties: Unused here (historical reflects reality); kept for API symmetry.
+
+    Returns:
+        DataFrame with all method columns plus 'primary_method' and metadata attrs.
+    """
+    n_hist = len(df)
+    dates = df["date"]
+    traffic = df["traffic"]
+
+    # Determine primary method and gatekeeping metadata
+    if n_hist >= _PROPHET_MIN_MONTHS:
+        chosen_method = "prophet"
+        method_reason = f"Prophet selected ({n_hist} months ≥ {_PROPHET_MIN_MONTHS})"
+        low_confidence = False
+    elif n_hist >= _HOLTS_MIN_MONTHS:
+        chosen_method = "holts"
+        method_reason = f"Holt's ES selected ({n_hist} months, 12–23 — Prophet low confidence)"
+        low_confidence = True
+    else:
+        chosen_method = "linear"
+        method_reason = f"Linear regression only ({n_hist} months < {_HOLTS_MIN_MONTHS} — seasonality undetectable)"
+        low_confidence = True
+
+    # Always produce linear as base structure / reference
+    result = linear_forecast(dates, traffic, months, confidence)
+    result["primary_method"] = chosen_method
+
+    # Holt's ES
+    es_values = exponential_smoothing_forecast(traffic, alpha, months)
+    result["exponential_smoothing"] = es_values[:len(result)]
+
+    # Prophet
+    prophet_ok = False
+    if chosen_method in ("prophet", "holts"):
+        try:
+            from engine.prophet_engine import run_prophet_forecast
+            prophet_df = run_prophet_forecast(df, months, changepoint_prior_scale=changepoint_prior_scale)
+            result["prophet"] = prophet_df["forecast"].values[:len(result)]
+            result["prophet_lower"] = prophet_df["forecast_lower"].values[:len(result)]
+            result["prophet_upper"] = prophet_df["forecast_upper"].values[:len(result)]
+            prophet_ok = True
+        except (ImportError, Exception):
+            pass
+
+    # Apply seasonality to forecast portion
+    if seasonality:
+        forecast_mask = result["is_forecast"]
+        for col in ["linear", "exponential_smoothing"] + (["prophet"] if prophet_ok else []):
+            if col in result.columns:
+                seasonal_mults = result.loc[forecast_mask, "date"].apply(
+                    lambda d: 1 + seasonality.get(d.month, {}).get("traffic_mod", 0)
+                )
+                result.loc[forecast_mask, col] = (
+                    result.loc[forecast_mask, col] * seasonal_mults.values
+                ).round(0).astype(int)
+
+    # Optional metrics
+    optional_metrics = ["revenue", "transactions", "aov", "cr"]
+    for metric in optional_metrics:
+        if metric in df.columns and df[metric].notna().sum() >= 3:
+            series = df[metric].ffill().fillna(0)
+            forecasted = forecast_series(series, months, allow_negative=(metric == "cr"))
+            result[f"{metric}_actual"] = (list(series.values) + [None] * months)[:len(result)]
+            result[f"{metric}_forecast"] = forecasted[:len(result)]
+
+    result.attrs["growth_rates"] = calculate_growth_rates(traffic)
+    result.attrs["chosen_method"] = chosen_method
+    result.attrs["method_reason"] = method_reason
+    result.attrs["low_confidence"] = low_confidence
+    result.attrs["prophet_available"] = prophet_ok
+
+    return result
 
 
 def run_historical_forecast(

@@ -11,7 +11,14 @@ from utils.export import to_csv
 from utils.sidebar import render_ai_settings
 
 st.header("AI Overview Risk")
-st.caption("Assess traffic at risk from Google AI Overviews.")
+st.caption("Diagnostic view: understand your portfolio's AIO exposure. Traffic impact is already factored into your Positional and New Content forecasts.")
+
+st.info(
+    "**v4 change:** AIO traffic impact is now applied per-stream as a CTR penalty inside the "
+    "Positional Forecast and New Content Forecast engines. This page shows *visibility* into "
+    "your AIO exposure — use it to understand which keywords are at risk, not to calculate a "
+    "separate deduction."
+)
 
 render_ai_settings()
 
@@ -50,11 +57,10 @@ exposure_pct = (keywords_affected / total_keywords * 100) if total_keywords > 0 
 traffic_at_risk = risk["traffic_at_risk"]
 projected_loss = risk["projected_loss"]
 
-c1, c2, c3, c4 = st.columns(4)
+c1, c2, c3 = st.columns(3)
 c1.metric("Keywords Affected", f"{keywords_affected:,}")
 c2.metric("Exposure %", f"{exposure_pct:.1f}%")
 c3.metric("Traffic at Risk", f"{traffic_at_risk:,.0f}")
-c4.metric("Projected Monthly Loss", f"{projected_loss:,.0f}")
 
 # ── Recommendations ─────────────────────────────────────────────────────────
 recs = aio_recommendations(risk)

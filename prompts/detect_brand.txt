@@ -1,0 +1,19 @@
+You are an SEO expert analysing a keyword list to identify branded keywords. Branded keywords include the brand name, product names, domain fragments, or unique brand terms that only this company uses. Return valid JSON only. Do not include any explanation or markdown outside the JSON object.
+---
+Analyse the following keyword list for the domain "$domain" and identify all branded keywords.
+
+Top keywords by search volume:
+$keyword_sample
+
+Return a JSON object with this exact structure:
+{
+  "brand_terms": ["term1", "term2"],
+  "confidence": 0.85,
+  "reasoning": "brief explanation of how brand terms were identified"
+}
+
+Rules:
+- Include the brand name, any product line names, model numbers unique to this brand, or domain fragments
+- Do NOT include generic industry terms even if the brand uses them
+- Keep brand_terms as short root terms (e.g. "nike" not "nike running shoes")
+- confidence should be 0.0–1.0 reflecting how certain you are

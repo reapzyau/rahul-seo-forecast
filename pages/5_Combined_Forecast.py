@@ -3,7 +3,6 @@ import pandas as pd
 
 from engine.combined_engine import run_combined_forecast
 from engine.decay_engine import calculate_portfolio_decay
-from engine.aio_risk_engine import project_aio_erosion
 from engine.revenue_engine import (
     CURRENCY_SYMBOLS,
     INTENT_CVR_MULTIPLIERS,
@@ -163,7 +162,7 @@ if enable_revenue:
             st.text(f"  {intent.title()}: {mult}x base CVR")
 
 st.sidebar.divider()
-st.sidebar.subheader("Decay & Erosion")
+st.sidebar.subheader("Keyword Decay")
 include_decay = st.sidebar.checkbox(
     "Model keyword decay (unmaintained pages)", value=True, key="comb_decay",
 )
@@ -171,12 +170,9 @@ maintenance_coverage = st.sidebar.slider(
     "Maintenance coverage", 0.0, 1.0, 0.0, 0.1,
     key="comb_maint", disabled=not include_decay,
 )
-include_aio_erosion = st.sidebar.checkbox(
-    "Model AIO erosion (spreading AI Overviews)", value=True, key="comb_aio_erosion",
-)
-aio_growth_rate = st.sidebar.slider(
-    "AIO monthly growth rate", 0.0, 0.10, 0.025, 0.005,
-    key="comb_aio_growth", disabled=not include_aio_erosion,
+st.sidebar.caption(
+    "AIO erosion is applied per-stream inside the Positional and New Content forecasts "
+    "as a CTR penalty. Run those pages with AIO settings to include it."
 )
 
 # ── Generate ───────────────────────────────────────────────────────────────
@@ -204,21 +200,12 @@ if st.button("Generate Combined Forecast", type="primary", key="comb_run"):
                     kw_for_decay, months, maintenance_coverage=maintenance_coverage,
                 )
 
-        aio_erosion_df = None
-        if include_aio_erosion:
-            kw_for_aio = st.session_state.get("kw_df")
-            if kw_for_aio is not None and not kw_for_aio.empty:
-                aio_erosion_df = project_aio_erosion(
-                    kw_for_aio, months, monthly_growth=aio_growth_rate,
-                )
-
         combined_df = run_combined_forecast(
             historical_df=historical_df,
             positional_monthly=pos_monthly,
             new_content_monthly=nc_monthly,
             months=months,
             decay_df=decay_df,
-            aio_erosion_df=aio_erosion_df,
         )
 
         # Build merged keyword set for intent-weighted revenue
@@ -257,7 +244,6 @@ if st.button("Generate Combined Forecast", type="primary", key="comb_run"):
             "intent_breakdown": intent_breakdown,
             "ga4_rev_per_session": ga4_rev_per_session,
             "decay_df": decay_df,
-            "aio_erosion_df": aio_erosion_df,
         }
 
 # ── Results ────────────────────────────────────────────────────────────────
@@ -276,7 +262,7 @@ if "comb_results" in st.session_state:
     pos_total = int(forecast_df[pos_col].sum())
     nc_total = int(forecast_df["new_content_uplift"].sum())
     total_decay = int(forecast_df["decay"].sum()) if "decay" in forecast_df.columns else 0
-    total_aio = int(forecast_df["aio_erosion"].sum()) if "aio_erosion" in forecast_df.columns else 0
+    total_aio = 0  # AIO is now per-stream; no longer tracked at combined level
     uplift_end = (
         round((combined_end - baseline_end) / baseline_end * 100, 1)
         if baseline_end > 0 else 0
@@ -312,8 +298,7 @@ if "comb_results" in st.session_state:
             streams_desc.append(f"new content (**{nc_total:,}** visits)")
         if total_decay > 0:
             streams_desc.append(f"keyword decay (**-{total_decay:,}** visits)")
-        if total_aio > 0:
-            streams_desc.append(f"AIO erosion (**-{total_aio:,}** visits)")
+        streams_desc.append("AIO impact baked into positional/new-content streams")
         band_note = ""
         if has_bands:
             p10_end = int(forecast_df["combined_p10"].iloc[-1])
@@ -340,9 +325,6 @@ if "comb_results" in st.session_state:
         if "decay" in forecast_df.columns and total_decay > 0:
             table_cols.append("decay")
             rename_map["decay"] = "Decay"
-        if "aio_erosion" in forecast_df.columns and total_aio > 0:
-            table_cols.append("aio_erosion")
-            rename_map["aio_erosion"] = "AIO Erosion"
         table_cols += [combined_col, "uplift_pct"]
         rename_map[combined_col] = "Combined"
         rename_map["uplift_pct"] = "Uplift %"

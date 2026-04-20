@@ -123,6 +123,32 @@ ASSUMPTIONS: dict[str, Assumption] = {
         min_val=0.0,
         max_val=1.0,
     ),
+    "brand_terms": Assumption(
+        key="brand_terms",
+        label="Brand Terms",
+        default=[],
+        unit="",
+    ),
+    "exclude_brand_from_forecasts": Assumption(
+        key="exclude_brand_from_forecasts",
+        label="Exclude Brand from Forecasts",
+        default=True,
+        unit="",
+    ),
+    "seasonality_source": Assumption(
+        key="seasonality_source",
+        label="Seasonality Source",
+        default="defaulted",
+        unit="",
+    ),
+    "seasonality_blend_weight": Assumption(
+        key="seasonality_blend_weight",
+        label="Seasonality Blend Weight",
+        default=0.0,
+        unit="",
+        min_val=0.0,
+        max_val=1.0,
+    ),
 }
 
 

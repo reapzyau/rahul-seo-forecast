@@ -1,14 +1,14 @@
 import streamlit as st
 import pandas as pd
 
-from engine.positional_engine import run_positional_forecast, run_positional_forecast_mc, quick_wins
+from engine.positional_engine import run_positional_forecast, run_positional_forecast_mc, quick_wins, learn_movement_from_history
 from engine.revenue_engine import add_revenue, CURRENCY_SYMBOLS
 from utils.chart_builder import positional_uplift_chart, revenue_projection_chart
 from utils.export import to_csv, to_html_report
 from engine.constants import CTR_MODELS, FORECAST_SCENARIOS, TIER_COLORS
 from utils.sidebar import render_ai_settings
 from utils.assumptions_panel import render_assumptions_banner
-from engine.assumptions import initialise_assumptions, get_assumption
+from engine.assumptions import initialise_assumptions, get_assumption, override_assumption
 
 st.header("Positional Forecast")
 st.caption("Project uplift from moving existing keywords up the SERP.")
@@ -27,6 +27,18 @@ if kw_existing is None:
     st.stop()
 
 ga4_df = st.session_state.get("ga4_df")
+
+# ── Brand filtering ──────────────────────────────────────────────────────────
+exclude_brand = get_assumption(store, "exclude_brand_from_forecasts")
+kw_for_forecast = kw_existing
+if exclude_brand and "is_branded" in kw_existing.columns:
+    n_branded = kw_existing["is_branded"].sum()
+    if n_branded > 0:
+        kw_for_forecast = kw_existing[~kw_existing["is_branded"]].reset_index(drop=True)
+        st.info(
+            f"Excluded {n_branded} branded keywords from forecast (already ranking at top positions). "
+            "Disable in Assumptions panel if needed."
+        )
 
 # ── Sidebar ─────────────────────────────────────────────────────────────────
 st.sidebar.header("Positional Forecast Settings")
@@ -118,14 +130,25 @@ if st.button("Generate Forecast", type="primary", key="pos_run"):
         if anchor_to_ga4 and ga4_df is not None:
             ga4_baseline = int(ga4_df["traffic"].iloc[-1])
 
+        movement_stats = learn_movement_from_history(kw_existing)
+        if movement_stats:
+            n_samples = sum(v["sample_size"] for v in movement_stats.values())
+            st.info(
+                f"Using learned movement stats from your SEMrush history "
+                f"(N={n_samples} keyword movements across {len(movement_stats)} tiers)."
+            )
+        else:
+            st.info("Using default tier-based position gains (no previous_position data found).")
+
         kw_df, monthly = run_positional_forecast_mc(
-            kw_existing,
+            kw_for_forecast,
             months=months,
             effort=effort,
             ga4_baseline=ga4_baseline,
             ctr_model=ctr_model,
             traffic_multiplier=traffic_multiplier,
             use_attention_curve=use_attention_curve,
+            historical_movement_stats=movement_stats or None,
             seed=42,
         )
 
