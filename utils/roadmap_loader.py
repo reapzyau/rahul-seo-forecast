@@ -245,7 +245,23 @@ def load_roadmap(file: BinaryIO | bytes | str) -> dict:
 
     # Try xlsx first, then csv
     try:
-        df = pd.read_excel(buf, engine="openpyxl")
+        xl = pd.ExcelFile(buf, engine="openpyxl")
+        # For multi-sheet SOW files, concatenate the task-bearing sheets that
+        # have Task/Focus/Occurrence/Hours columns rather than the Breakdown summary.
+        _TASK_SHEETS = {"2. Consulting", "3. Technical", "4. Content", "5. Links"}
+        available_task_sheets = [s for s in xl.sheet_names if s in _TASK_SHEETS]
+        if available_task_sheets:
+            frames = []
+            for sheet in available_task_sheets:
+                try:
+                    sdf = xl.parse(sheet)
+                    if not sdf.empty:
+                        frames.append(sdf)
+                except Exception:
+                    continue
+            df = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+        else:
+            df = xl.parse(xl.sheet_names[0])
     except Exception:
         buf.seek(0)
         try:

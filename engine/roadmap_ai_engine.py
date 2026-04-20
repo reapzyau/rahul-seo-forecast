@@ -78,16 +78,52 @@ def _cache_key(raw_bytes: bytes, nl_correction: str | None, model: str) -> str:
     return h.hexdigest()[:16]
 
 
+_SKIP_SHEET_PATTERNS = ("menu", "stephs sheet")
+
+
 def _read_roadmap_file(raw_bytes: bytes, file_extension: str) -> pd.DataFrame:
-    """Parse roadmap file bytes into a DataFrame."""
+    """Parse roadmap file bytes into a DataFrame.
+
+    For multi-sheet xlsx files, concatenates all non-menu sheets with a
+    __sheet__ marker column so the AI sees the full roadmap structure.
+    header=None is used so rows containing labels like "Client Name" are kept.
+    """
     buf = io.BytesIO(raw_bytes)
     ext = file_extension.lower().lstrip(".")
 
     if ext in ("xlsx", "xls"):
         try:
-            df = pd.read_excel(buf, engine="openpyxl")
+            xl = pd.ExcelFile(buf, engine="openpyxl")
         except Exception as exc:
             raise ValueError(f"Cannot read Excel file: {exc}") from exc
+
+        sheets_to_read = [
+            s for s in xl.sheet_names
+            if not any(p in s.lower() for p in _SKIP_SHEET_PATTERNS)
+        ]
+
+        frames = []
+        for sheet in sheets_to_read:
+            try:
+                sdf = xl.parse(sheet, header=None)
+            except Exception:
+                continue
+            if sdf.empty:
+                continue
+            sdf.insert(0, "__sheet__", sheet)
+            frames.append(sdf)
+
+        if not frames:
+            raise ValueError("No usable sheets found in workbook")
+
+        max_cols = max(f.shape[1] for f in frames)
+        aligned = []
+        for f in frames:
+            for i in range(f.shape[1], max_cols):
+                f[i] = None
+            aligned.append(f)
+        df = pd.concat(aligned, ignore_index=True)
+
     elif ext == "tsv":
         try:
             df = pd.read_csv(buf, sep="\t")
@@ -109,16 +145,34 @@ def _read_roadmap_file(raw_bytes: bytes, file_extension: str) -> pd.DataFrame:
     return df
 
 
-def _df_to_markdown(df: pd.DataFrame, max_chars: int = 4000) -> tuple[str, bool]:
-    """Convert DataFrame to a compact markdown table, truncated to max_chars."""
-    cols = list(df.columns)
-    header = "| " + " | ".join(str(c) for c in cols) + " |"
-    sep = "| " + " | ".join("---" for _ in cols) + " |"
-    rows_md = [
-        "| " + " | ".join(str(v) for v in row.values) + " |"
-        for _, row in df.iterrows()
-    ]
-    full = "\n".join([header, sep] + rows_md)
+def _df_to_markdown(df: pd.DataFrame, max_chars: int = 12000) -> tuple[str, bool]:
+    """Convert DataFrame to a compact markdown representation, truncated to max_chars.
+
+    Drops fully-empty rows and columns. When a __sheet__ marker column is present
+    (added by _read_roadmap_file for multi-sheet xlsx), groups output by sheet.
+    """
+    df = df.dropna(how="all", axis=0)
+    if len(df) > 0:
+        df = df.dropna(how="all", axis=1)
+
+    lines: list[str] = []
+    if "__sheet__" in df.columns:
+        for sheet, group in df.groupby("__sheet__", sort=False):
+            g = group.drop(columns=["__sheet__"]).dropna(how="all", axis=1)
+            lines.append(f"\n## Sheet: {sheet}\n")
+            for _, row in g.iterrows():
+                vals = [str(v).strip() for v in row.values if pd.notna(v) and str(v).strip()]
+                if vals:
+                    lines.append(" | ".join(vals))
+    else:
+        cols = list(df.columns)
+        lines.append("| " + " | ".join(str(c) for c in cols) + " |")
+        lines.append("| " + " | ".join("---" for _ in cols) + " |")
+        for _, row in df.iterrows():
+            vals = [str(v) if pd.notna(v) else "" for v in row.values]
+            lines.append("| " + " | ".join(vals) + " |")
+
+    full = "\n".join(lines)
     if len(full) <= max_chars:
         return full, False
     return full[:max_chars] + "\n... [truncated]", True
@@ -156,7 +210,7 @@ def extract_roadmap_with_ai(
         return cache[key]["bundle"], cache[key]["model"]
 
     df = _read_roadmap_file(raw_roadmap_bytes, file_extension)
-    roadmap_md, truncated = _df_to_markdown(df, max_chars=4000)
+    roadmap_md, truncated = _df_to_markdown(df, max_chars=12000)
 
     system, user_tmpl = _load_prompt("extract_roadmap")
     schema_str = json.dumps(ROADMAP_BUNDLE_SCHEMA, indent=2)
@@ -198,7 +252,7 @@ def extract_roadmap_with_ai(
 
 
 MAX_ENRICHMENT_INPUT_CHARS = 4000
-MAX_EXTRACTION_INPUT_CHARS = 8000
+MAX_EXTRACTION_INPUT_CHARS = 12000
 
 
 def compute_cache_key(raw_bytes: bytes, nl_correction: str | None, model: str) -> str:
