@@ -69,6 +69,7 @@ ASSUMPTIONS: dict[str, Assumption] = {
         default="USD",
         unit="",
     ),
+    # ── Backward-compat rollup keys (computed from per-focus keys) ────────────
     "effort_level": Assumption(
         key="effort_level",
         label="Effort Level",
@@ -149,6 +150,156 @@ ASSUMPTIONS: dict[str, Assumption] = {
         min_val=0.0,
         max_val=1.0,
     ),
+    # ── Per-focus effort levels ───────────────────────────────────────────────
+    "content_effort_level": Assumption(
+        key="content_effort_level",
+        label="Content Effort Level",
+        default="moderate",
+        unit="",
+    ),
+    "technical_effort_level": Assumption(
+        key="technical_effort_level",
+        label="Technical Effort Level",
+        default="moderate",
+        unit="",
+    ),
+    "on_page_effort_level": Assumption(
+        key="on_page_effort_level",
+        label="On-Page Effort Level",
+        default="moderate",
+        unit="",
+    ),
+    "off_page_effort_level": Assumption(
+        key="off_page_effort_level",
+        label="Off-Page Effort Level",
+        default="moderate",
+        unit="",
+    ),
+    "local_effort_level": Assumption(
+        key="local_effort_level",
+        label="Local Effort Level",
+        default="moderate",
+        unit="",
+    ),
+    "analytics_effort_level": Assumption(
+        key="analytics_effort_level",
+        label="Analytics Effort Level",
+        default="moderate",
+        unit="",
+    ),
+    "strategy_effort_level": Assumption(
+        key="strategy_effort_level",
+        label="Strategy Effort Level",
+        default="moderate",
+        unit="",
+    ),
+    # ── Per-focus monthly hours ───────────────────────────────────────────────
+    "content_monthly_hours": Assumption(
+        key="content_monthly_hours",
+        label="Content Monthly Hours",
+        default=0.0,
+        unit="hrs/month",
+        min_val=0.0,
+        max_val=None,
+    ),
+    "technical_monthly_hours": Assumption(
+        key="technical_monthly_hours",
+        label="Technical Monthly Hours",
+        default=0.0,
+        unit="hrs/month",
+        min_val=0.0,
+        max_val=None,
+    ),
+    "on_page_monthly_hours": Assumption(
+        key="on_page_monthly_hours",
+        label="On-Page Monthly Hours",
+        default=0.0,
+        unit="hrs/month",
+        min_val=0.0,
+        max_val=None,
+    ),
+    "off_page_monthly_hours": Assumption(
+        key="off_page_monthly_hours",
+        label="Off-Page Monthly Hours",
+        default=0.0,
+        unit="hrs/month",
+        min_val=0.0,
+        max_val=None,
+    ),
+    "local_monthly_hours": Assumption(
+        key="local_monthly_hours",
+        label="Local Monthly Hours",
+        default=0.0,
+        unit="hrs/month",
+        min_val=0.0,
+        max_val=None,
+    ),
+    "analytics_monthly_hours": Assumption(
+        key="analytics_monthly_hours",
+        label="Analytics Monthly Hours",
+        default=0.0,
+        unit="hrs/month",
+        min_val=0.0,
+        max_val=None,
+    ),
+    "strategy_monthly_hours": Assumption(
+        key="strategy_monthly_hours",
+        label="Strategy Monthly Hours",
+        default=0.0,
+        unit="hrs/month",
+        min_val=0.0,
+        max_val=None,
+    ),
+    # ── Portfolio-level derived ───────────────────────────────────────────────
+    "total_monthly_hours": Assumption(
+        key="total_monthly_hours",
+        label="Total Monthly Hours",
+        default=0.0,
+        unit="hrs/month",
+        min_val=0.0,
+        max_val=None,
+    ),
+    "positional_effort_level": Assumption(
+        key="positional_effort_level",
+        label="Positional Effort Level",
+        default="moderate",
+        unit="",
+    ),
+    "timeline_months_covered": Assumption(
+        key="timeline_months_covered",
+        label="Strategy Timeline (Months)",
+        default=12,
+        unit="months",
+        min_val=1,
+        max_val=60,
+    ),
+    "strategy_restart_month": Assumption(
+        key="strategy_restart_month",
+        label="Strategy Restart Month",
+        default=None,
+        unit="",
+    ),
+    # ── Client metadata ───────────────────────────────────────────────────────
+    "industry": Assumption(
+        key="industry",
+        label="Industry",
+        default="Unknown",
+        unit="",
+    ),
+    "retainer_aud_monthly": Assumption(
+        key="retainer_aud_monthly",
+        label="Monthly Retainer (AUD)",
+        default=0.0,
+        unit="AUD/month",
+        min_val=0.0,
+        max_val=None,
+    ),
+    "client_name": Assumption(
+        key="client_name",
+        label="Client Name",
+        default="",
+        unit="",
+    ),
 }
 
 
@@ -228,6 +379,48 @@ def assumptions_summary(store: dict) -> list[dict]:
     return [get_provenance(store, key) for key in ASSUMPTIONS]
 
 
+# ── Rollup helpers ────────────────────────────────────────────────────────────
+
+
+def recompute_rollups(store: dict) -> None:
+    """Recompute the 3 backward-compat rollups from per-focus keys.
+
+    Call at the end of _detect_from_roadmap after roadmap processing.
+    Rollups are written as "detected" unless the user has already overridden them.
+    """
+    # effort_level = max of content, on_page, off_page effort levels
+    _EFFORT_ORDER = {"light": 0, "moderate": 1, "aggressive": 2}
+    effort_keys = ("content_effort_level", "on_page_effort_level", "off_page_effort_level")
+    efforts = [get_assumption(store, k) for k in effort_keys]
+    max_effort = max(efforts, key=lambda e: _EFFORT_ORDER.get(e, 1))
+    _set_detected(store, "effort_level", max_effort, "rollup from per-focus effort levels")
+
+    # maintenance_coverage = clamp((on_page_hours + technical_hours) / 20, 0, 1)
+    on_page_hrs = float(get_assumption(store, "on_page_monthly_hours") or 0.0)
+    technical_hrs = float(get_assumption(store, "technical_monthly_hours") or 0.0)
+    maintenance = round(min((on_page_hrs + technical_hrs) / 20.0, 1.0), 3)
+    _set_detected(store, "maintenance_coverage", maintenance, "rollup from on_page + technical hours")
+
+    # content_cadence = max(1, round(content_monthly_hours / 10))
+    content_hrs = float(get_assumption(store, "content_monthly_hours") or 0.0)
+    cadence = max(1, round(content_hrs / 10.0))
+    _set_detected(store, "content_cadence", cadence, "rollup from content monthly hours")
+
+    # positional_effort_level = max of on_page, off_page
+    pos_efforts = [get_assumption(store, "on_page_effort_level"), get_assumption(store, "off_page_effort_level")]
+    pos_effort = max(pos_efforts, key=lambda e: _EFFORT_ORDER.get(e, 1))
+    _set_detected(store, "positional_effort_level", pos_effort, "rollup from on_page + off_page effort")
+
+    # total_monthly_hours = sum of all per-focus hours
+    focus_hours_keys = (
+        "content_monthly_hours", "technical_monthly_hours", "on_page_monthly_hours",
+        "off_page_monthly_hours", "local_monthly_hours", "analytics_monthly_hours",
+        "strategy_monthly_hours",
+    )
+    total_hours = sum(float(get_assumption(store, k) or 0.0) for k in focus_hours_keys)
+    _set_detected(store, "total_monthly_hours", round(total_hours, 2), "rollup from per-focus hours")
+
+
 # ── Detection layer ───────────────────────────────────────────────────────────
 
 
@@ -294,6 +487,14 @@ def _detect_from_keywords(store: dict, kw_df) -> list[str]:
 
 def _detect_from_roadmap(store: dict, roadmap_data: dict) -> list[str]:
     detected: list[str] = []
+
+    # Handle v2 bundle format (schema_version starts with "2.")
+    if roadmap_data.get("schema_version", "").startswith("2."):
+        detected.extend(_detect_from_bundle_v2(store, roadmap_data))
+        recompute_rollups(store)
+        return detected
+
+    # Legacy v1 format (3-scalar dict from utils/roadmap_loader.py)
     mapping = {
         "effort_level": "roadmap import",
         "content_cadence": "roadmap import",
@@ -303,4 +504,53 @@ def _detect_from_roadmap(store: dict, roadmap_data: dict) -> list[str]:
         if key in roadmap_data and roadmap_data[key] is not None:
             _set_detected(store, key, roadmap_data[key], source)
             detected.append(key)
+    return detected
+
+
+def _detect_from_bundle_v2(store: dict, bundle: dict) -> list[str]:
+    """Extract assumption values from a v2 roadmap bundle."""
+    detected: list[str] = []
+
+    # Client metadata
+    meta = bundle.get("client_metadata", {})
+    for key in ("client_name", "industry", "retainer_aud_monthly"):
+        val = meta.get(key)
+        if val is not None and val != "" and val != 0.0:
+            _set_detected(store, key, val, "roadmap extraction")
+            detected.append(key)
+
+    # Per-focus effort levels and monthly hours
+    per_focus = bundle.get("per_focus", {})
+    focus_map = {
+        "content": "content",
+        "technical": "technical",
+        "on_page": "on_page",
+        "off_page": "off_page",
+        "local": "local",
+        "analytics": "analytics",
+        "strategy": "strategy",
+    }
+    for focus_key, assumption_prefix in focus_map.items():
+        focus_data = per_focus.get(focus_key, {})
+        effort = focus_data.get("effort_level")
+        if effort in ("light", "moderate", "aggressive"):
+            key = f"{assumption_prefix}_effort_level"
+            _set_detected(store, key, effort, "roadmap extraction")
+            detected.append(key)
+        hours = focus_data.get("monthly_hours")
+        if isinstance(hours, (int, float)):
+            key = f"{assumption_prefix}_monthly_hours"
+            _set_detected(store, key, float(hours), "roadmap extraction")
+            detected.append(key)
+
+    # Timeline
+    timeline = bundle.get("timeline", {})
+    months = timeline.get("months_covered")
+    if months is not None:
+        _set_detected(store, "timeline_months_covered", int(months), "roadmap extraction")
+        detected.append("timeline_months_covered")
+    restart = timeline.get("strategy_restart_month")
+    _set_detected(store, "strategy_restart_month", restart, "roadmap extraction")
+    detected.append("strategy_restart_month")
+
     return detected
