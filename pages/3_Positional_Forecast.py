@@ -3,6 +3,7 @@ import streamlit as st
 from engine.aio_risk_engine import INTENT_AIO_CTR_PENALTY
 from engine.assumptions import get_assumption, get_provenance
 from engine.constants import CTR_MODELS, FORECAST_SCENARIOS, TIER_COLORS
+from engine.maturation_curve import tier_maturation_params
 from engine.positional_engine import (
     learn_movement_from_history,
     quick_wins,
@@ -179,8 +180,14 @@ if st.button("Generate Forecast", type="primary", key="pos_run"):
 # ── Results ─────────────────────────────────────────────────────────────────
 if POS_RESULT in st.session_state:
     r = st.session_state[POS_RESULT]
-    kw_df = r["keyword_df"]
+    kw_df = r["keyword_df"].copy()
     monthly = r["monthly"]
+
+    # Derive time_to_move from S-curve midpoint per tier (months to ~50% improvement)
+    if "time_to_move" not in kw_df.columns:
+        kw_df["time_to_move"] = kw_df["tier"].map(
+            lambda t: round(tier_maturation_params(t)[0])
+        )
 
     if kw_df.empty:
         st.warning("No keywords with valid positions (1-100) found in the data.")

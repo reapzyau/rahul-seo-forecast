@@ -172,11 +172,21 @@ with tab_aio:
 
 # ── Tab: Keyword Pipeline ──────────────────────────────────────────────────────
 with tab_pipeline:
-    if kw_results is None:
-        st.info("Run a **Keyword Forecast** first to populate the keyword pipeline.")
-    else:
+    # Use NC_RESULT if available; fall back to raw KW_DF with current positions
+    if kw_results is not None:
         keyword_df = kw_results["keyword_df"]
+        has_projection = True
+    elif kw_df is not None and "position" in kw_df.columns:
+        keyword_df = kw_df.copy()
+        keyword_df["expected_position"] = keyword_df["position"]
+        has_projection = False
+    else:
+        keyword_df = None
+        has_projection = False
 
+    if keyword_df is None:
+        st.info("Go to **Data Upload** and load keyword data to see the pipeline.")
+    else:
         st.subheader("Current Keyword Distribution")
         snapshot = build_pipeline_snapshot(keyword_df)
 
@@ -198,70 +208,74 @@ with tab_pipeline:
         st.plotly_chart(fig_donut, use_container_width=True)
 
         st.divider()
-        st.subheader("Keyword Pipeline Over Time")
+        if not has_projection:
+            st.info("Run a **New Content Forecast** to see projected pipeline movement over time.")
+        else:
+            st.subheader("Keyword Pipeline Over Time")
 
-        pipeline_months = st.slider("Forecast Months", 6, 36, 18, key="pipeline_months")
-        pipeline_df = build_pipeline_over_time(keyword_df, pipeline_months)
+        if has_projection:
+            pipeline_months = st.slider("Forecast Months", 6, 36, 18, key="pipeline_months")
+            pipeline_df = build_pipeline_over_time(keyword_df, pipeline_months)
 
-        pipe_tab1, pipe_tab2, pipe_tab3 = st.tabs([
-            "\U0001f4ca Pipeline Chart",
-            "\U0001f4cb Movement Table",
-            "\U0001f4e5 Export",
-        ])
+            pipe_tab1, pipe_tab2, pipe_tab3 = st.tabs([
+                "\U0001f4ca Pipeline Chart",
+                "\U0001f4cb Movement Table",
+                "\U0001f4e5 Export",
+            ])
 
-        with pipe_tab1:
-            fig = go.Figure()
-            colors = {
-                "page_1": "#22C55E", "page_2": "#EAB308",
-                "page_3": "#F97316", "pages_4_10": "#94A3B8",
-            }
-            names = {
-                "page_1": "Page 1", "page_2": "Page 2",
-                "page_3": "Page 3", "pages_4_10": "Pages 4-10",
-            }
-            for col, color in colors.items():
-                fig.add_trace(go.Scatter(
-                    x=pipeline_df["month"],
-                    y=pipeline_df[col],
-                    mode="lines+markers",
-                    name=names[col],
-                    line=dict(color=color, width=2),
-                    stackgroup="one",
-                    hovertemplate=f"{names[col]}: %{{y}}<extra></extra>",
-                ))
-            fig.update_layout(
-                title="Keyword Ranking Pipeline — Stacked Area",
-                xaxis_title="Month",
-                yaxis_title="Number of Keywords",
-                plot_bgcolor="white",
-                hovermode="x unified",
-            )
-            st.plotly_chart(fig, use_container_width=True)
-            st.caption("Shows how keywords move from Pages 4-10 into Page 3, Page 2, and Page 1 over time.")
+            with pipe_tab1:
+                fig = go.Figure()
+                colors = {
+                    "page_1": "#22C55E", "page_2": "#EAB308",
+                    "page_3": "#F97316", "pages_4_10": "#94A3B8",
+                }
+                names = {
+                    "page_1": "Page 1", "page_2": "Page 2",
+                    "page_3": "Page 3", "pages_4_10": "Pages 4-10",
+                }
+                for col, color in colors.items():
+                    fig.add_trace(go.Scatter(
+                        x=pipeline_df["month"],
+                        y=pipeline_df[col],
+                        mode="lines+markers",
+                        name=names[col],
+                        line=dict(color=color, width=2),
+                        stackgroup="one",
+                        hovertemplate=f"{names[col]}: %{{y}}<extra></extra>",
+                    ))
+                fig.update_layout(
+                    title="Keyword Ranking Pipeline — Stacked Area",
+                    xaxis_title="Month",
+                    yaxis_title="Number of Keywords",
+                    plot_bgcolor="white",
+                    hovermode="x unified",
+                )
+                st.plotly_chart(fig, use_container_width=True)
+                st.caption("Shows how keywords move from Pages 4-10 into Page 3, Page 2, and Page 1 over time.")
 
-        with pipe_tab2:
-            display_df = pipeline_df[[
-                "month", "page_1", "page_1_mom_change", "page_1_mom_pct",
-                "page_2", "page_2_mom_change", "page_2_mom_pct",
-                "page_3", "page_3_mom_change",
-                "pages_4_10", "total_published",
-            ]].copy()
-            display_df.columns = [
-                "Month", "Page 1", "P1 MoM +/-", "P1 MoM %",
-                "Page 2", "P2 MoM +/-", "P2 MoM %",
-                "Page 3", "P3 MoM +/-",
-                "Pages 4-10", "Total Published",
-            ]
-            st.dataframe(display_df, use_container_width=True, hide_index=True, height=500)
+            with pipe_tab2:
+                display_df = pipeline_df[[
+                    "month", "page_1", "page_1_mom_change", "page_1_mom_pct",
+                    "page_2", "page_2_mom_change", "page_2_mom_pct",
+                    "page_3", "page_3_mom_change",
+                    "pages_4_10", "total_published",
+                ]].copy()
+                display_df.columns = [
+                    "Month", "Page 1", "P1 MoM +/-", "P1 MoM %",
+                    "Page 2", "P2 MoM +/-", "P2 MoM %",
+                    "Page 3", "P3 MoM +/-",
+                    "Pages 4-10", "Total Published",
+                ]
+                st.dataframe(display_df, use_container_width=True, hide_index=True, height=500)
 
-        with pipe_tab3:
-            st.download_button(
-                "Download Pipeline CSV",
-                to_csv(pipeline_df),
-                "keyword-pipeline.csv",
-                "text/csv",
-                key="pipeline_dl_csv",
-            )
+            with pipe_tab3:
+                st.download_button(
+                    "Download Pipeline CSV",
+                    to_csv(pipeline_df),
+                    "keyword-pipeline.csv",
+                    "text/csv",
+                    key="pipeline_dl_csv",
+                )
 
 # ── Tab: Decay Projection ──────────────────────────────────────────────────────
 with tab_decay:
