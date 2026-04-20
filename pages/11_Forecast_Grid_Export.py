@@ -9,22 +9,23 @@ from utils.export import to_csv
 from utils.sidebar import render_ai_settings
 from utils.assumptions_panel import render_assumptions_banner
 from engine.assumptions import initialise_assumptions, get_assumption
+from utils.session import ASSUMPTIONS, COMB_RESULTS, POS_RESULT, HIST_RESULTS
 
 st.header("Forecast Grid Export")
 st.caption("Download the SEO row for the multi-channel plan in GAZMAN format.")
 render_ai_settings()
 
-store = st.session_state.setdefault("assumptions", {})
+store = st.session_state.setdefault(ASSUMPTIONS, {})
 initialise_assumptions(store)
 render_assumptions_banner(store)
 
 # -- Source selector ----------------------------------------------------------
 sources = []
-if "comb_results" in st.session_state:
+if COMB_RESULTS in st.session_state:
     sources.append("Combined Forecast")
-if "pos_result" in st.session_state:
+if POS_RESULT in st.session_state:
     sources.append("Positional Forecast")
-if "hist_results" in st.session_state:
+if HIST_RESULTS in st.session_state:
     sources.append("Historical Forecast")
 
 if not sources:
@@ -38,10 +39,10 @@ scenario_options = {"Conservative (P10)": "p10", "Median (P50)": "p50", "Aggress
 has_bands = False
 
 if source == "Combined Forecast":
-    comb_df = st.session_state["comb_results"]["combined_df"]
+    comb_df = st.session_state[COMB_RESULTS]["combined_df"]
     has_bands = "combined_p10" in comb_df.columns
 elif source == "Positional Forecast":
-    pos_monthly = st.session_state["pos_result"]["monthly"]
+    pos_monthly = st.session_state[POS_RESULT]["monthly"]
     has_bands = "traffic_p10" in pos_monthly.columns
 
 if has_bands:
@@ -54,20 +55,20 @@ else:
 monthly_traffic = []
 
 if source == "Combined Forecast":
-    comb = st.session_state["comb_results"]
+    comb = st.session_state[COMB_RESULTS]
     combined_df = comb["combined_df"]
     forecast_rows = combined_df[combined_df["is_forecast"]]
     col = f"combined_{scenario}" if f"combined_{scenario}" in forecast_rows.columns else "combined"
     monthly_traffic = forecast_rows[col].tolist()
 
 elif source == "Positional Forecast":
-    pos = st.session_state["pos_result"]
+    pos = st.session_state[POS_RESULT]
     pos_monthly = pos["monthly"]
     col = f"traffic_{scenario}" if f"traffic_{scenario}" in pos_monthly.columns else "traffic"
     monthly_traffic = pos_monthly[col].tolist()
 
 elif source == "Historical Forecast":
-    hist = st.session_state["hist_results"]
+    hist = st.session_state[HIST_RESULTS]
     result = hist["result"]
     forecast_rows = result[result["is_forecast"]]
     best_col = "linear" if "linear" in result.columns else (

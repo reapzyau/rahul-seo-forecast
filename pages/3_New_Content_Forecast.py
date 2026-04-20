@@ -16,6 +16,9 @@ from utils.export import to_csv, to_html_report, keyword_template_csv
 from engine.constants import TIER_COLORS, SITE_PRESETS, CTR_MODELS, FORECAST_SCENARIOS
 from engine.ai_engine import get_bifrost_client, cluster_keywords, check_cannibalization, generate_content_roadmap
 from utils.sidebar import render_ai_settings
+from utils.session import (
+    ASSUMPTIONS, ROADMAP_CONTENT_PLAN, NC_RESULT, BIFROST_API_KEY, BIFROST_MODEL,
+)
 
 st.header("New Content Forecast")
 st.caption("Project traffic from new content targeting keywords you don't yet rank for.")
@@ -23,7 +26,7 @@ st.caption("Project traffic from new content targeting keywords you don't yet ra
 render_ai_settings()
 
 # ── Assumptions store (read-only on this page) ────────────────────────────────
-_nc_store = st.session_state.setdefault("assumptions", {})
+_nc_store = st.session_state.setdefault(ASSUMPTIONS, {})
 initialise_assumptions(_nc_store)
 
 # ── Sidebar ──────────────────────────────────────────────────────────────────
@@ -159,7 +162,7 @@ if df is not None:
 
 # ── Run Forecast ─────────────────────────────────────────────────────────────
 if df is not None:
-    _roadmap_plan = st.session_state.get("roadmap_content_plan") or None
+    _roadmap_plan = st.session_state.get(ROADMAP_CONTENT_PLAN) or None
     if _roadmap_plan:
         st.info(f"Roadmap content plan active: {len(_roadmap_plan)} URL(s) will drive publish-month assignment.")
 
@@ -194,7 +197,7 @@ if df is not None:
             else:
                 rev_table = None
 
-            st.session_state["kw_results"] = {
+            st.session_state[NC_RESULT] = {
                 "keyword_df": keyword_df,
                 "monthly_df": monthly_df,
                 "scenarios": scenarios,
@@ -212,8 +215,8 @@ if df is not None:
             }
 
 # ── Results ──────────────────────────────────────────────────────────────────
-if "kw_results" in st.session_state:
-    r = st.session_state["kw_results"]
+if NC_RESULT in st.session_state:
+    r = st.session_state[NC_RESULT]
     keyword_df = r["keyword_df"]
     monthly_df = r["monthly_df"]
 
@@ -343,8 +346,8 @@ if "kw_results" in st.session_state:
     with tabs[tab_idx]:
         tab_idx += 1
 
-        client = get_bifrost_client(st.session_state.get("bifrost_api_key"))
-        ai_model = st.session_state.get("bifrost_model", "openai/gpt-4o-mini")
+        client = get_bifrost_client(st.session_state.get(BIFROST_API_KEY))
+        ai_model = st.session_state.get(BIFROST_MODEL, "openai/gpt-4o-mini")
 
         if client is None:
             st.info("Set your Bi Frost API key in the sidebar (AI Settings) to enable AI-powered insights.")

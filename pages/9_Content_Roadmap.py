@@ -4,6 +4,7 @@ import pandas as pd
 from engine.ai_engine import get_bifrost_client, generate_content_roadmap, cluster_keywords
 from utils.export import to_csv
 from utils.sidebar import render_ai_settings
+from utils.session import BIFROST_API_KEY, BIFROST_MODEL, NC_RESULT, CONTENT_ROADMAP
 
 st.header("Content Roadmap")
 st.caption("AI-powered content planning and prioritization using your keyword forecast data.")
@@ -11,8 +12,8 @@ st.caption("AI-powered content planning and prioritization using your keyword fo
 render_ai_settings()
 
 # ── Check prerequisites ──────────────────────────────────────────────────────
-client = get_bifrost_client(st.session_state.get("bifrost_api_key"))
-ai_model = st.session_state.get("bifrost_model", "openai/gpt-4o-mini")
+client = get_bifrost_client(st.session_state.get(BIFROST_API_KEY))
+ai_model = st.session_state.get(BIFROST_MODEL, "openai/gpt-4o-mini")
 
 if client is None:
     st.warning(
@@ -40,7 +41,7 @@ if roadmap_file is not None:
 st.divider()
 st.subheader("Generate Content Roadmap")
 
-kw_results = st.session_state.get("kw_results")
+kw_results = st.session_state.get(NC_RESULT)
 if kw_results is None:
     st.info(
         "Run a **Keyword Forecast** first to generate data for the roadmap. "
@@ -66,13 +67,13 @@ if st.button("Generate AI Content Roadmap", type="primary", key="roadmap_generat
             roadmap, used_model = generate_content_roadmap(client, keyword_df, roadmap_months, ai_model, existing_roadmap_csv)
             if used_model != ai_model:
                 st.info(f"Fell back to {used_model} — selected model was unavailable")
-            st.session_state["content_roadmap"] = roadmap
+            st.session_state[CONTENT_ROADMAP] = roadmap
         except Exception as e:
             st.error(f"Roadmap generation failed: {e}")
 
 # ── Display ──────────────────────────────────────────────────────────────────
-if "content_roadmap" in st.session_state:
-    roadmap = st.session_state["content_roadmap"]
+if CONTENT_ROADMAP in st.session_state:
+    roadmap = st.session_state[CONTENT_ROADMAP]
 
     st.divider()
     st.subheader("Content Roadmap")

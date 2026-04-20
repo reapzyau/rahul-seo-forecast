@@ -9,6 +9,7 @@ from engine.aio_risk_engine import (
 from utils.chart_builder import aio_risk_chart, _apply_layout
 from utils.export import to_csv
 from utils.sidebar import render_ai_settings
+from utils.session import KW_DF
 
 st.header("AI Overview Risk")
 st.caption("Diagnostic view: understand your portfolio's AIO exposure. Traffic impact is already factored into your Positional and New Content forecasts.")
@@ -23,7 +24,7 @@ st.info(
 render_ai_settings()
 
 # ── Data check ──────────────────────────────────────────────────────────────
-kw_df = st.session_state.get("kw_df")
+kw_df = st.session_state.get(KW_DF)
 if kw_df is None:
     st.info("Go to **Data Upload** first and load keyword data with AI Overview flags.")
     st.stop()

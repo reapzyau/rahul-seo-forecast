@@ -7,12 +7,13 @@ from engine.keyword_pipeline_engine import (
     build_pipeline_over_time,
 )
 from utils.export import to_csv
+from utils.session import NC_RESULT
 
 st.header("Keyword Ranking Pipeline")
 st.caption("Track keyword distribution across SERP pages and month-over-month movement.")
 
 # ── Check for keyword forecast data ──────────────────────────────────────────
-kw_results = st.session_state.get("kw_results")
+kw_results = st.session_state.get(NC_RESULT)
 if kw_results is None:
     st.info("Run a **Keyword Forecast** first to populate the keyword pipeline.")
     st.stop()

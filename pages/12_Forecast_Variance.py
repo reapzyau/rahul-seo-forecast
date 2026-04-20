@@ -5,6 +5,7 @@ import plotly.graph_objects as go
 from engine.snapshot_engine import load_snapshot, compare_to_actuals, summarise_variance
 from utils.chart_builder import _apply_layout
 from utils.sidebar import render_ai_settings
+from utils.session import GA4_DF
 
 # ── Header ─────────────────────────────────────────────────────────────────
 st.header("Forecast Variance")
@@ -19,7 +20,7 @@ snapshot_file = st.file_uploader(
     key="variance_snapshot_upload",
 )
 
-ga4_df = st.session_state.get("ga4_df")
+ga4_df = st.session_state.get(GA4_DF)
 if ga4_df is None:
     st.info("Load GA4 data on the **Data Upload** page first.")
     st.stop()

@@ -21,6 +21,12 @@ from engine.roadmap_ai_engine import (
     extract_roadmap_with_ai, estimate_extraction_tokens, ROADMAP_BUNDLE_SCHEMA,
     load_roadmap_v2, compute_cache_key,
 )
+from utils.session import (
+    GA4_DF, KW_DF, KW_EXISTING, KW_NEW, ASSUMPTIONS, SEASONALITY,
+    LEARNED_SEASONALITY, BIFROST_API_KEY, BIFROST_MODEL, DETECTED_BRAND_TERMS,
+    ROADMAP_RAW_BYTES, ROADMAP_FILE_EXT, ROADMAP_BUNDLE, ROADMAP_CONTENT_PLAN,
+    ROADMAP_USED_MODEL, ROADMAP_DATA, ROADMAP_AI_CACHE,
+)
 
 st.header("Data Upload")
 st.caption("Upload GA4 organic traffic, SEMrush keyword exports, and an optional roadmap file. Data flows to all downstream pages.")
@@ -28,7 +34,7 @@ st.caption("Upload GA4 organic traffic, SEMrush keyword exports, and an optional
 render_ai_settings()
 
 # ── Assumptions store ────────────────────────────────────────────────────────
-store = st.session_state.setdefault("assumptions", {})
+store = st.session_state.setdefault(ASSUMPTIONS, {})
 initialise_assumptions(store)
 
 # ── Tabs ─────────────────────────────────────────────────────────────────────
@@ -57,7 +63,7 @@ with tab_ga4:
         ga4_df = load_ga4_organic(sample_path)
 
     if ga4_df is not None:
-        st.session_state["ga4_df"] = ga4_df
+        st.session_state[GA4_DF] = ga4_df
         run_detection(store, ga4_df=ga4_df)
 
         # ── Seasonality Detection ─────────────────────────────────────
@@ -66,8 +72,8 @@ with tab_ga4:
         blend_weight = season_meta["blend_weight"]
         n_months = season_meta["months_available"]
 
-        st.session_state["seasonality"] = seasonality_dict
-        st.session_state["learned_seasonality"] = learn_seasonality_from_ga4(ga4_df)
+        st.session_state[SEASONALITY] = seasonality_dict
+        st.session_state[LEARNED_SEASONALITY] = learn_seasonality_from_ga4(ga4_df)
         override_assumption(store, "seasonality_source", source, f"GA4 data ({n_months} months)")
         override_assumption(store, "seasonality_blend_weight", blend_weight, f"GA4 data ({n_months} months)")
 
@@ -144,9 +150,9 @@ with tab_semrush:
     if kw_df is not None:
         existing_df, new_df = split_existing_vs_new(kw_df)
 
-        st.session_state["kw_df"] = kw_df
-        st.session_state["kw_existing"] = existing_df
-        st.session_state["kw_new"] = new_df
+        st.session_state[KW_DF] = kw_df
+        st.session_state[KW_EXISTING] = existing_df
+        st.session_state[KW_NEW] = new_df
 
         # KPI cards
         avg_pos = existing_df["position"].mean() if not existing_df.empty else 0
@@ -224,8 +230,8 @@ with tab_semrush:
             help="Add or edit brand terms. The AI can auto-detect them.",
         )
 
-        ai_key = st.session_state.get("bifrost_api_key")
-        ai_model = st.session_state.get("ai_model", "openai/gpt-4o-mini")
+        ai_key = st.session_state.get(BIFROST_API_KEY)
+        ai_model = st.session_state.get(BIFROST_MODEL, "openai/gpt-4o-mini")
 
         col_detect, col_save = st.columns(2)
         with col_detect:
@@ -238,7 +244,7 @@ with tab_semrush:
                     detected = result_dict.get("brand_terms", [])
                     confidence = result_dict.get("confidence", 0)
                     reasoning = result_dict.get("reasoning", "")
-                    st.session_state["detected_brand_terms"] = detected
+                    st.session_state[DETECTED_BRAND_TERMS] = detected
                     st.success(
                         f"Detected {len(detected)} brand terms "
                         f"(confidence: {confidence:.0%}) via {used_model}.\n\n"
@@ -250,24 +256,24 @@ with tab_semrush:
                 st.caption("Add your Bi Frost API key in the AI Settings panel to enable auto-detection.")
 
         # Merge auto-detected with manual
-        if "detected_brand_terms" in st.session_state:
+        if DETECTED_BRAND_TERMS in st.session_state:
             existing_manual = [t.strip() for t in terms_text.split("\n") if t.strip()]
-            merged = list(dict.fromkeys(existing_manual + st.session_state["detected_brand_terms"]))
+            merged = list(dict.fromkeys(existing_manual + st.session_state[DETECTED_BRAND_TERMS]))
             terms_text = "\n".join(merged)
 
         with col_save:
             if st.button("Save Brand Terms", key="brand_save_btn"):
                 saved_terms = [t.strip() for t in terms_text.split("\n") if t.strip()]
-                prov = "AI-detected" if "detected_brand_terms" in st.session_state else "user-overridden"
+                prov = "AI-detected" if DETECTED_BRAND_TERMS in st.session_state else "user-overridden"
                 override_assumption(store, "brand_terms", saved_terms, prov)
                 # Classify keywords
                 updated_kw = classify_keywords_as_branded(
-                    st.session_state["kw_df"], saved_terms
+                    st.session_state[KW_DF], saved_terms
                 )
-                st.session_state["kw_df"] = updated_kw
-                if "kw_existing" in st.session_state:
-                    st.session_state["kw_existing"] = classify_keywords_as_branded(
-                        st.session_state["kw_existing"], saved_terms
+                st.session_state[KW_DF] = updated_kw
+                if KW_EXISTING in st.session_state:
+                    st.session_state[KW_EXISTING] = classify_keywords_as_branded(
+                        st.session_state[KW_EXISTING], saved_terms
                     )
                 n_branded = updated_kw["is_branded"].sum()
                 n_total = len(updated_kw)
@@ -288,10 +294,10 @@ with tab_roadmap:
     )
     st.caption("Accepts xlsx or CSV files. AI extraction requires Bi Frost API access; falls back to legacy scalar detection if unavailable.")
 
-    _ai_client = get_bifrost_client(st.session_state.get("bifrost_api_key"))
-    _ai_model = st.session_state.get("ai_model", "openai/gpt-4o-mini")
+    _ai_client = get_bifrost_client(st.session_state.get(BIFROST_API_KEY))
+    _ai_model = st.session_state.get(BIFROST_MODEL, "openai/gpt-4o-mini")
     _ai_available = _ai_client is not None
-    _roadmap_cache = st.session_state.setdefault("roadmap_ai_cache", {})
+    _roadmap_cache = st.session_state.setdefault(ROADMAP_AI_CACHE, {})
 
     uploaded_roadmap = st.file_uploader(
         "Upload roadmap file",
@@ -302,28 +308,28 @@ with tab_roadmap:
     if uploaded_roadmap is not None:
         _raw_bytes = uploaded_roadmap.read()
         _ext = uploaded_roadmap.name.rsplit(".", 1)[-1] if "." in uploaded_roadmap.name else "csv"
-        st.session_state["roadmap_raw_bytes"] = _raw_bytes
-        st.session_state["roadmap_file_ext"] = _ext
+        st.session_state[ROADMAP_RAW_BYTES] = _raw_bytes
+        st.session_state[ROADMAP_FILE_EXT] = _ext
 
-    _raw_bytes = st.session_state.get("roadmap_raw_bytes")
+    _raw_bytes = st.session_state.get(ROADMAP_RAW_BYTES)
 
     if _raw_bytes is not None:
         if _ai_available:
             # ── AI extraction flow ─────────────────────────────────────────
-            _ext = st.session_state.get("roadmap_file_ext", "csv")
+            _ext = st.session_state.get(ROADMAP_FILE_EXT, "csv")
 
             col_ext, col_btn = st.columns([3, 1])
             with col_btn:
                 _do_extract = st.button("Extract with AI", key="roadmap_ai_extract", type="primary")
 
-            if _do_extract or "roadmap_bundle" not in st.session_state:
+            if _do_extract or ROADMAP_BUNDLE not in st.session_state:
                 _ck = compute_cache_key(_raw_bytes, None, _ai_model)
                 if not _do_extract and _ck in _roadmap_cache:
                     _bundle = _roadmap_cache[_ck]["bundle"]
                     _used_model = _roadmap_cache[_ck]["model"]
-                    st.session_state["roadmap_bundle"] = _bundle
-                    st.session_state["roadmap_content_plan"] = _bundle.get("content_plan", [])
-                    st.session_state["roadmap_used_model"] = _used_model
+                    st.session_state[ROADMAP_BUNDLE] = _bundle
+                    st.session_state[ROADMAP_CONTENT_PLAN] = _bundle.get("content_plan", [])
+                    st.session_state[ROADMAP_USED_MODEL] = _used_model
                 else:
                     with st.spinner("Ingesting roadmap…"):
                         try:
@@ -332,24 +338,24 @@ with tab_roadmap:
                                 _ai_client, _raw_bytes, _fname, model=_ai_model,
                             )
                             _roadmap_cache[_ck] = {"bundle": _bundle, "model": _used_model}
-                            st.session_state["roadmap_bundle"] = _bundle
-                            st.session_state["roadmap_content_plan"] = _bundle.get("content_plan", [])
-                            st.session_state["roadmap_used_model"] = _used_model
+                            st.session_state[ROADMAP_BUNDLE] = _bundle
+                            st.session_state[ROADMAP_CONTENT_PLAN] = _bundle.get("content_plan", [])
+                            st.session_state[ROADMAP_USED_MODEL] = _used_model
                         except Exception as _e:
                             st.error(f"Roadmap ingestion failed: {_e}. Falling back to legacy loader.")
                             try:
                                 _legacy = load_roadmap(_raw_bytes)
                                 if _legacy:
                                     run_detection(store, roadmap_data=_legacy)
-                                    st.session_state["roadmap_data"] = _legacy
+                                    st.session_state[ROADMAP_DATA] = _legacy
                                     st.warning("Legacy extraction used — upload AI key for rich extraction.")
                             except Exception as _e2:
                                 st.error(f"Legacy fallback also failed: {_e2}")
 
-            _bundle = st.session_state.get("roadmap_bundle")
+            _bundle = st.session_state.get(ROADMAP_BUNDLE)
             if _bundle:
                 _ss = _bundle.get("source_summary", {})
-                _used_model_label = st.session_state.get("roadmap_used_model", _ai_model)
+                _used_model_label = st.session_state.get(ROADMAP_USED_MODEL, _ai_model)
 
                 # Confidence banner
                 _conf = _ss.get("parsing_confidence", 0.9)
@@ -433,9 +439,9 @@ with tab_roadmap:
                             if _ck2 in _roadmap_cache:
                                 _new_bundle = _roadmap_cache[_ck2]["bundle"]
                                 _new_model = _roadmap_cache[_ck2]["model"]
-                                st.session_state["roadmap_bundle"] = _new_bundle
-                                st.session_state["roadmap_content_plan"] = _new_bundle.get("content_plan", [])
-                                st.session_state["roadmap_used_model"] = _new_model
+                                st.session_state[ROADMAP_BUNDLE] = _new_bundle
+                                st.session_state[ROADMAP_CONTENT_PLAN] = _new_bundle.get("content_plan", [])
+                                st.session_state[ROADMAP_USED_MODEL] = _new_model
                                 st.rerun()
                             else:
                                 with st.spinner("Re-running ingestion with correction…"):
@@ -448,9 +454,9 @@ with tab_roadmap:
                                             model=_ai_model,
                                         )
                                         _roadmap_cache[_ck2] = {"bundle": _new_bundle, "model": _new_model}
-                                        st.session_state["roadmap_bundle"] = _new_bundle
-                                        st.session_state["roadmap_content_plan"] = _new_bundle.get("content_plan", [])
-                                        st.session_state["roadmap_used_model"] = _new_model
+                                        st.session_state[ROADMAP_BUNDLE] = _new_bundle
+                                        st.session_state[ROADMAP_CONTENT_PLAN] = _new_bundle.get("content_plan", [])
+                                        st.session_state[ROADMAP_USED_MODEL] = _new_model
                                         st.rerun()
                                     except Exception as _e:
                                         st.error(f"Re-extraction failed: {_e}")
@@ -458,7 +464,7 @@ with tab_roadmap:
                             # No NL — try to parse JSON editor
                             try:
                                 _edited = json.loads(_json_edit)
-                                st.session_state["roadmap_bundle"] = _edited
+                                st.session_state[ROADMAP_BUNDLE] = _edited
                                 st.rerun()
                             except json.JSONDecodeError as _je:
                                 st.error(f"JSON parse error: {_je}. Fix the JSON or enter a natural-language correction.")
@@ -470,9 +476,9 @@ with tab_roadmap:
                         except json.JSONDecodeError:
                             _to_apply = _bundle
                         run_detection(store, roadmap_data=_to_apply)
-                        st.session_state["roadmap_data"] = _to_apply
-                        st.session_state["roadmap_bundle"] = _to_apply
-                        st.session_state["roadmap_content_plan"] = _to_apply.get("content_plan", [])
+                        st.session_state[ROADMAP_DATA] = _to_apply
+                        st.session_state[ROADMAP_BUNDLE] = _to_apply
+                        st.session_state[ROADMAP_CONTENT_PLAN] = _to_apply.get("content_plan", [])
                         st.success("Roadmap assumptions applied.")
 
         else:
@@ -485,7 +491,7 @@ with tab_roadmap:
                 _legacy = load_roadmap(_raw_bytes)
                 if _legacy:
                     run_detection(store, roadmap_data=_legacy)
-                    st.session_state["roadmap_data"] = _legacy
+                    st.session_state[ROADMAP_DATA] = _legacy
                     _dkeys = [k for k in ("content_cadence", "effort_level", "maintenance_coverage") if k in _legacy]
                     st.success(f"Roadmap loaded (legacy). Detected: {', '.join(_dkeys)}.")
                     _disp = [{"Parameter": k.replace("_", " ").title(), "Value": _legacy[k]} for k in _dkeys]
@@ -495,16 +501,16 @@ with tab_roadmap:
             except Exception as _e:
                 st.error(f"Could not parse roadmap: {_e}")
 
-    elif "roadmap_bundle" in st.session_state:
-        _prev = st.session_state["roadmap_bundle"].get("source_summary", {})
+    elif ROADMAP_BUNDLE in st.session_state:
+        _prev = st.session_state[ROADMAP_BUNDLE].get("source_summary", {})
         st.info(
             f"Roadmap from previous upload: {_prev.get('total_tasks_detected', '—')} tasks, "
             f"{len(_prev.get('focus_areas_detected', []))} focus areas, "
             f"confidence {_prev.get('parsing_confidence', 0):.0%}. "
             "Upload a new file to re-extract."
         )
-    elif "roadmap_data" in st.session_state:
-        _rd = st.session_state["roadmap_data"]
+    elif ROADMAP_DATA in st.session_state:
+        _rd = st.session_state[ROADMAP_DATA]
         st.info(
             f"Roadmap from previous upload: cadence={_rd.get('content_cadence', '—')}, "
             f"effort={_rd.get('effort_level', '—')}, "
@@ -520,8 +526,8 @@ st.caption(
     "falls back to AU retail defaults otherwise."
 )
 
-seasonality = st.session_state.get("seasonality", DEFAULT_SEASONALITY)
-learned_seasonality = st.session_state.get("learned_seasonality")
+seasonality = st.session_state.get(SEASONALITY, DEFAULT_SEASONALITY)
+learned_seasonality = st.session_state.get(LEARNED_SEASONALITY)
 source = get_assumption(store, "seasonality_source")
 blend_weight = get_assumption(store, "seasonality_blend_weight")
 
@@ -549,22 +555,22 @@ st.divider()
 st.subheader("Data Status")
 col1, col2, col3 = st.columns(3)
 with col1:
-    if "ga4_df" in st.session_state:
-        ga4 = st.session_state["ga4_df"]
+    if GA4_DF in st.session_state:
+        ga4 = st.session_state[GA4_DF]
         st.success(f"GA4: {len(ga4)} months loaded ({ga4['date'].min().strftime('%b %Y')} – {ga4['date'].max().strftime('%b %Y')})")
     else:
         st.info("GA4: Not loaded")
 with col2:
-    if "kw_df" in st.session_state:
-        kw = st.session_state["kw_df"]
+    if KW_DF in st.session_state:
+        kw = st.session_state[KW_DF]
         st.success(f"Keywords: {len(kw)} loaded ({len(st.session_state.get('kw_existing', []))} ranking)")
     else:
         st.info("Keywords: Not loaded")
 with col3:
-    if "roadmap_bundle" in st.session_state:
-        _rb_ss = st.session_state["roadmap_bundle"].get("source_summary", {})
+    if ROADMAP_BUNDLE in st.session_state:
+        _rb_ss = st.session_state[ROADMAP_BUNDLE].get("source_summary", {})
         st.success(f"Roadmap: {_rb_ss.get('total_tasks_detected', '?')} tasks (AI extracted)")
-    elif "roadmap_data" in st.session_state:
+    elif ROADMAP_DATA in st.session_state:
         st.success("Roadmap: loaded (legacy)")
     else:
         st.info("Roadmap: Not loaded")
