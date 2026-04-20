@@ -217,6 +217,8 @@ def run_positional_forecast_mc(
     """
     df = df.copy()
     df = df[df["position"].between(1, 100)].reset_index(drop=True)
+    df["kd"] = df["kd"].fillna(0)
+    df["volume"] = df["volume"].fillna(0)
 
     if df.empty:
         empty_monthly = pd.DataFrame({

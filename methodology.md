@@ -76,19 +76,27 @@ CTR is based on SERP position using industry-average data:
 | 11–14 | 0.8 |
 | 15–20 | 0.3 |
 
-### Step 6: Time to Rank
+### Step 6: Maturation S-Curve
 
-Time to rank depends on the difficulty tier, with DA providing a small adjustment:
+Instead of a step function or linear ramp, traffic builds via a logistic (sigmoid) S-curve from the publish month:
 
-| Tier | Base Range (months) |
-|------|-------------------|
-| Easy | 2–3 |
-| Moderate | 4–6 |
-| Hard | 7–9 |
-| Very Hard | 10–12 |
-| Extreme | 12–14 |
+```
+progress(t) = 1 / (1 + exp(-k × (t - t_mid)))
+```
 
-Higher DA slightly reduces time to rank; lower DA slightly increases it.
+`t` is the elapsed months since publication, `t_mid` is the month at which 50% of steady-state traffic is reached, and `k` controls how steeply the curve rises. Both the new-content and positional engines use this same curve shape — new-content uses `t_mid` per difficulty tier; positional uses the Monte Carlo time-to-move sample as the stochastic `t_mid`.
+
+| Tier | t_mid (months) | k (steepness) |
+|------|---------------|---------------|
+| Easy | 2.5 | 1.8 |
+| Moderate | 5.0 | 1.2 |
+| Hard | 8.0 | 0.9 |
+| Very Hard | 11.0 | 0.7 |
+| Extreme | 13.0 | 0.5 |
+
+Higher DA provides a small reduction to time-to-rank (via the stochastic TTR draw); the S-curve shape itself is tier-fixed.
+
+The curve delivers roughly 10% of steady-state traffic by the first quarter of the ramp, ~50% at the midpoint, and ~80% by three-quarters — matching how organic traffic actually builds on a newly published or optimised page.
 
 ### Step 7: Traffic Estimation
 
@@ -272,6 +280,20 @@ Uplifts are summed across all keywords and distributed across months based on ti
 
 When a GA4 baseline is provided, the engine rescales SEMrush's traffic estimates so the month-1 baseline equals real GA4 sessions. Without anchoring, SEMrush's traffic estimate is typically 20-40% higher than what GA4 actually reports.
 
+### Data-Driven Movement
+
+When SEMrush exports include a `previous_position` column, the positional engine learns per-tier movement stats from your actual history instead of using the static tier defaults:
+
+```
+movement = previous_position - position  (positive = improvement)
+```
+
+**Outlier filter:** movements greater than ±30 positions are discarded as likely SEMrush data glitches (e.g. a keyword jumping from position 80 to position 1 in one crawl).
+
+**Minimum sample threshold:** a tier must have at least 10 valid samples before its learned mean replaces the default gain. Tiers with fewer than 10 samples fall back to `_BASE_GAIN_BY_TIER`. This prevents noisy statistics from a handful of keywords distorting the forecast.
+
+The Positional Forecast page shows an info banner indicating whether learned stats or defaults are active, and reports the total sample count across all tiers.
+
 ---
 
 ## Mode 5: AI Overview Risk
@@ -314,18 +336,6 @@ Keywords can be classified as branded or non-branded on the Data Upload page. Br
 Matching uses case-insensitive word-boundary regex — "cable" will match "cable melbourne" but NOT "excable".
 
 Branded keywords are tagged with `is_branded = True` in `st.session_state["kw_df"]`. By default (`exclude_brand_from_forecasts = True`), they are excluded from positional forecasts because branded keywords already rank at position 1 and applying uplift math to them distorts results.
-
----
-
-## Data-Driven Movement (previous_position)
-
-When SEMrush exports include a `previous_position` column, the positional engine learns per-tier movement stats from your actual history:
-
-```
-movement = previous_position - position  (positive = improvement)
-```
-
-Outliers (movement >30 positions) are filtered as likely SEMrush data glitches. Tiers with ≥10 samples use learned mean gain instead of the default tier table. The Positional Forecast page shows which mode is active.
 
 ---
 
