@@ -63,7 +63,7 @@ New engines should consume `aio_intent_penalties` and `seasonality` as parameter
 
 ## Prophet dependency is optional
 
-`engine/prophet_engine.py` wraps the `prophet` import in a try/except and raises `ImportError` with a clear message. `engine/historical_engine.py::run_historical_forecast_v4` catches this and falls back to Holt's or linear. Prophet's presence is reflected in `result.attrs["prophet_available"]`.
+`engine/prophet_engine.py` wraps the `prophet` import in a try/except and raises `ImportError` with a clear message. `engine/historical_engine.py::run_historical_forecast_v4` catches this and falls back to Holt's or linear. Prophet's presence is reflected in `result.attrs["prophet_available"]`. Install via `pip install -r requirements-prophet.txt` if Prophet support is wanted.
 
 ## Maturation curve is unified
 
