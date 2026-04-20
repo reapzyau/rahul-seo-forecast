@@ -1,33 +1,39 @@
 import os
-import streamlit as st
+
 import pandas as pd
+import streamlit as st
 
-from engine.assumptions import initialise_assumptions, get_assumption, get_provenance
+from engine.ai_engine import (
+    check_cannibalization,
+    cluster_keywords,
+    generate_content_roadmap,
+    get_bifrost_client,
+)
+from engine.assumptions import get_assumption, get_provenance
+from engine.constants import CTR_MODELS, FORECAST_SCENARIOS, SITE_PRESETS, TIER_COLORS
 from engine.new_content_engine import run_new_content_forecast
-from engine.revenue_engine import add_revenue, keyword_revenue_table, CURRENCY_SYMBOLS
-from utils.data_loader import load_keywords
+from engine.revenue_engine import CURRENCY_SYMBOLS, add_revenue, keyword_revenue_table
 from utils.chart_builder import (
-    traffic_projection_chart,
     keyword_schedule_chart,
-    scenario_comparison_chart,
     revenue_projection_chart,
+    scenario_comparison_chart,
+    traffic_projection_chart,
 )
-from utils.export import to_csv, to_html_report, keyword_template_csv
-from engine.constants import TIER_COLORS, SITE_PRESETS, CTR_MODELS, FORECAST_SCENARIOS
-from engine.ai_engine import get_bifrost_client, cluster_keywords, check_cannibalization, generate_content_roadmap
-from utils.sidebar import render_ai_settings
+from utils.data_loader import load_keywords
+from utils.export import keyword_template_csv, to_csv, to_html_report
+from utils.page_base import setup_page
 from utils.session import (
-    ASSUMPTIONS, ROADMAP_CONTENT_PLAN, NC_RESULT, BIFROST_API_KEY, BIFROST_MODEL,
+    BIFROST_API_KEY,
+    BIFROST_MODEL,
+    NC_RESULT,
+    ROADMAP_CONTENT_PLAN,
 )
 
-st.header("New Content Forecast")
-st.caption("Project traffic from new content targeting keywords you don't yet rank for.")
-
-render_ai_settings()
-
-# ── Assumptions store (read-only on this page) ────────────────────────────────
-_nc_store = st.session_state.setdefault(ASSUMPTIONS, {})
-initialise_assumptions(_nc_store)
+_nc_store = setup_page(
+    "New Content Forecast",
+    "Project traffic from new content targeting keywords you don't yet rank for.",
+    show_assumptions_banner=False,
+)
 
 # ── Sidebar ──────────────────────────────────────────────────────────────────
 st.sidebar.header("Keyword Forecast Settings")

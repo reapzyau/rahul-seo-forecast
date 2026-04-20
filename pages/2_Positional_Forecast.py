@@ -1,25 +1,19 @@
 import streamlit as st
-import pandas as pd
 
-from engine.positional_engine import run_positional_forecast, run_positional_forecast_mc, quick_wins, learn_movement_from_history
-from engine.revenue_engine import add_revenue, CURRENCY_SYMBOLS
+from engine.assumptions import get_assumption, get_provenance
+from engine.constants import CTR_MODELS, FORECAST_SCENARIOS, TIER_COLORS
+from engine.positional_engine import (
+    learn_movement_from_history,
+    quick_wins,
+    run_positional_forecast_mc,
+)
+from engine.revenue_engine import CURRENCY_SYMBOLS, add_revenue
 from utils.chart_builder import positional_uplift_chart, revenue_projection_chart
 from utils.export import to_csv, to_html_report
-from engine.constants import CTR_MODELS, FORECAST_SCENARIOS, TIER_COLORS
-from utils.sidebar import render_ai_settings
-from utils.assumptions_panel import render_assumptions_banner
-from engine.assumptions import initialise_assumptions, get_assumption, get_provenance, override_assumption
-from utils.session import ASSUMPTIONS, KW_EXISTING, GA4_DF, POS_RESULT
+from utils.page_base import setup_page
+from utils.session import GA4_DF, KW_EXISTING, POS_RESULT
 
-st.header("Positional Forecast")
-st.caption("Project uplift from moving existing keywords up the SERP.")
-
-render_ai_settings()
-
-# ── Assumptions store ────────────────────────────────────────────────────────
-store = st.session_state.setdefault(ASSUMPTIONS, {})
-initialise_assumptions(store)
-render_assumptions_banner(store)
+store = setup_page("Positional Forecast", "Project uplift from moving existing keywords up the SERP.")
 
 # ── Data check ──────────────────────────────────────────────────────────────
 kw_existing = st.session_state.get(KW_EXISTING)
@@ -32,7 +26,7 @@ ga4_df = st.session_state.get(GA4_DF)
 # ── Brand filtering ──────────────────────────────────────────────────────────
 exclude_brand = get_assumption(store, "exclude_brand_from_forecasts")
 kw_for_forecast = kw_existing
-if exclude_brand and "is_branded" in kw_existing.columns:
+if exclude_brand and kw_existing is not None and "is_branded" in kw_existing.columns:
     n_branded = kw_existing["is_branded"].sum()
     if n_branded > 0:
         kw_for_forecast = kw_existing[~kw_existing["is_branded"]].reset_index(drop=True)

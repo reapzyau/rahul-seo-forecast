@@ -19,11 +19,8 @@ from engine.assumptions import (
     ASSUMPTIONS,
     assumptions_summary,
     clear_override,
-    get_assumption,
-    get_provenance,
     initialise_assumptions,
     override_assumption,
-    run_detection,
 )
 
 _PROVENANCE_BADGE = {

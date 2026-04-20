@@ -1,0 +1,3 @@
+# Optional: Prophet for v4 historical forecasting with ≥24 months of data.
+prophet>=1.1.5
+cmdstanpy>=1.2.0

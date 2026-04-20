@@ -12,7 +12,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pandas as pd
 
@@ -238,7 +238,7 @@ def extract_roadmap_with_ai(
     bundle = _parse_llm_json(text)
 
     # Stamp extraction date
-    bundle["extraction_date"] = datetime.now(timezone.utc).isoformat()
+    bundle["extraction_date"] = datetime.now(UTC).isoformat()
 
     # Downgrade confidence when input was truncated
     if truncated and "source_summary" in bundle:
@@ -385,7 +385,7 @@ def extract_roadmap_full_ai(
         client, model, system, user_input, temperature=0.3, max_tokens=6000,
     )
     bundle = _parse_llm_json(text)
-    bundle["extraction_date"] = datetime.now(timezone.utc).isoformat()
+    bundle["extraction_date"] = datetime.now(UTC).isoformat()
     return bundle, used_model
 
 
@@ -417,10 +417,10 @@ def load_roadmap_v2(
     from engine.roadmap_native_parser import (
         detect_roadmap_format,
         parse_pattern_native,
-        wrap_legacy_task_table_as_bundle,
         wrap_legacy_param_table_as_bundle,
+        wrap_legacy_task_table_as_bundle,
     )
-    from utils.roadmap_loader import parse_task_table, parse_param_table
+    from utils.roadmap_loader import parse_param_table, parse_task_table
 
     ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
     fmt = detect_roadmap_format(raw_bytes, ext)

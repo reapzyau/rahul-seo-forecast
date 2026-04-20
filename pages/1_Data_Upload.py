@@ -1,41 +1,58 @@
 import json
 import os
-import streamlit as st
+
 import pandas as pd
 import plotly.graph_objects as go
+import streamlit as st
 
-from utils.ga4_loader import load_ga4_organic
-from utils.keyword_loader import load_keyword_portfolio, split_existing_vs_new
-from utils.roadmap_loader import load_roadmap
-from utils.chart_builder import _apply_layout
-from utils.sidebar import render_ai_settings
-from utils.assumptions_panel import render_assumptions_panel, render_assumptions_banner
-from engine.assumptions import initialise_assumptions, run_detection, override_assumption, get_assumption, get_provenance
-from engine.seasonality_engine import (
-    learn_seasonality_from_ga4, blend_learned_and_default_seasonality,
-    seasonality_for_portfolio, DEFAULT_SEASONALITY,
+from engine.ai_engine import get_bifrost_client
+from engine.assumptions import (
+    get_assumption,
+    override_assumption,
+    run_detection,
 )
 from engine.brand_engine import classify_keywords_as_branded
-from engine.ai_engine import get_bifrost_client
 from engine.roadmap_ai_engine import (
-    extract_roadmap_with_ai, estimate_extraction_tokens, ROADMAP_BUNDLE_SCHEMA,
-    load_roadmap_v2, compute_cache_key,
+    ROADMAP_BUNDLE_SCHEMA,
+    compute_cache_key,
+    estimate_extraction_tokens,
+    load_roadmap_v2,
 )
+from engine.seasonality_engine import (
+    DEFAULT_SEASONALITY,
+    learn_seasonality_from_ga4,
+    seasonality_for_portfolio,
+)
+from utils.assumptions_panel import render_assumptions_banner, render_assumptions_panel
+from utils.chart_builder import _apply_layout
+from utils.ga4_loader import load_ga4_organic
+from utils.keyword_loader import load_keyword_portfolio, split_existing_vs_new
+from utils.page_base import setup_page
+from utils.roadmap_loader import load_roadmap
 from utils.session import (
-    GA4_DF, KW_DF, KW_EXISTING, KW_NEW, ASSUMPTIONS, SEASONALITY,
-    LEARNED_SEASONALITY, BIFROST_API_KEY, BIFROST_MODEL, DETECTED_BRAND_TERMS,
-    ROADMAP_RAW_BYTES, ROADMAP_FILE_EXT, ROADMAP_BUNDLE, ROADMAP_CONTENT_PLAN,
-    ROADMAP_USED_MODEL, ROADMAP_DATA, ROADMAP_AI_CACHE,
+    BIFROST_API_KEY,
+    BIFROST_MODEL,
+    DETECTED_BRAND_TERMS,
+    GA4_DF,
+    KW_DF,
+    KW_EXISTING,
+    KW_NEW,
+    LEARNED_SEASONALITY,
+    ROADMAP_AI_CACHE,
+    ROADMAP_BUNDLE,
+    ROADMAP_CONTENT_PLAN,
+    ROADMAP_DATA,
+    ROADMAP_FILE_EXT,
+    ROADMAP_RAW_BYTES,
+    ROADMAP_USED_MODEL,
+    SEASONALITY,
 )
 
-st.header("Data Upload")
-st.caption("Upload GA4 organic traffic, SEMrush keyword exports, and an optional roadmap file. Data flows to all downstream pages.")
-
-render_ai_settings()
-
-# ── Assumptions store ────────────────────────────────────────────────────────
-store = st.session_state.setdefault(ASSUMPTIONS, {})
-initialise_assumptions(store)
+store = setup_page(
+    "Data Upload",
+    "Upload GA4 organic traffic, SEMrush keyword exports, and an optional roadmap file. Data flows to all downstream pages.",
+    show_assumptions_banner=False,
+)
 
 # ── Tabs ─────────────────────────────────────────────────────────────────────
 tab_ga4, tab_semrush, tab_roadmap = st.tabs([
@@ -237,7 +254,7 @@ with tab_semrush:
         with col_detect:
             if st.button("Detect Brand Terms (AI)", key="brand_detect_btn", disabled=not ai_key):
                 try:
-                    from engine.ai_engine import get_bifrost_client, detect_brand_terms
+                    from engine.ai_engine import detect_brand_terms, get_bifrost_client
                     client = get_bifrost_client(ai_key)
                     top_kws = kw_df.sort_values("volume", ascending=False)["keyword"].head(100).tolist()
                     result_dict, used_model = detect_brand_terms(client, domain_input, top_kws, ai_model)

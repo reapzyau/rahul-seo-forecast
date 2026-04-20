@@ -18,7 +18,6 @@ from engine.assumptions import (
     run_detection,
 )
 
-
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 
@@ -471,8 +470,9 @@ class TestPerFocusAndRollupSpec:
 
 def test_recompute_rollups_defined_exactly_once():
     """Guard against the duplicate-definition bug resurfacing."""
-    import engine.assumptions as mod
     import inspect
+
+    import engine.assumptions as mod
     source = inspect.getsource(mod)
     assert source.count("\ndef recompute_rollups(") == 1, (
         "recompute_rollups is defined more than once in engine/assumptions.py"

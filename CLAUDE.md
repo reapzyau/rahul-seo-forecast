@@ -5,13 +5,26 @@
 ```
 app.py                  # Streamlit home page + shared sidebar (AI settings)
 pages/                  # One file per page (numbered for sidebar order)
+  1_Data_Upload.py      # Upload, brand filtering, seasonality tuning, assumptions
+  2_Positional_Forecast.py   # MC uplift for existing keywords (P10/P50/P90)
+  3_New_Content_Forecast.py  # Probabilistic ranking for net-new keywords
+  3_Diagnostics.py      # AIO risk | keyword pipeline | decay projection (tabs)
+  4_Historical_Forecast.py   # Holt / Prophet baseline from GA4 history
+  4_Roadmap.py          # AI content roadmap | GAZMAN SEO task hours (tabs)
+  5_Combined_Forecast.py     # Canonical hub: baseline + streams − decay
+  5_Deliverables.py     # Forecast grid XLSX | variance analysis | methodology (tabs)
 engine/                 # Pure-Python computation — no Streamlit imports
 utils/                  # Shared helpers (charts, export, data loading, sidebar)
+  page_base.py          # setup_page() — shared header/assumptions scaffold
 config/                 # models.json — model catalogue and fallback chain
 prompts/                # Prompt templates (system + user) for AI features
 assets/                 # Sample CSV files
 tests/                  # pytest unit tests (engine logic only, no Streamlit)
 ```
+
+> **Note:** Pages 2_Positional_Forecast, 3_New_Content_Forecast, 4_Historical_Forecast,
+> and 5_Combined_Forecast are pending consolidation into a single 2_Forecast.py (sub-phase 2.1).
+> Until that is done, they remain as individual pages alongside the new consolidated pages.
 
 Pages import from `engine/` and `utils/`. Engine modules never import from pages or utils.
 
@@ -63,7 +76,7 @@ New engines should consume `aio_intent_penalties` and `seasonality` as parameter
 
 ## Prophet dependency is optional
 
-`engine/prophet_engine.py` wraps the `prophet` import in a try/except and raises `ImportError` with a clear message. `engine/historical_engine.py::run_historical_forecast_v4` catches this and falls back to Holt's or linear. Prophet's presence is reflected in `result.attrs["prophet_available"]`.
+`engine/prophet_engine.py` wraps the `prophet` import in a try/except and raises `ImportError` with a clear message. `engine/historical_engine.py::run_historical_forecast_v4` catches this and falls back to Holt's or linear. Prophet's presence is reflected in `result.attrs["prophet_available"]`. Install via `pip install -r requirements-prophet.txt` if Prophet support is wanted.
 
 ## Maturation curve is unified
 
@@ -139,10 +152,20 @@ pytest tests/ -v
 
 Tests cover engine logic only. No Streamlit or network calls in tests.
 
+## Running checks locally
+
+```bash
+ruff check .                 # lint
+python -m pytest tests/ -v   # unit tests
+python -c "import importlib.util, pathlib, sys; spec = importlib.util.spec_from_file_location('p', 'pages/1_Data_Upload.py'); m = importlib.util.module_from_spec(spec); sys.modules['p'] = m; spec.loader.exec_module(m)"  # manual page-import smoke
+```
+
+CI runs all three on every push: ruff lint → page-import smoke → pytest.
+
 ## Adding a new page
 
 1. Create `pages/N_Name.py`
-2. Import `render_ai_settings` from `utils.sidebar` and call it after the page header
+2. Call `setup_page(title, caption, show_assumptions_banner=...)` from `utils.page_base` at the top — this handles the header, AI settings sidebar, and assumptions initialisation
 3. Gate any heavy computation behind `st.button` + `st.session_state`
 4. Add at least one test in `tests/test_engines.py` for any new engine logic
 

@@ -46,6 +46,12 @@ pip install -r requirements.txt
 streamlit run app.py
 ```
 
+Prophet support (optional — enables v4 Historical Forecast with ≥24 months of data, falls back to Holt's exponential smoothing otherwise):
+
+```bash
+pip install -r requirements-prophet.txt
+```
+
 ## Running Tests
 
 ```bash

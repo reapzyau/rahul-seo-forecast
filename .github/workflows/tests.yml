@@ -10,5 +10,46 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - run: pip install -r requirements.txt
-      - run: python -m pytest tests/ -v
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt  # Prophet not installed; TestHistoricalV4 falls back to Holt's
+          pip install ruff
+      - name: Ruff lint
+        run: ruff check .
+      - name: Page import smoke test
+        run: |
+          python -c "
+          import importlib, importlib.util, os, sys, pathlib
+
+          failures = []
+          for fname in sorted(os.listdir('pages')):
+              if not fname.endswith('.py') or fname.startswith('__'):
+                  continue
+              page_file = pathlib.Path('pages') / fname
+              mod_name = f'_smoke_{fname[:-3]}'
+              spec = importlib.util.spec_from_file_location(mod_name, page_file)
+              module = importlib.util.module_from_spec(spec)
+              sys.modules[mod_name] = module
+              try:
+                  spec.loader.exec_module(module)
+              except (NameError, ImportError, SyntaxError) as exc:
+                  failures.append((fname, type(exc).__name__, str(exc)))
+              except Exception as exc:
+                  exc_mod = getattr(type(exc), '__module__', '') or ''
+                  if 'streamlit' in exc_mod.lower():
+                      pass
+                  elif type(exc).__name__ in {'StreamlitAPIException', 'NoSessionContext', 'StopException', 'RerunException'}:
+                      pass
+                  elif isinstance(exc, TypeError):
+                      failures.append((fname, 'TypeError', str(exc)))
+              finally:
+                  sys.modules.pop(mod_name, None)
+
+          if failures:
+              for name, etype, msg in failures:
+                  print(f'FAIL pages/{name}: {etype}: {msg}')
+              sys.exit(1)
+          print('All pages imported cleanly.')
+          "
+      - name: Pytest
+        run: python -m pytest tests/ -v

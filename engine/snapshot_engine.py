@@ -11,10 +11,9 @@ nobody ever grades.
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pandas as pd
-
 
 SNAPSHOT_VERSION = "v3.0"
 
@@ -47,7 +46,7 @@ def build_snapshot(
     return {
         "snapshot_version": SNAPSHOT_VERSION,
         "client_name": client_name,
-        "snapshot_date": datetime.now(timezone.utc).isoformat(),
+        "snapshot_date": datetime.now(UTC).isoformat(),
         "engine_versions": versions,
         "parameters": parameters,
         "forecast": records,
@@ -77,6 +76,7 @@ def compare_to_actuals(
     actuals_by_date = dict(zip(
         pd.to_datetime(actuals_df["date"]).dt.strftime("%Y-%m-%d"),
         actuals_df["traffic"],
+        strict=False,
     ))
 
     rows = []

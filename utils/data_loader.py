@@ -2,14 +2,13 @@ import pandas as pd
 import streamlit as st
 
 from engine.ai_engine import (
+    KEYWORDS_TARGET_FORMAT,
+    TRAFFIC_TARGET_FORMAT,
+    execute_transform,
     get_bifrost_client,
     transform_data,
-    execute_transform,
-    TRAFFIC_TARGET_FORMAT,
-    KEYWORDS_TARGET_FORMAT,
 )
 from utils.session import BIFROST_API_KEY, BIFROST_MODEL
-
 
 # Common column name mappings
 KEYWORD_COL_ALIASES = {

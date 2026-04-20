@@ -26,13 +26,13 @@ def param_csv_bytes():
     return PARAM_CSV.read_bytes()
 
 
+from engine.roadmap_ai_engine import load_roadmap_v2
 from engine.roadmap_native_parser import (
     detect_roadmap_format,
     parse_pattern_native,
-    wrap_legacy_task_table_as_bundle,
     wrap_legacy_param_table_as_bundle,
+    wrap_legacy_task_table_as_bundle,
 )
-from engine.roadmap_ai_engine import load_roadmap_v2
 
 
 class TestDetectFormat:

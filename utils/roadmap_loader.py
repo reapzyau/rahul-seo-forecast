@@ -16,7 +16,6 @@ from typing import BinaryIO
 
 import pandas as pd
 
-
 # ── Column aliases ────────────────────────────────────────────────────────────
 
 _TASK_COL_ALIASES = ["task", "Task", "TASK", "activity", "Activity"]
