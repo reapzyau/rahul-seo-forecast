@@ -367,12 +367,16 @@ def _parse_task_sheet(ws) -> list[dict]:
         focus_val = row[1] if len(row) > 1 else None
         occ_val = row[2] if len(row) > 2 else None
         hrs_val = row[3] if len(row) > 3 else None
+        try:
+            hours = float(hrs_val) if hrs_val is not None else 0.0
+        except (ValueError, TypeError):
+            hours = 0.0
         tasks.append(
             {
                 "task": str(task_val).strip() if task_val is not None else "",
                 "focus": str(focus_val).strip() if focus_val is not None else "",
                 "occurrence": str(occ_val).strip() if occ_val is not None else "",
-                "hours": float(hrs_val) if hrs_val is not None else 0.0,
+                "hours": hours,
             }
         )
     return tasks
