@@ -303,10 +303,8 @@ def run_positional_forecast_mc(
 
     # Apply AIO CTR penalties per-keyword at the target-CTR step
     if aio_intent_penalties:
-        # Need intent per keyword; fall back to 0 penalty if column missing
-        intent_col = "intent" if "intent" in df.columns else "primary_intent"
-        if intent_col in df.columns:
-            intents = df[intent_col].values
+        if "intent" in df.columns:
+            intents = df["intent"].values
             aio_penalty_per_kw = np.array([
                 aio_intent_penalties.get(str(intent).lower(), 0.0) / 100.0
                 for intent in intents

@@ -165,7 +165,7 @@ def load_keyword_portfolio(file) -> pd.DataFrame | None:
     -------
     pd.DataFrame | None
         Cleaned DataFrame with standardised column names, derived columns
-        (``primary_intent``, ``has_aio``), and zero-volume / duplicate rows
+        (``intent``, ``has_aio``), and zero-volume / duplicate rows
         removed.  Returns ``None`` if the file cannot be parsed or yields
         no valid rows.
     """
@@ -192,9 +192,9 @@ def load_keyword_portfolio(file) -> pd.DataFrame | None:
 
     # --- Derived columns --------------------------------------------------
     if "keyword_intents" in df.columns:
-        df["primary_intent"] = _parse_primary_intent(df["keyword_intents"])
+        df["intent"] = _parse_primary_intent(df["keyword_intents"])
     else:
-        df["primary_intent"] = np.nan
+        df["intent"] = np.nan
 
     if "position_type" in df.columns:
         df["has_aio"] = _parse_has_aio(df["position_type"])
@@ -225,7 +225,7 @@ def load_keyword_portfolio(file) -> pd.DataFrame | None:
     df["keyword"] = df["keyword"].astype(str).str.strip()
 
     # Keep standard columns plus derived ones, in a stable order
-    keep = [c for c in _STANDARD_COLS if c in df.columns] + ["primary_intent", "has_aio"]
+    keep = [c for c in _STANDARD_COLS if c in df.columns] + ["intent", "has_aio"]
     # Deduplicate list while preserving order
     seen: set[str] = set()
     ordered: list[str] = []

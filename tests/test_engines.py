@@ -392,7 +392,7 @@ class TestCombinedHub:
             "volume": [1000] * 20,
             "kd": [30] * 20,
             "current_traffic": [80] * 20,
-            "primary_intent": ["commercial"] * 20,
+            "intent": ["commercial"] * 20,
             "has_aio": [False] * 20,
         })
         _, monthly_no_season = run_positional_forecast_mc(df, months=12, n_trials=200, seed=42)
@@ -848,7 +848,7 @@ class TestPositionalForecast:
             "volume": [1000] * 50,
             "kd": [30] * 50,
             "current_traffic": [100] * 50,
-            "primary_intent": ["commercial"] * 50,
+            "intent": ["commercial"] * 50,
             "has_aio": [False] * 50,
         })
 
@@ -894,7 +894,7 @@ class TestPositionalMonteCarlo:
             "volume": [1000] * 30,
             "kd": [30] * 30,
             "current_traffic": [100] * 30,
-            "primary_intent": ["commercial"] * 30,
+            "intent": ["commercial"] * 30,
             "has_aio": [False] * 30,
         })
 
@@ -912,7 +912,7 @@ class TestPositionalMonteCarlo:
             "volume": [1000] * 50,
             "kd": [40] * 50,
             "current_traffic": [80] * 50,
-            "primary_intent": ["commercial"] * 50,
+            "intent": ["commercial"] * 50,
             "has_aio": [False] * 50,
         })
         _, monthly = run_positional_forecast_mc(df, months=12, n_trials=500)
@@ -969,7 +969,7 @@ class TestAttentionCurve:
             "volume": [1000] * 200,
             "kd": [35] * 200,
             "current_traffic": [80] * 200,
-            "primary_intent": ["commercial"] * 200,
+            "intent": ["commercial"] * 200,
             "has_aio": [False] * 200,
         })
         _, with_attn = run_positional_forecast_mc(
@@ -990,7 +990,7 @@ class TestAioRiskEngine:
         df = pd.DataFrame({
             "keyword": ["a", "b"], "has_aio": [False, False],
             "volume": [100, 200], "current_traffic": [50, 100],
-            "primary_intent": ["commercial", "commercial"],
+            "intent": ["commercial", "commercial"],
         })
         risk = calculate_aio_risk(df, ctr_penalty_pct=40.0)
         assert risk["keywords_affected"] == 0
@@ -1003,7 +1003,7 @@ class TestAioRiskEngine:
             "has_aio": [True, True, True],
             "volume": [100, 200, 300],
             "current_traffic": [400, 300, 300],
-            "primary_intent": ["informational", "commercial", "informational"],
+            "intent": ["informational", "commercial", "informational"],
         })
         risk = calculate_aio_risk(df, ctr_penalty_pct=40.0)
         assert risk["traffic_at_risk"] == 1000
@@ -1016,7 +1016,7 @@ class TestAioRiskEngine:
             "has_aio": [True, True],
             "volume": [100, 200],
             "current_traffic": [50, 100],
-            "primary_intent": ["informational", "commercial"],
+            "intent": ["informational", "commercial"],
         })
         risk = calculate_aio_risk(df, ctr_penalty_pct=40.0)
         assert not risk["intent_breakdown"].empty
@@ -1026,7 +1026,7 @@ class TestAioRiskEngine:
         df = pd.DataFrame({
             "keyword": ["a"], "has_aio": [True],
             "volume": [100], "current_traffic": [50],
-            "primary_intent": ["informational"],
+            "intent": ["informational"],
         })
         risk = calculate_aio_risk(df)
         assert len(aio_recommendations(risk)) > 0
@@ -1091,7 +1091,7 @@ class TestAioErosion:
         from engine.aio_risk_engine import project_aio_erosion
         df = pd.DataFrame({
             "keyword": [f"kw_{i}" for i in range(100)],
-            "primary_intent": ["informational"] * 100,
+            "intent": ["informational"] * 100,
             "current_traffic": [100] * 100,
             "has_aio": [False] * 100,
         })
@@ -1102,11 +1102,11 @@ class TestAioErosion:
     def test_informational_erodes_more_than_transactional(self):
         from engine.aio_risk_engine import project_aio_erosion
         info_df = pd.DataFrame({
-            "keyword": ["a"], "primary_intent": ["informational"],
+            "keyword": ["a"], "intent": ["informational"],
             "current_traffic": [1000], "has_aio": [True],
         })
         trans_df = pd.DataFrame({
-            "keyword": ["a"], "primary_intent": ["transactional"],
+            "keyword": ["a"], "intent": ["transactional"],
             "current_traffic": [1000], "has_aio": [True],
         })
         info_result = project_aio_erosion(info_df, months=12)
@@ -1117,7 +1117,7 @@ class TestAioErosion:
         from engine.aio_risk_engine import project_aio_erosion
         df = pd.DataFrame({
             "keyword": ["a", "b"],
-            "primary_intent": ["informational", "informational"],
+            "intent": ["informational", "informational"],
             "current_traffic": [1000, 1000],
             "has_aio": [True, False],
         })
@@ -1210,7 +1210,7 @@ class TestIntentWeightedRevenue:
     def test_commercial_only_boosts_cvr(self):
         from engine.revenue_engine import compute_intent_weighted_cvr
         df = pd.DataFrame({
-            "primary_intent": ["commercial"] * 5,
+            "intent": ["commercial"] * 5,
             "uplift": [100] * 5,
         })
         result = compute_intent_weighted_cvr(df, 2.0)
@@ -1219,7 +1219,7 @@ class TestIntentWeightedRevenue:
     def test_transactional_highest_multiplier(self):
         from engine.revenue_engine import compute_intent_weighted_cvr
         df = pd.DataFrame({
-            "primary_intent": ["transactional"] * 5,
+            "intent": ["transactional"] * 5,
             "volume": [100] * 5,
         })
         result = compute_intent_weighted_cvr(df, 2.0)
@@ -1228,7 +1228,7 @@ class TestIntentWeightedRevenue:
     def test_informational_lowers_cvr(self):
         from engine.revenue_engine import compute_intent_weighted_cvr
         df = pd.DataFrame({
-            "primary_intent": ["informational"] * 5,
+            "intent": ["informational"] * 5,
             "uplift": [100] * 5,
         })
         result = compute_intent_weighted_cvr(df, 2.0)
@@ -1237,7 +1237,7 @@ class TestIntentWeightedRevenue:
     def test_mixed_intent_is_between(self):
         from engine.revenue_engine import compute_intent_weighted_cvr
         df = pd.DataFrame({
-            "primary_intent": ["commercial", "informational"],
+            "intent": ["commercial", "informational"],
             "uplift": [100, 100],
         })
         result = compute_intent_weighted_cvr(df, 2.0)
@@ -1245,11 +1245,11 @@ class TestIntentWeightedRevenue:
 
     def test_empty_returns_base(self):
         from engine.revenue_engine import compute_intent_weighted_cvr
-        df = pd.DataFrame({"primary_intent": [], "uplift": []})
+        df = pd.DataFrame({"intent": [], "uplift": []})
         assert compute_intent_weighted_cvr(df, 2.5) == 2.5
 
-    def test_intent_col_fallback(self):
-        """New content engine uses 'intent' not 'primary_intent'."""
+    def test_intent_col_present(self):
+        """compute_intent_weighted_cvr reads the canonical 'intent' column."""
         from engine.revenue_engine import compute_intent_weighted_cvr
         df = pd.DataFrame({
             "intent": ["commercial"] * 3,
@@ -1261,7 +1261,7 @@ class TestIntentWeightedRevenue:
     def test_breakdown_table(self):
         from engine.revenue_engine import intent_revenue_breakdown
         df = pd.DataFrame({
-            "primary_intent": ["commercial", "transactional", "informational"],
+            "intent": ["commercial", "transactional", "informational"],
             "uplift": [1000, 500, 300],
         })
         table = intent_revenue_breakdown(df, 2.0, 100.0)
@@ -1354,7 +1354,7 @@ class TestMovementLearning:
             "volume": [1000] * 30,
             "kd": [20] * 30,
             "current_traffic": [80] * 30,
-            "primary_intent": ["commercial"] * 30,
+            "intent": ["commercial"] * 30,
             "has_aio": [False] * 30,
         })
         _, monthly_default = run_positional_forecast_mc(df, months=12, n_trials=200, seed=42)
@@ -1425,7 +1425,7 @@ class TestMaturationCurve:
             "volume": [1000] * 30,
             "kd": [30] * 30,
             "current_traffic": [100] * 30,
-            "primary_intent": ["commercial"] * 30,
+            "intent": ["commercial"] * 30,
             "has_aio": [False] * 30,
         })
         _, monthly = run_positional_forecast_mc(df, months=12, n_trials=200, seed=42)

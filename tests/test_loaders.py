@@ -43,6 +43,9 @@ class TestKeywordLoader:
         assert "position" in df.columns
         assert "volume" in df.columns
         assert "kd" in df.columns
+        # Canonical intent column — keyword_loader emits `intent`, never `primary_intent`
+        assert "intent" in df.columns
+        assert "primary_intent" not in df.columns
 
     def test_split_existing_vs_new(self, semrush_sample_path):
         df = load_keyword_portfolio(semrush_sample_path)

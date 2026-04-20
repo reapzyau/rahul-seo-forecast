@@ -28,7 +28,7 @@ def calculate_aio_risk(df: pd.DataFrame, ctr_penalty_pct: float = 40.0) -> dict:
 
     Args:
         df: DataFrame with columns: keyword, has_aio (bool), volume (int),
-            current_traffic (float), primary_intent (str).
+            current_traffic (float), intent (str).
         ctr_penalty_pct: Estimated CTR loss percentage when an AI Overview
             is present (e.g. 40.0 = 40%).
 
@@ -57,11 +57,10 @@ def calculate_aio_risk(df: pd.DataFrame, ctr_penalty_pct: float = 40.0) -> dict:
     # Intent breakdown
     if keywords_affected > 0:
         intent_agg = (
-            aio_df.groupby("primary_intent", as_index=False)
+            aio_df.groupby("intent", as_index=False)
             .agg(keywords=("keyword", "count"), traffic=("current_traffic", "sum"))
         )
         intent_agg["traffic_loss"] = intent_agg["traffic"] * penalty_fraction
-        intent_agg = intent_agg.rename(columns={"primary_intent": "intent"})
         intent_agg = intent_agg.sort_values("traffic_loss", ascending=False).reset_index(drop=True)
     else:
         intent_agg = pd.DataFrame(columns=["intent", "keywords", "traffic", "traffic_loss"])
@@ -169,7 +168,7 @@ def project_aio_erosion(
 
     penalties = intent_penalties or INTENT_AIO_CTR_PENALTY
     df = keyword_df.copy()
-    df["penalty"] = df["primary_intent"].map(lambda i: penalties.get(i, 0.10))
+    df["penalty"] = df["intent"].map(lambda i: penalties.get(i, 0.10))
     df["current_traffic"] = df.get("current_traffic", pd.Series([0] * len(df))).fillna(0)
 
     initially_affected = df["has_aio"].astype(bool)
