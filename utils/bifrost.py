@@ -2,8 +2,12 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
+import time
 from pathlib import Path
+
+logger = logging.getLogger("bifrost")
 
 try:
     from openai import OpenAI
@@ -53,6 +57,48 @@ def get_client(api_key: str | None = None) -> OpenAI | None:
     return OpenAI(base_url=base_url, api_key=key)
 
 
+# ── Cost estimation ──────────────────────────────────────────────────────────
+
+# Rough AUD per 1M tokens (input + output averaged) — refresh quarterly.
+# These are estimates; actual Bi Frost billing may differ.
+MODEL_RATES_AUD_PER_MTOK: dict[str, float] = {
+    "anthropic/claude-haiku-4-5": 1.50,
+    "anthropic/claude-sonnet-4-6": 6.00,
+    "openai/gpt-4.1": 5.00,
+    "openai/gpt-5": 15.00,
+}
+
+_WARNED_UNKNOWN_MODELS: set[str] = set()
+
+
+def estimate_cost_aud(model: str, input_chars: int, output_chars: int) -> float:
+    """Estimate AUD cost for a single call based on character counts."""
+    if model not in MODEL_RATES_AUD_PER_MTOK and model not in _WARNED_UNKNOWN_MODELS:
+        logger.warning(json.dumps({
+            "event": "unknown_model_rate",
+            "model": model,
+            "fallback_rate": 5.0,
+        }))
+        _WARNED_UNKNOWN_MODELS.add(model)
+    rate = MODEL_RATES_AUD_PER_MTOK.get(model, 5.0)
+    tokens = (input_chars + output_chars) // 4
+    return (tokens / 1_000_000) * rate
+
+
+def _accumulate_cost(model: str, input_chars: int, output_chars: int) -> None:
+    """Add estimated call cost to the Streamlit session state accumulator."""
+    cost = estimate_cost_aud(model, input_chars, output_chars)
+    try:
+        import streamlit as st
+        current = st.session_state.get("session_cost_aud", 0.0)
+        st.session_state["session_cost_aud"] = current + cost
+    except Exception:
+        pass  # not running inside Streamlit
+
+
+# ── API calls ─────────────────────────────────────────────────────────────────
+
+
 def call(
     client: OpenAI,
     model: str,
@@ -88,9 +134,33 @@ def call_with_fallback(
     attempts = [model] + [m for m in fallback_chain if m != model]
     last_error: Exception | None = None
     for attempt in attempts:
+        start = time.perf_counter()
         try:
-            return call(client, attempt, system, user, **kwargs), attempt
+            response_text = call(client, attempt, system, user, **kwargs)
+            elapsed_ms = int((time.perf_counter() - start) * 1000)
+            logger.info(json.dumps({
+                "event": "bifrost_call",
+                "model_requested": model,
+                "model_used": attempt,
+                "fell_back": attempt != model,
+                "elapsed_ms": elapsed_ms,
+                "user_tokens_est": len(user) // 4,
+                "system_tokens_est": len(system) // 4,
+                "response_chars": len(response_text),
+                "success": True,
+            }))
+            _accumulate_cost(attempt, len(system) + len(user), len(response_text))
+            return response_text, attempt
         except Exception as exc:
+            elapsed_ms = int((time.perf_counter() - start) * 1000)
+            logger.warning(json.dumps({
+                "event": "bifrost_call",
+                "model_requested": model,
+                "model_attempted": attempt,
+                "elapsed_ms": elapsed_ms,
+                "error": str(exc)[:200],
+                "success": False,
+            }))
             last_error = exc
     raise RuntimeError(
         f"All models failed. Tried: {attempts}. Last error: {last_error}"

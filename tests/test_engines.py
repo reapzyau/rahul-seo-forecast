@@ -32,6 +32,7 @@ from engine.new_content_engine import (
     time_to_rank_months,
 )
 from engine.revenue_engine import add_revenue, keyword_revenue_table
+from tests.fixtures import make_semrush_kw_df
 
 # ── Keyword Engine ──────────────────────────────────────────────────────────
 
@@ -892,15 +893,7 @@ class TestPositionalForecast:
 class TestPositionalMonteCarlo:
     @pytest.fixture
     def mc_sample(self):
-        return pd.DataFrame({
-            "keyword": [f"kw_{i}" for i in range(30)],
-            "position": [10] * 30,
-            "volume": [1000] * 30,
-            "kd": [30] * 30,
-            "current_traffic": [100] * 30,
-            "intent": ["commercial"] * 30,
-            "has_aio": [False] * 30,
-        })
+        return make_semrush_kw_df(n=30, positions=[10] * 30, kds=[30] * 30)
 
     def test_bands_ordered(self, mc_sample):
         from engine.positional_engine import run_positional_forecast_mc
@@ -910,15 +903,7 @@ class TestPositionalMonteCarlo:
 
     def test_band_width_meaningful(self):
         from engine.positional_engine import run_positional_forecast_mc
-        df = pd.DataFrame({
-            "keyword": [f"kw_{i}" for i in range(50)],
-            "position": [15] * 50,
-            "volume": [1000] * 50,
-            "kd": [40] * 50,
-            "current_traffic": [80] * 50,
-            "intent": ["commercial"] * 50,
-            "has_aio": [False] * 50,
-        })
+        df = make_semrush_kw_df(n=50, positions=[15] * 50, kds=[40] * 50)
         _, monthly = run_positional_forecast_mc(df, months=12, n_trials=500)
         m12 = monthly.iloc[-1]
         spread = m12["uplift_p90"] - m12["uplift_p10"]
@@ -956,26 +941,14 @@ class TestAttentionCurve:
 
     def test_apply_attention_curve_assigns_weights(self):
         from engine.positional_engine import apply_attention_curve
-        df = pd.DataFrame({
-            "keyword": [f"kw_{i}" for i in range(100)],
-            "volume": list(range(100, 0, -1)),
-            "kd": [30] * 100,
-        })
+        df = make_semrush_kw_df(n=100, volumes=list(range(100, 0, -1)), kds=[30] * 100)
         result = apply_attention_curve(df)
         assert (result.head(5)["attention_weight"] == 1.00).all()
         assert (result.tail(50)["attention_weight"] == 0.05).all()
 
     def test_attention_reduces_aggregate_uplift(self):
         from engine.positional_engine import run_positional_forecast_mc
-        df = pd.DataFrame({
-            "keyword": [f"kw_{i}" for i in range(200)],
-            "position": [15] * 200,
-            "volume": [1000] * 200,
-            "kd": [35] * 200,
-            "current_traffic": [80] * 200,
-            "intent": ["commercial"] * 200,
-            "has_aio": [False] * 200,
-        })
+        df = make_semrush_kw_df(n=200, positions=[15] * 200, kds=[35] * 200)
         _, with_attn = run_positional_forecast_mc(
             df, months=12, n_trials=200, use_attention_curve=True, seed=99
         )

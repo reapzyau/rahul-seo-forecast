@@ -6,7 +6,7 @@ edit time.
 """
 from __future__ import annotations
 
-from typing import TypedDict
+from typing import TypedDict, cast
 
 import pandas as pd
 
@@ -46,6 +46,7 @@ DETECTED_BRAND_TERMS = "detected_brand_terms"
 # ── AI / Bi Frost ─────────────────────────────────────────────────────
 BIFROST_API_KEY = "bifrost_api_key"
 BIFROST_MODEL = "bifrost_model"       # canonical; `ai_model` was a stale alias
+SESSION_COST_AUD = "session_cost_aud"
 
 
 class AppState(TypedDict, total=False):
@@ -73,3 +74,17 @@ class AppState(TypedDict, total=False):
     detected_brand_terms: list
     bifrost_api_key: str
     bifrost_model: str
+    session_cost_aud: float
+
+
+def state() -> AppState:
+    """Type-cast wrapper around st.session_state for IDE autocomplete.
+
+    Usage:
+        from utils.session import state, KW_DF
+        ga4 = state().get(KW_DF)
+
+    Note: does not enforce types at runtime — purely for editor support.
+    """
+    import streamlit as st
+    return cast(AppState, st.session_state)
