@@ -15,7 +15,9 @@ from datetime import UTC, datetime
 
 import pandas as pd
 
-SNAPSHOT_VERSION = "v3.0"
+from engine import __version__ as _ENGINE_VERSION
+
+SNAPSHOT_VERSION = _ENGINE_VERSION
 
 _FORECAST_COLS = [
     "baseline", "positional_uplift_p10", "positional_uplift_p50",

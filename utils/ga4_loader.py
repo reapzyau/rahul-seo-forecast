@@ -290,7 +290,13 @@ def _read_sheet(
 
     is_revenue = target_metric == "revenue"
     if is_revenue and _is_fy_day_bug(raw_dates):
-        logger.info("Detected FY-date bug in sheet '%s', correcting dates", sheet_name)
+        logger.warning(
+            "Detected FY-date encoding in sheet '%s' — day-of-month values appear to be "
+            "financial year codes. Reconstructing calendar dates using AU FY convention "
+            "(FY24 = Jul 2023–Jun 2024). If your dates are already correct, this "
+            "correction will produce wrong years.",
+            sheet_name,
+        )
         df[date_col] = raw_dates  # store parsed version for fix
         df = _fix_fy_dates(df, date_col)
         dates = df[date_col]

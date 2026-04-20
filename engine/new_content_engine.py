@@ -9,7 +9,7 @@ from engine.constants import (
     INTENT_PATTERNS,
     TIME_TO_RANK,
 )
-from engine.maturation_curve import maturation_schedule
+from engine.maturation_curve import maturation_schedule, tier_maturation_params
 
 
 def classify_difficulty(kd: int) -> str:
@@ -330,7 +330,3 @@ def run_new_content_forecast(
     return df, monthly_df
 
 
-def tier_maturation_params(tier: str) -> tuple[float, float]:
-    """Re-export from maturation_curve for callers that import from here."""
-    from engine.maturation_curve import tier_maturation_params as _tmp
-    return _tmp(tier)
