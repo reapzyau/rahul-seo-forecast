@@ -1,5 +1,10 @@
 """Standalone script that creates the sample_pattern_native_roadmap.xlsx fixture.
 
+Updated to match the real Pattern SOW template column layout:
+- Client Detail: labels in col B, values in col C
+- Task sheets: header at row 3, data from row 4; col A blank, cols B-E
+- Content sheet: header at row 7, data from row 8; col A blank, cols B-O
+
 Run directly:
     python tests/fixtures/build_fixture.py
 
@@ -7,11 +12,9 @@ Or import and call build() from a pytest conftest.
 """
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 import openpyxl
-from openpyxl.utils import get_column_letter
 
 FIXTURE_DIR = Path(__file__).parent
 FIXTURE_PATH = FIXTURE_DIR / "sample_pattern_native_roadmap.xlsx"
@@ -22,147 +25,172 @@ def build(output_path: str | Path | None = None) -> Path:
     out = Path(output_path) if output_path else FIXTURE_PATH
     wb = openpyxl.Workbook()
 
-    # ── Remove default sheet ───────────────────────────────────────────────────
     if "Sheet" in wb.sheetnames:
         del wb["Sheet"]
 
-    # ── 1. Breakdown sheet ─────────────────────────────────────────────────────
-    # Col E (index 4, col 5) has focus labels; cols G:R (cols 7-18) have monthly hours
+    # ── Breakdown sheet ────────────────────────────────────────────────────────
+    # Col E (index 4) has focus labels; cols G:R (cols 7-18) have monthly hours
+    # Side metadata in cols B/C
     ws_bd = wb.create_sheet("Breakdown")
+    ws_bd.cell(row=1, column=2, value="SEO Retainer Breakdown")
 
-    # Add some header content in other columns to make it realistic
-    ws_bd.cell(row=1, column=1, value="SEO Retainer Breakdown")
-    ws_bd.cell(row=2, column=1, value="Client:")
-    ws_bd.cell(row=2, column=2, value="Sample Retail Co")
+    ws_bd.cell(row=6, column=2, value="Monthly Retainer")
+    ws_bd.cell(row=6, column=3, value=5000)
+    ws_bd.cell(row=7, column=2, value="Hours P/M")
+    ws_bd.cell(row=7, column=3, value=24.0)
+    ws_bd.cell(row=8, column=2, value="Cost P/H")
+    ws_bd.cell(row=8, column=3, value=200)
 
-    # Row 4: Consulting Hours — 12 monthly values in G:R
-    ws_bd.cell(row=4, column=1, value="Service")
-    ws_bd.cell(row=4, column=5, value="Consulting Hours")
-    consulting_hours = [8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8]
-    for i, h in enumerate(consulting_hours):
-        ws_bd.cell(row=4, column=7 + i, value=h)
+    for i in range(12):
+        ws_bd.cell(row=5, column=7 + i, value=f"Month {i + 1}")
 
-    # Row 6: Technical Hours
-    ws_bd.cell(row=6, column=5, value="Technical Hours")
-    technical_hours = [12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12]
-    for i, h in enumerate(technical_hours):
-        ws_bd.cell(row=6, column=7 + i, value=h)
+    service_rows = [
+        (6,  "Consulting Hours", [8] * 12),
+        (7,  "Technical Hours",  [12] * 12),
+        (8,  "Content Hours",    [20] * 12),
+        (9,  "Link Hours",       [6] * 12),
+        (10, "Hours Allocated",  [46] * 12),
+        (11, "Hours to Use",     [24] * 12),
+    ]
+    for row_num, label, hours in service_rows:
+        ws_bd.cell(row=row_num, column=5, value=label)
+        for i, h in enumerate(hours):
+            ws_bd.cell(row=row_num, column=7 + i, value=h)
 
-    # Row 8: Content Hours
-    ws_bd.cell(row=8, column=5, value="Content Hours")
-    content_hours = [20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20]
-    for i, h in enumerate(content_hours):
-        ws_bd.cell(row=8, column=7 + i, value=h)
+    ws_bd.cell(row=12, column=5, value="% of Retainer")
+    for i in range(12):
+        ws_bd.cell(row=12, column=7 + i, value=100)
 
-    # Row 10: Link Hours
-    ws_bd.cell(row=10, column=5, value="Link Hours")
-    link_hours = [6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6]
-    for i, h in enumerate(link_hours):
-        ws_bd.cell(row=10, column=7 + i, value=h)
-
-    # ── 2. Client Detail sheet ─────────────────────────────────────────────────
+    # ── 1. Client Detail sheet ─────────────────────────────────────────────────
+    # Real layout: col A blank, labels in col B, values in col C
     ws_cd = wb.create_sheet("1. Client Detail")
-
-    ws_cd.cell(row=1, column=1, value="SEO Retainer Agreement")
-    ws_cd.cell(row=2, column=1, value="---")
+    ws_cd.cell(row=1, column=2, value="SEO Retainer Agreement")
 
     client_data = [
-        (3, "Client Name", "Sample Retail Co"),
-        (4, "Industry", "Fashion"),
-        (5, "Monthly Retainer", "AUD 5000"),
-        (6, "Project Start Date", "2026-07-01"),
-        (7, "CMS", "Shopify"),
-        (8, "Primary Contact", "Jane Smith"),
-        (9, "Account Manager", "John Doe"),
-        (10, "Contract Period", "12 months"),
+        (3,  "Client Name",                       "Sample Retail Co"),
+        (4,  "Industry",                          "Fashion"),
+        (5,  "Project Start Date",                "2026-07-01"),
+        (6,  "Monthly Retainer (excl tech fees)", "AUD 5000"),
+        (7,  "Main POC",                          "contact@sampleretail.com"),
+        (8,  "Pattern Client Partner",            "partner@pattern.com"),
+        (9,  "Pattern SEO Lead",                  "lead@pattern.com"),
+        (10, "CMS",                               "Shopify"),
+        (11, "Strategy Slides",                   "Sample Retail Strategy 2026"),
     ]
     for row, label, value in client_data:
-        ws_cd.cell(row=row, column=1, value=label)
-        ws_cd.cell(row=row, column=2, value=value)
+        ws_cd.cell(row=row, column=2, value=label)
+        ws_cd.cell(row=row, column=3, value=value)
 
-    # ── 3. Consulting sheet ────────────────────────────────────────────────────
+    # ── 2. Consulting sheet ────────────────────────────────────────────────────
+    # Real layout: header at row 3, data from row 4; col A blank, cols B-E
     ws_con = wb.create_sheet("2. Consulting")
-
-    consulting_headers = ["Task", "Focus", "Occurrence", "Hours"]
-    for col, h in enumerate(consulting_headers, 1):
-        ws_con.cell(row=1, column=col, value=h)
+    ws_con.cell(row=3, column=2, value="Task")
+    ws_con.cell(row=3, column=3, value="Description")
+    ws_con.cell(row=3, column=4, value="Hours")
+    ws_con.cell(row=3, column=5, value="Cadence")
 
     consulting_tasks = [
-        ("Monthly Strategy Review", "Strategy", "Monthly", 4),
-        ("Keyword Research & Mapping", "Strategy", "Quarterly", 8),
-        ("Competitor Analysis", "Strategy", "Quarterly", 6),
-        ("GA4 & GSC Reporting", "Analytics", "Monthly", 3),
-        ("Content Gap Analysis", "Strategy", "Bi-Annual", 8),
+        ("Monthly Strategy Review",    "Monthly strategy direction call",         4.0, "Monthly"),
+        ("Keyword Research & Mapping", "Keyword universe mapping",                 8.0, "Quarterly"),
+        ("Competitor Analysis",        "Competitive landscape review",             6.0, "Quarterly"),
+        ("GA4 & GSC Reporting",        "Monthly performance report and dashboard", 3.0, "Monthly"),
+        ("Content Gap Analysis",       "Identify content opportunities",           8.0, "Bi-Annual"),
     ]
-    for row_idx, (task, focus, occ, hrs) in enumerate(consulting_tasks, 2):
-        ws_con.cell(row=row_idx, column=1, value=task)
-        ws_con.cell(row=row_idx, column=2, value=focus)
-        ws_con.cell(row=row_idx, column=3, value=occ)
+    for row_idx, (task, desc, hrs, cadence) in enumerate(consulting_tasks, 4):
+        ws_con.cell(row=row_idx, column=2, value=task)
+        ws_con.cell(row=row_idx, column=3, value=desc)
         ws_con.cell(row=row_idx, column=4, value=hrs)
+        ws_con.cell(row=row_idx, column=5, value=cadence)
 
-    # ── 4. Technical sheet ─────────────────────────────────────────────────────
+    # ── 3. Technical sheet ─────────────────────────────────────────────────────
     ws_tech = wb.create_sheet("3. Technical")
+    ws_tech.cell(row=3, column=2, value="Task")
+    ws_tech.cell(row=3, column=3, value="Description")
+    ws_tech.cell(row=3, column=4, value="Hours")
+    ws_tech.cell(row=3, column=5, value="Cadence")
 
-    tech_headers = ["Task", "Focus", "Occurrence", "Hours"]
-    for col, h in enumerate(tech_headers, 1):
-        ws_tech.cell(row=1, column=col, value=h)
+    ws_tech.cell(row=4, column=2, value="CMS:")
+    ws_tech.cell(row=4, column=3, value="Shopify")
 
     technical_tasks = [
-        ("Core Web Vitals Audit", "Technical", "Quarterly", 6),
-        ("Crawl Error Remediation", "Technical", "Monthly", 4),
-        ("Schema Markup Implementation", "Technical", "Quarterly", 8),
-        ("Site Speed Optimisation", "Technical", "Monthly", 4),
-        ("Internal Linking Audit", "Technical", "Bi-Annual", 10),
+        (5, "Core Web Vitals Audit",          "CWV audit and fix recommendations",     6.0, "Quarterly"),
+        (6, "Crawl Error Remediation",        "Fix crawl errors from GSC",             4.0, "Monthly"),
+        (7, "Schema Markup Implementation",   "Product and breadcrumb schema",          8.0, "Quarterly"),
+        (8, "Site Speed Optimisation",        "Image and script optimisation",          4.0, "Monthly"),
+        (9, "Internal Linking Audit",         "Silo structure internal link review",   10.0, "Bi-Annual"),
     ]
-    for row_idx, (task, focus, occ, hrs) in enumerate(technical_tasks, 2):
-        ws_tech.cell(row=row_idx, column=1, value=task)
-        ws_tech.cell(row=row_idx, column=2, value=focus)
-        ws_tech.cell(row=row_idx, column=3, value=occ)
-        ws_tech.cell(row=row_idx, column=4, value=hrs)
+    for row_num, task, desc, hrs, cadence in technical_tasks:
+        ws_tech.cell(row=row_num, column=2, value=task)
+        ws_tech.cell(row=row_num, column=3, value=desc)
+        ws_tech.cell(row=row_num, column=4, value=hrs)
+        ws_tech.cell(row=row_num, column=5, value=cadence)
 
-    # ── 5. Content sheet ───────────────────────────────────────────────────────
-    # Header at row 7, data rows 8+
-    # Columns: A=Month#, B=Month Name, C=URL, D=Title, E=Focus, F=Priority, G=Content Type, H=Word Count, I=SEO Hours
+    # ── 4. Content sheet ───────────────────────────────────────────────────────
+    # Real layout: header row 7, data rows 8+; col A blank, cols B-O
     ws_cont = wb.create_sheet("4. Content")
+    ws_cont.cell(row=1, column=2, value="Content Production Plan")
 
-    ws_cont.cell(row=1, column=1, value="Content Production Plan")
-    ws_cont.cell(row=2, column=1, value="12-Month Schedule")
-
-    # Header row at row 7
-    content_headers = ["Month", "Month Name", "URL", "Title", "Focus", "Priority", "Content Type", "Word Count", "SEO Hours"]
-    for col, h in enumerate(content_headers, 1):
-        ws_cont.cell(row=7, column=col, value=h)
+    content_headers = [
+        (2, "Month"), (3, "Month Name"), (4, "Content Name"), (5, "URL"),
+        (6, "Total Words"), (7, "Content Type"), (8, "Keywords"),
+        (9, "Content Brief Detail"), (10, "FAQ Questions"), (11, "SEO Hours"),
+        (12, "Template set-up"), (13, "Production time"),
+        (14, "SEO Review Time"), (15, "SEO Implementation time"),
+    ]
+    for col, hdr in content_headers:
+        ws_cont.cell(row=7, column=col, value=hdr)
 
     content_rows = [
-        (1, "July",      "/blog/summer-fashion-guide",         "Summer Fashion Guide 2026",    "Content", "High", "New Page - Long Form",          2000, 3),
-        (1, "July",      "/faq/how-to-style-denim",            "How to Style Denim - FAQ",     "Content", "Medium", "FAQ Page",                    800,  2),
-        (2, "August",    "/blog/spring-trends",                "Spring Trends 2026",           "Content", "High", "New Page - Long Form",          1800, 3),
-        (2, "August",    "/categories/womens-dresses",         "Women's Dresses Category",     "Content", "High", "Optimisation",                  500,  2),
-        (3, "September", "/blog/workwear-essentials",          "Workwear Essentials Guide",    "Content", "Medium", "New Page - Long Form",        2200, 4),
-        (3, "September", "/products/classic-blazer",          "Classic Blazer Product Page",   "Content", "Low", "Optimisation",                  400,  1),
-        (4, "October",   "/blog/autumn-layering",             "Autumn Layering Techniques",    "Content", "High", "New Page - Long Form",         1900, 3),
+        ("Month 1", "July",      "Summer Fashion Guide 2026",    "https://example.com/blog/summer-fashion",
+         2000, "New Page: Optimisation",           "summer fashion guide", "", "", 3.0, 0.5, 1.0, 0.5, 0.5),
+        ("Month 1", "July",      "How to Style Denim FAQ",       "https://example.com/faq/how-to-style-denim",
+         800,  "Existing Copy: Optimisation & FAQs", "how to style denim", "", "", 2.0, 0.5, 0.5, 0.5, 0.5),
+        ("Month 2", "August",    "Spring Trends 2026",           "https://example.com/blog/spring-trends",
+         1800, "New Page: Optimisation",           "spring fashion trends", "", "", 3.0, 0.5, 1.0, 0.5, 0.5),
+        ("Month 2", "August",    "Women's Dresses Category",     "https://example.com/categories/womens-dresses",
+         500,  "Existing Copy: Optimisation",      "womens dresses", "", "", 2.0, 0.5, 1.0, 0.5, 0.5),
+        ("Month 3", "September", "Workwear Essentials Guide",    "https://example.com/blog/workwear-essentials",
+         2200, "New Page: Optimisation",           "workwear essentials", "", "", 4.0, 0.5, 1.5, 0.5, 0.5),
+        ("Month 3", "September", "Classic Blazer Product Page",  "https://example.com/products/classic-blazer",
+         400,  "Existing Copy: Optimisation",      "classic blazer", "", "", 1.0, 0.5, 0.5, 0.0, 0.0),
+        ("Month 4", "October",   "Autumn Layering Techniques",   "https://example.com/blog/autumn-layering",
+         1900, "New Page: Optimisation",           "autumn layering", "", "", 3.0, 0.5, 1.0, 0.5, 0.5),
     ]
     for row_idx, row_data in enumerate(content_rows, 8):
-        for col_idx, val in enumerate(row_data, 1):
-            ws_cont.cell(row=row_idx, column=col_idx, value=val)
+        (month_str, month_name, content_name, url, words, ct, kw, brief,
+         faq, seo_h, tmpl, prod, rev, impl) = row_data
+        ws_cont.cell(row=row_idx, column=2, value=month_str)
+        ws_cont.cell(row=row_idx, column=3, value=month_name)
+        ws_cont.cell(row=row_idx, column=4, value=content_name)
+        ws_cont.cell(row=row_idx, column=5, value=url)
+        ws_cont.cell(row=row_idx, column=6, value=words)
+        ws_cont.cell(row=row_idx, column=7, value=ct)
+        ws_cont.cell(row=row_idx, column=8, value=kw)
+        ws_cont.cell(row=row_idx, column=9, value=brief)
+        ws_cont.cell(row=row_idx, column=10, value=faq)
+        ws_cont.cell(row=row_idx, column=11, value=seo_h)
+        ws_cont.cell(row=row_idx, column=12, value=tmpl)
+        ws_cont.cell(row=row_idx, column=13, value=prod)
+        ws_cont.cell(row=row_idx, column=14, value=rev)
+        ws_cont.cell(row=row_idx, column=15, value=impl)
 
-    # ── 6. Links sheet ────────────────────────────────────────────────────────
+    # ── 5. Links sheet ─────────────────────────────────────────────────────────
     ws_links = wb.create_sheet("5. Links")
-
-    links_headers = ["Task", "Focus", "Occurrence", "Hours"]
-    for col, h in enumerate(links_headers, 1):
-        ws_links.cell(row=1, column=col, value=h)
+    ws_links.cell(row=3, column=2, value="Task")
+    ws_links.cell(row=3, column=3, value="Description")
+    ws_links.cell(row=3, column=4, value="Hours")
+    ws_links.cell(row=3, column=5, value="Cadence")
 
     links_tasks = [
-        ("Digital PR Outreach", "Off-Page", "Monthly", 4),
-        ("Guest Post Sourcing", "Off-Page", "Monthly", 2),
-        ("Link Reclamation", "Off-Page", "Quarterly", 3),
+        (4, "Digital PR Outreach", "Pitch to lifestyle publications", 4.0, "Monthly"),
+        (5, "Guest Post Sourcing",  "Identify guest post opportunities", 2.0, "Monthly"),
+        (6, "Link Reclamation",    "Recover unlinked brand mentions",   3.0, "Quarterly"),
     ]
-    for row_idx, (task, focus, occ, hrs) in enumerate(links_tasks, 2):
-        ws_links.cell(row=row_idx, column=1, value=task)
-        ws_links.cell(row=row_idx, column=2, value=focus)
-        ws_links.cell(row=row_idx, column=3, value=occ)
-        ws_links.cell(row=row_idx, column=4, value=hrs)
+    for row_num, task, desc, hrs, cadence in links_tasks:
+        ws_links.cell(row=row_num, column=2, value=task)
+        ws_links.cell(row=row_num, column=3, value=desc)
+        ws_links.cell(row=row_num, column=4, value=hrs)
+        ws_links.cell(row=row_num, column=5, value=cadence)
 
     wb.save(out)
     return out

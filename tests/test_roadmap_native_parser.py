@@ -118,6 +118,126 @@ class TestWrapLegacy:
         assert bundle["source_summary"]["parsing_confidence"] == pytest.approx(0.5)
 
 
+class TestRealPatternSOW:
+    """Tests against the Helen Kaminski-layout fixture (real Pattern template structure)."""
+
+    @pytest.fixture(scope="class")
+    def bundle(self):
+        path = FIXTURE_DIR / "sample_real_pattern_sow.xlsx"
+        return parse_pattern_native(path.read_bytes())
+
+    def test_client_name_extracted(self, bundle):
+        assert bundle["client_metadata"]["client_name"] == "Helen Kaminski"
+
+    def test_industry_extracted(self, bundle):
+        assert bundle["client_metadata"]["industry"] == "Accessories"
+
+    def test_retainer_extracted(self, bundle):
+        assert bundle["client_metadata"]["retainer_aud_monthly"] == pytest.approx(4906.0)
+
+    def test_main_poc_extracted(self, bundle):
+        assert "@" in bundle["client_metadata"].get("main_poc", "")
+
+    def test_content_plan_has_real_urls(self, bundle):
+        for item in bundle["content_plan"]:
+            assert item["url"].startswith("http"), f"Bad URL: {item['url']!r}"
+
+    def test_content_plan_word_counts_nonzero(self, bundle):
+        items_with_words = [i for i in bundle["content_plan"] if i["word_count"] > 0]
+        assert len(items_with_words) > 5
+
+    def test_content_plan_seo_hours_nonzero(self, bundle):
+        items_with_hours = [i for i in bundle["content_plan"] if i["seo_hours"] > 0]
+        assert len(items_with_hours) > 5
+
+    def test_content_type_classifies_new_page_before_faq(self, bundle):
+        # 'New Page: Optimisation & FAQs' must be new_page, not faq
+        new_page_items = [
+            i for i in bundle["content_plan"]
+            if "new page" in i.get("_raw_content_type", "").lower()
+        ]
+        for item in new_page_items:
+            assert item["content_type"] == "new_page", (
+                f"Expected new_page, got {item['content_type']!r} "
+                f"for raw type {item.get('_raw_content_type')!r}"
+            )
+
+    def test_existing_copy_with_faqs_is_optimisation(self, bundle):
+        # 'Existing Copy: Optimisation & FAQs' must NOT become 'faq'
+        existing_faq_items = [
+            i for i in bundle["content_plan"]
+            if "existing copy" in i.get("_raw_content_type", "").lower()
+            and "faq" in i.get("_raw_content_type", "").lower()
+        ]
+        for item in existing_faq_items:
+            assert item["content_type"] == "optimisation", (
+                f"Expected optimisation, got {item['content_type']!r}"
+            )
+
+    def test_localisation_flag_captured(self, bundle):
+        loc_items = [i for i in bundle["content_plan"] if i.get("is_localisation")]
+        assert len(loc_items) > 0
+
+    def test_localisation_items_have_non_au_urls(self, bundle):
+        loc_items = [i for i in bundle["content_plan"] if i.get("is_localisation")]
+        # All localisation items in the fixture point to helenkaminski.com (not .com.au)
+        for item in loc_items:
+            assert ".com.au" not in item["url"], (
+                f"Localisation item has .com.au URL: {item['url']}"
+            )
+
+    def test_consulting_tasks_have_names(self, bundle):
+        consulting_tasks = (
+            bundle["per_focus"]["strategy"]["tasks"]
+            + bundle["per_focus"]["analytics"]["tasks"]
+        )
+        named = [t for t in consulting_tasks if t.get("task")]
+        assert len(named) > 3
+
+    def test_tasks_stored_in_per_focus(self, bundle):
+        # 8 consulting tasks + some technical tasks classified into analytics via keyword
+        # — just verify that tasks were stored (not zero)
+        total = len(bundle["per_focus"]["strategy"]["tasks"]) + len(bundle["per_focus"]["analytics"]["tasks"])
+        assert total >= 8
+
+    def test_breakdown_uses_12_month_mean_not_nonzero(self, bundle):
+        # Content hours: sum([9.9,7.8,14.3,15.8,11.5,8.8,0,0,0,0,0,0]) / 12 = 5.68
+        # The nonzero mean would be 11.35 — assert we're not using it
+        content = bundle["per_focus"]["content"]
+        assert content["monthly_hours"] < 8.0, (
+            f"Content hours look like the inflated nonzero mean: {content['monthly_hours']}"
+        )
+
+    def test_breakdown_metadata_in_client_metadata(self, bundle):
+        meta = bundle["client_metadata"]
+        assert meta.get("hours_per_month_target") == pytest.approx(23.28)
+        assert meta.get("cost_per_hour") == pytest.approx(200.0)
+
+    def test_roadmap_sheet_parsed(self, bundle):
+        assert "roadmap_summary" in bundle
+        assert len(bundle["roadmap_summary"]) >= 6
+
+    def test_roadmap_has_technical_deliverables(self, bundle):
+        entries = bundle["roadmap_summary"]
+        tech_entries = [v for v in entries.values() if v.get("technical_deliverable")]
+        assert len(tech_entries) >= 3
+
+    def test_no_invented_split_data(self, bundle):
+        # Old parser: analytics = consulting_avg × 0.3 = 8.58 × 0.3 = 2.58
+        # New parser uses itemised tasks — should be different
+        analytics = bundle["per_focus"]["analytics"]["monthly_hours"]
+        assert analytics != pytest.approx(2.58, abs=0.1)
+
+    def test_monthly_hours_series_present(self, bundle):
+        for area, data in bundle["per_focus"].items():
+            assert "monthly_hours_series" in data, f"Missing monthly_hours_series for {area}"
+            assert len(data["monthly_hours_series"]) == 12
+
+    def test_cms_extracted_from_technical_sheet(self, bundle):
+        # Client Detail doesn't have CMS; Technical sheet row 4 has 'CMS:' / 'Shopify'
+        assert bundle["client_metadata"].get("cms") == "Shopify"
+
+
 class TestLoadRoadmapV2:
     def test_load_roadmap_v2_dispatches_correctly(self, xlsx_bytes, task_csv_bytes, param_csv_bytes):
         b1, m1 = load_roadmap_v2(None, xlsx_bytes, "roadmap.xlsx")
