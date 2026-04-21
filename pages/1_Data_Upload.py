@@ -358,14 +358,33 @@ with tab_roadmap:
                             st.session_state[ROADMAP_BUNDLE] = _bundle
                             st.session_state[ROADMAP_CONTENT_PLAN] = _bundle.get("content_plan", [])
                             st.session_state[ROADMAP_USED_MODEL] = _used_model
-                        except Exception as _e:
-                            st.error(f"Roadmap ingestion failed: {_e}. Falling back to legacy loader.")
+                        except ValueError as _ve:
+                            st.error("Roadmap parsed but failed validation:")
+                            st.code(str(_ve), language="text")
+                            st.warning(
+                                "This usually means the file structure differs from expected. "
+                                "Try re-uploading after correcting the highlighted rows, "
+                                "or fall back to the legacy loader below."
+                            )
                             try:
                                 _legacy = load_roadmap(_raw_bytes)
                                 if _legacy:
                                     run_detection(store, roadmap_data=_legacy)
                                     st.session_state[ROADMAP_DATA] = _legacy
-                                    st.warning("Legacy extraction used — upload AI key for rich extraction.")
+                                    st.info("Legacy fallback succeeded with reduced fidelity (3 scalars only).")
+                            except Exception as _e2:
+                                st.error(f"Legacy fallback also failed: {_e2}")
+                        except Exception as _e:
+                            import traceback
+                            st.error(f"Roadmap ingestion failed: {_e}")
+                            with st.expander("Show error details"):
+                                st.code(traceback.format_exc(), language="text")
+                            st.warning("Falling back to legacy loader — extraction will be limited to three scalars.")
+                            try:
+                                _legacy = load_roadmap(_raw_bytes)
+                                if _legacy:
+                                    run_detection(store, roadmap_data=_legacy)
+                                    st.session_state[ROADMAP_DATA] = _legacy
                             except Exception as _e2:
                                 st.error(f"Legacy fallback also failed: {_e2}")
 
@@ -382,9 +401,41 @@ with tab_roadmap:
                         "before applying to assumptions."
                     )
 
+                # ── Strategy at a glance ─────────────────────────────────
+                _strategy_summary = _bundle.get("strategy_summary", "")
+                _primary_domain = _bundle.get("primary_domain", "")
+                _loc_domains = _bundle.get("localisation_domains", [])
+                _client_name = _bundle.get("client_metadata", {}).get("client_name", "")
+
+                if _strategy_summary or _primary_domain:
+                    with st.container(border=True):
+                        st.markdown("**Strategy at a Glance**")
+                        if _client_name:
+                            st.caption(f"Client: {_client_name}")
+                        if _strategy_summary:
+                            st.markdown(_strategy_summary)
+                        _domain_cols = st.columns(2)
+                        with _domain_cols[0]:
+                            if _primary_domain:
+                                st.markdown(f"**Primary domain:** `{_primary_domain}`")
+                        with _domain_cols[1]:
+                            if _loc_domains:
+                                _loc_list = ", ".join(f"`{d}`" for d in _loc_domains)
+                                st.markdown(f"**Localisation:** {_loc_list}")
+
+                # ── Validation warnings (tiered — not errors) ───────────
+                _warnings = _bundle.get("validation_warnings", [])
+                if _warnings:
+                    with st.expander(f"⚠ {len(_warnings)} data-quality warning(s)", expanded=False):
+                        for _w in _warnings:
+                            st.markdown(f"- {_w}")
+
                 # KPI cards
                 k1, k2, k3, k4 = st.columns(4)
-                k1.metric("Tasks Detected", _ss.get("total_tasks_detected", "—"))
+                k1.metric("Items Detected", _ss.get("total_tasks_detected", "—"))
+                _launches = _ss.get("content_launches_detected", 0)
+                if _launches:
+                    k1.caption(f"({_launches} content launches)")
                 k2.metric("Focus Areas", len(_ss.get("focus_areas_detected", [])))
                 k3.metric("Timeline", f"{_ss.get('timeline_months_covered', '—')} months")
                 k4.metric("Confidence", f"{_conf:.0%}")
@@ -401,13 +452,6 @@ with tab_roadmap:
                             st.warning(_msg)
                         else:
                             st.info(_msg)
-
-                # Gaps
-                _gaps = _bundle.get("gaps", [])
-                if _gaps:
-                    with st.expander(f"{len(_gaps)} gap(s) detected"):
-                        for _g in _gaps:
-                            st.markdown(f"- **{_g.get('focus_area', '?')}**: {_g.get('note', '')}")
 
                 # Per-focus breakdown table
                 st.subheader("Per-Focus Breakdown")

@@ -349,9 +349,6 @@ _CANNED_ENRICHMENT = {
     "recommendations": [
         {"severity": "warning", "focus_area": "off_page", "message": "No link-building tasks detected."}
     ],
-    "gaps": [
-        {"focus_area": "off_page", "note": "Zero hours allocated."}
-    ],
     "focus_corrections": [],
     "effort_verification": [
         {"focus": "content", "claimed": "aggressive", "verified": "aggressive", "note": ""}
@@ -364,12 +361,11 @@ class TestEnrichBundleWithAi:
         import copy
         return copy.deepcopy(_CANNED_BUNDLE)
 
-    def test_enrich_adds_recommendations_and_gaps(self):
+    def test_enrich_adds_recommendations(self):
         from engine.roadmap_ai_engine import enrich_bundle_with_ai
         client = _make_enrichment_client(_CANNED_ENRICHMENT)
         bundle, used_model = enrich_bundle_with_ai(client, self._base_bundle())
         assert len(bundle["recommendations"]) >= 1
-        assert len(bundle["gaps"]) >= 1
         assert isinstance(used_model, str)
 
     def test_enrich_does_not_modify_per_focus_hours(self):
@@ -482,3 +478,45 @@ class TestLoadRoadmapV2WithEnrichment:
         user_msg = captured["messages"][-1]["content"]
         assert "Technical audit is quarterly" in user_msg
         assert "Previous extraction" in user_msg
+
+
+class TestStrategySummary:
+    def test_summary_uses_bundle_fields(self):
+        from engine.roadmap_ai_engine import summarise_strategy_with_ai
+
+        captured = {}
+
+        class _CapturingClient:
+            class chat:
+                class completions:
+                    @staticmethod
+                    def create(**kwargs):
+                        captured["messages"] = kwargs.get("messages", [])
+
+                        class _R:
+                            class _C:
+                                class _M:
+                                    content = json.dumps({"strategy_summary": "Test summary text."})
+                                message = _M()
+                            choices = [_C()]
+                        return _R()
+
+        bundle = {
+            "client_metadata": {"client_name": "Acme Co", "industry": "Accessories"},
+            "per_focus": {k: {"monthly_hours": 0.0} for k in ("content", "technical", "on_page", "off_page", "local", "analytics", "strategy")},
+            "content_plan": [],
+            "timeline": {"months_covered": 12},
+            "primary_domain": "acme.com",
+            "localisation_domains": [],
+        }
+        summary, model = summarise_strategy_with_ai(_CapturingClient(), bundle)
+        assert summary == "Test summary text."
+        user_msg = captured["messages"][-1]["content"]
+        assert "Acme Co" in user_msg
+        assert "acme.com" in user_msg
+
+    def test_returns_empty_when_client_none(self):
+        from engine.roadmap_ai_engine import summarise_strategy_with_ai
+        summary, model = summarise_strategy_with_ai(None, {})
+        assert summary == ""
+        assert model == "no-client"

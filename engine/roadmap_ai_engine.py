@@ -332,7 +332,6 @@ def enrich_bundle_with_ai(
     enrichment = _parse_llm_json(text)
 
     bundle["recommendations"] = enrichment.get("recommendations", [])
-    bundle["gaps"] = enrichment.get("gaps", [])
 
     for correction in enrichment.get("focus_corrections", []):
         task_name = correction.get("task_name")
@@ -342,6 +341,61 @@ def enrich_bundle_with_ai(
             _reclassify_task(bundle, task_name, from_focus, to_focus)
 
     return bundle, used_model
+
+
+def summarise_strategy_with_ai(
+    client,
+    bundle: dict,
+    model: str = "anthropic/claude-sonnet-4-6",
+) -> tuple[str, str]:
+    """Generate a 2-3 sentence strategy summary from a bundle.
+
+    Returns (summary_text, used_model). When client is None, returns ("", "no-client").
+    """
+    if client is None:
+        return "", "no-client"
+
+    meta = bundle.get("client_metadata", {})
+    per_focus = bundle.get("per_focus", {})
+    cp = bundle.get("content_plan", [])
+    timeline = bundle.get("timeline", {})
+
+    content_count = len(cp)
+    new_page_count = sum(1 for i in cp if i.get("content_type") == "new_page")
+    optimisation_count = sum(1 for i in cp if i.get("content_type") == "optimisation")
+    faq_count = sum(1 for i in cp if i.get("content_type") == "faq")
+    localisation_count = sum(1 for i in cp if i.get("is_localisation"))
+
+    per_focus_lines = []
+    for focus in ("content", "technical", "on_page", "off_page", "local", "analytics", "strategy"):
+        hrs = per_focus.get(focus, {}).get("monthly_hours", 0)
+        per_focus_lines.append(f"  {focus}: {hrs:.1f} h/mo")
+    per_focus_str = "\n".join(per_focus_lines)
+
+    loc_domains = bundle.get("localisation_domains", [])
+    loc_str = ", ".join(loc_domains) if loc_domains else "(none)"
+
+    system, user_tmpl = _load_prompt("summarise_roadmap_strategy")
+    user_input = user_tmpl.substitute(
+        client_name=meta.get("client_name", "Unknown"),
+        industry=meta.get("industry", "Unknown"),
+        timeline_months=timeline.get("months_covered", 12),
+        primary_domain=bundle.get("primary_domain", "(none)"),
+        localisation_domains=loc_str,
+        content_count=content_count,
+        new_page_count=new_page_count,
+        optimisation_count=optimisation_count,
+        faq_count=faq_count,
+        localisation_count=localisation_count,
+        per_focus_hours=per_focus_str,
+    )
+
+    text, used_model = generate_with_fallback(
+        client, model, system, user_input,
+        temperature=0.2, max_tokens=500,
+    )
+    result = _parse_llm_json(text)
+    return result.get("strategy_summary", ""), used_model
 
 
 def extract_roadmap_full_ai(
@@ -429,7 +483,13 @@ def load_roadmap_v2(
         bundle = parse_pattern_native(raw_bytes)
         if client is not None:
             bundle, used_model = enrich_bundle_with_ai(client, bundle, model=model)
+            try:
+                summary, _ = summarise_strategy_with_ai(client, bundle, model=model)
+                bundle["strategy_summary"] = summary
+            except Exception:
+                bundle["strategy_summary"] = ""
             return bundle, used_model
+        bundle["strategy_summary"] = ""
         return bundle, "deterministic"
 
     if fmt == "task_table":
@@ -438,7 +498,13 @@ def load_roadmap_v2(
         bundle = wrap_legacy_task_table_as_bundle(legacy)
         if client is not None:
             bundle, used_model = enrich_bundle_with_ai(client, bundle, model=model)
+            try:
+                summary, _ = summarise_strategy_with_ai(client, bundle, model=model)
+                bundle["strategy_summary"] = summary
+            except Exception:
+                bundle["strategy_summary"] = ""
             return bundle, used_model
+        bundle["strategy_summary"] = ""
         return bundle, "deterministic"
 
     if fmt == "param_table":

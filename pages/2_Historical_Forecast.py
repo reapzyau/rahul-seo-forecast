@@ -24,14 +24,12 @@ setup_page(
 # ── Sidebar ──────────────────────────────────────────────────────────────────
 st.sidebar.header("Historical Forecast Settings")
 
-months = st.sidebar.slider("Forecast Horizon (months)", 3, 36, 12)
+months = st.sidebar.slider("Forecast Horizon (months)", 3, 36, 12, key="hist_months")
 
-st.sidebar.divider()
-st.sidebar.subheader("Advanced")
 use_v4 = st.sidebar.checkbox(
-    "Use v4 auto-gated model selection",
+    "Auto-select model based on data length",
     value=True,
-    help="Automatically selects Prophet/Holt's/Linear based on data length.",
+    help="Uses Prophet for ≥24 months, Holt's for 12–23, linear for <12. Recommended.",
     key="hist_use_v4",
 )
 
@@ -39,34 +37,49 @@ use_v4 = st.sidebar.checkbox(
 _n_hist = st.session_state.get(HIST_N_MONTHS, 0)
 _prophet_active = use_v4 and _n_hist >= 24
 
-# V4-specific controls
-changepoint_prior_scale = st.sidebar.slider(
-    "Trend flexibility (Prophet)",
-    0.001, 0.5, 0.05, step=0.005,
-    key="hist_changepoint",
-    help="Higher = more flexible trend (Prophet only). 0.05 is recommended.",
-    disabled=not _prophet_active,
-)
+# V4-specific: trend flexibility (only meaningful when Prophet is actually active)
+if _prophet_active:
+    changepoint_prior_scale = st.sidebar.slider(
+        "Trend flexibility",
+        0.001, 0.5, 0.05, step=0.005,
+        key="hist_changepoint",
+        help="Higher = more flexible trend (Prophet only). 0.05 is recommended.",
+    )
+else:
+    changepoint_prior_scale = 0.05
 
-# Legacy multi-method controls (shown when v4 is off)
-methods = st.sidebar.multiselect(
-    "Forecasting Method (legacy)",
-    ["Linear Regression", "Exponential Smoothing", "Simple Moving Average"],
-    default=["Linear Regression", "Exponential Smoothing"],
-    key="hist_methods",
-    disabled=use_v4,
-)
-sma_window = st.sidebar.slider("SMA Window (months)", 2, 6, 3, disabled=use_v4)
-alpha = st.sidebar.slider("Smoothing Alpha", 0.1, 0.9, 0.3, step=0.05, disabled=use_v4)
-# Prophet provides its own uncertainty intervals; confidence band only applies to linear/Holt's
-confidence = st.sidebar.slider("Confidence Band (%)", 5, 30, 15, disabled=_prophet_active)
+# Legacy controls — only shown when v4 is off
+if not use_v4:
+    with st.sidebar.expander("Legacy model settings", expanded=False):
+        methods = st.multiselect(
+            "Forecasting Method",
+            ["Linear Regression", "Exponential Smoothing", "Simple Moving Average"],
+            default=["Linear Regression", "Exponential Smoothing"],
+            key="hist_methods",
+        )
+        sma_window = st.slider("SMA Window (months)", 2, 6, 3, key="hist_sma_window")
+        alpha = st.slider("Smoothing Alpha", 0.1, 0.9, 0.3, step=0.05, key="hist_alpha")
+        confidence = st.slider("Confidence Band (%)", 5, 30, 15, key="hist_confidence")
+else:
+    methods = ["Linear Regression"]
+    sma_window = 3
+    alpha = 0.3
+    confidence = 15
 
-st.sidebar.divider()
-st.sidebar.subheader("Revenue Settings")
-enable_revenue = st.sidebar.checkbox("Enable Revenue Projection", key="hist_rev")
-cvr = st.sidebar.number_input("Conversion Rate (%)", 0.1, 100.0, 2.5, step=0.1, key="hist_cvr", disabled=not enable_revenue)
-aov = st.sidebar.number_input("Average Order Value", 1.0, 100000.0, 100.0, step=10.0, key="hist_aov", disabled=not enable_revenue)
-currency = st.sidebar.selectbox("Currency", list(CURRENCY_SYMBOLS.keys()), key="hist_cur", disabled=not enable_revenue)
+with st.sidebar.expander("Revenue projection", expanded=False):
+    enable_revenue = st.checkbox("Enable revenue projection", key="hist_rev")
+    cvr = st.number_input(
+        "Conversion Rate (%)", 0.1, 100.0, 2.5, step=0.1,
+        key="hist_cvr", disabled=not enable_revenue,
+    )
+    aov = st.number_input(
+        "Average Order Value", 1.0, 100000.0, 100.0, step=10.0,
+        key="hist_aov", disabled=not enable_revenue,
+    )
+    currency = st.selectbox(
+        "Currency", list(CURRENCY_SYMBOLS.keys()),
+        key="hist_cur", disabled=not enable_revenue,
+    )
 
 # ── Upload ───────────────────────────────────────────────────────────────────
 st.subheader("Upload Historical Data")
