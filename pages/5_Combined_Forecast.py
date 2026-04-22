@@ -230,6 +230,7 @@ if st.button("Generate Combined Forecast", type="primary", key="comb_run"):
 
         st.session_state[COMB_RESULTS] = {
             "combined_df": combined_df,
+            "yoy_rate": combined_df.attrs.get("yoy_rate"),
             "include_baseline": include_baseline,
             "include_positional": include_positional,
             "include_new_content": include_new_content,
@@ -282,6 +283,14 @@ if COMB_RESULTS in st.session_state:
         c2.metric("Combined (End)", f"{combined_end:,}")
         c3.metric("Positional Uplift", f"{pos_total:,}")
         c4.metric("Uplift at End", f"{uplift_end}%")
+
+        _yoy = r.get("yoy_rate")
+        if _yoy is not None:
+            st.caption(
+                f"Baseline uses year-over-year growth at **{_yoy:+.1%}/year** "
+                f"(median of same-month comparisons). "
+                f"Each forecast month anchors to the same calendar month 12 months prior."
+            )
 
         fig = combined_three_stream_chart(combined_df)
         st.plotly_chart(fig, use_container_width=True)
