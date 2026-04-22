@@ -308,6 +308,71 @@ class TestRunHistoricalForecast:
         assert "sma" in result.columns
 
 
+# ── YoY Growth Forecast ──────────────────────────────────────────────────────
+
+
+class TestYoYGrowthForecast:
+    def test_flat_series_stays_flat(self):
+        from engine.historical_engine import yoy_growth_forecast
+        dates = pd.date_range("2022-01-01", periods=24, freq="MS")
+        traffic = pd.Series([5000] * 24)
+        result = yoy_growth_forecast(dates, traffic, future_months=12)
+        forecast = result[result["is_forecast"]]
+        # Flat series → yoy_rate ≈ 0 → forecast ≈ 5000
+        assert all(abs(forecast["linear"] - 5000) < 50)
+
+    def test_growing_series_extrapolates_trend(self):
+        from engine.historical_engine import yoy_growth_forecast
+        dates = pd.date_range("2022-01-01", periods=24, freq="MS")
+        # ~20% YoY growth: month 13 is 1.2x month 1
+        base = 4000
+        traffic = pd.Series([int(base * (1.2 ** (i / 12))) for i in range(24)])
+        result = yoy_growth_forecast(dates, traffic, future_months=6)
+        forecast = result[result["is_forecast"]]
+        # Forecast should be higher than the same months from year 1
+        assert forecast["linear"].iloc[0] > traffic.iloc[12]
+
+    def test_yoy_rate_stored_in_attrs(self):
+        from engine.historical_engine import yoy_growth_forecast
+        dates = pd.date_range("2022-01-01", periods=24, freq="MS")
+        traffic = pd.Series([5000] * 24)
+        result = yoy_growth_forecast(dates, traffic, future_months=6)
+        assert "yoy_rate" in result.attrs
+        assert isinstance(result.attrs["yoy_rate"], float)
+
+    def test_short_history_uses_annualised_fallback(self):
+        from engine.historical_engine import yoy_growth_forecast
+        dates = pd.date_range("2024-01-01", periods=6, freq="MS")
+        traffic = pd.Series([1000, 1100, 1200, 1300, 1400, 1500])
+        result = yoy_growth_forecast(dates, traffic, future_months=6)
+        assert "yoy_rate" in result.attrs
+        # With 6 months and no same-month prior, uses annualised slope
+        assert result.attrs["yoy_rate"] > 0  # growing series
+
+    def test_returns_same_column_contract_as_linear_forecast(self):
+        from engine.historical_engine import linear_forecast, yoy_growth_forecast
+        dates = pd.date_range("2022-01-01", periods=24, freq="MS")
+        traffic = pd.Series([5000] * 24)
+        yoy = yoy_growth_forecast(dates, traffic, future_months=6)
+        lin = linear_forecast(dates, traffic, future_months=6)
+        assert set(yoy.columns) == set(lin.columns)
+
+    def test_combined_engine_uses_yoy_for_long_history(self):
+        from engine.combined_engine import run_combined_forecast
+        dates = pd.date_range("2022-01-01", periods=24, freq="MS")
+        historical = pd.DataFrame({"date": dates, "traffic": [5000] * 24})
+        result = run_combined_forecast(historical, None, None, months=12)
+        assert result.attrs.get("yoy_rate") is not None
+
+    def test_combined_engine_uses_linear_for_short_history(self):
+        from engine.combined_engine import run_combined_forecast
+        dates = pd.date_range("2024-01-01", periods=12, freq="MS")
+        historical = pd.DataFrame({"date": dates, "traffic": [5000] * 12})
+        result = run_combined_forecast(historical, None, None, months=6)
+        # <13 months → linear forecast → no yoy_rate attr
+        assert result.attrs.get("yoy_rate") is None
+
+
 # ── Combined Engine ─────────────────────────────────────────────────────────
 
 

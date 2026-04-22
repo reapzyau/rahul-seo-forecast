@@ -1,6 +1,6 @@
 import pandas as pd
 
-from engine.historical_engine import linear_forecast
+from engine.historical_engine import linear_forecast, yoy_growth_forecast
 
 
 def run_combined_forecast(
@@ -25,6 +25,7 @@ def run_combined_forecast(
         decay, combined bands, is_forecast, uplift_pct.
     """
     rows = []
+    _yoy_rate: float | None = None
 
     has_bands = (
         positional_monthly is not None
@@ -35,7 +36,13 @@ def run_combined_forecast(
     if historical_df is not None:
         dates = historical_df["date"]
         traffic = historical_df["traffic"]
-        baseline_df = linear_forecast(dates, traffic, months, confidence=15.0)
+        # YoY growth baseline when ≥13 months: anchors each forecast month to the
+        # same calendar month from 12 months prior and applies median YoY rate.
+        # Falls back to OLS linear forecast for shorter histories.
+        if len(traffic) >= 13:
+            baseline_df = yoy_growth_forecast(dates, traffic, months)
+        else:
+            baseline_df = linear_forecast(dates, traffic, months, confidence=15.0)
 
         # Historical portion
         for i in range(len(traffic)):
@@ -48,6 +55,7 @@ def run_combined_forecast(
 
         baseline_forecast = baseline_df[baseline_df["is_forecast"]].reset_index(drop=True)
         last_date = dates.iloc[-1]
+        _yoy_rate = baseline_df.attrs.get("yoy_rate")
 
         for j in range(1, months + 1):
             forecast_date = last_date + pd.DateOffset(months=j)
@@ -76,6 +84,8 @@ def run_combined_forecast(
             ))
 
     result = pd.DataFrame(rows)
+    if _yoy_rate is not None:
+        result.attrs["yoy_rate"] = _yoy_rate
 
     # Uplift percentage (P50-based when bands available)
     forecast_mask = result["is_forecast"]
