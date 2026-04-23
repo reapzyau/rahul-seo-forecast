@@ -2017,3 +2017,107 @@ class TestCombinedSeasonality:
         assert first_forecast_month == expected, (
             f"Expected first forecast month={expected}, got {first_forecast_month}"
         )
+
+
+# ── Comparison columns ───────────────────────────────────────────────────────
+
+
+class TestComparisonColumns:
+    """Tests for engine.combined_engine._add_comparison_columns."""
+
+    def _make_combined(self, n_hist: int = 14, n_fc: int = 12) -> pd.DataFrame:
+        """Build a minimal combined_df with history + forecast rows."""
+        from engine.combined_engine import run_combined_forecast
+
+        rows_hist = []
+        for i in range(n_hist):
+            date = pd.Timestamp("2024-01-01") + pd.DateOffset(months=i)
+            rows_hist.append({"date": date, "traffic": float(10_000 + i * 200)})
+        hist_df = pd.DataFrame(rows_hist)
+
+        result = run_combined_forecast(
+            historical_df=hist_df,
+            positional_monthly=None,
+            new_content_monthly=None,
+            months=n_fc,
+            seasonality=None,
+        )
+        return result
+
+    def test_mom_diff_uses_prior_row(self):
+        df = self._make_combined()
+        forecast = df[df["is_forecast"]].reset_index(drop=True)
+
+        # MoM diff for row[1] should equal combined[1] - combined[0]
+        col = "combined_p50" if "combined_p50" in forecast.columns else "combined"
+        v0 = float(forecast.iloc[0][col])
+        v1 = float(forecast.iloc[1][col])
+
+        expected = round(v1 - v0, 1)
+        actual = forecast.iloc[1]["mom_diff"]
+        assert actual is not None and abs(float(actual) - expected) < 1.0, (
+            f"mom_diff row 1 expected {expected}, got {actual}"
+        )
+
+    def test_mom_pct_first_forecast_row_is_none_or_nan(self):
+        from engine.combined_engine import run_combined_forecast
+
+        # No historical_df → all rows are forecast; first row has no prior → MoM blank
+        df = run_combined_forecast(
+            historical_df=None,
+            positional_monthly=None,
+            new_content_monthly=None,
+            months=6,
+            seasonality=None,
+        )
+        forecast = df[df["is_forecast"]].reset_index(drop=True)
+        first_mom_pct = forecast.iloc[0]["mom_pct"]
+        assert first_mom_pct is None or (
+            isinstance(first_mom_pct, float) and pd.isna(first_mom_pct)
+        ), f"Expected None/NaN for first row mom_pct, got {first_mom_pct}"
+
+    def test_yoy_diff_when_prior_year_in_history(self):
+        df = self._make_combined(n_hist=14, n_fc=12)
+        forecast = df[df["is_forecast"]].reset_index(drop=True)
+
+        # First forecast month is 15 months after start of history → prior year
+        # is month 3 of history (index 2) — there IS a history row 12 months prior
+        rows_with_yoy = forecast[forecast["yoy_diff"].notna()]
+        assert not rows_with_yoy.empty, "Expected at least one forecast row with yoy_diff"
+
+    def test_yoy_blank_when_no_prior_year_match(self):
+        # Only 6 months of history → first forecast month has no row 12 months prior
+        df = self._make_combined(n_hist=6, n_fc=12)
+        forecast = df[df["is_forecast"]].reset_index(drop=True)
+
+        # First 6 forecast months have no history to compare against
+        early = forecast.iloc[:6]
+        assert early["yoy_diff"].isna().all() or (early["yoy_diff"] == None).all(), (  # noqa: E711
+            "Expected early forecast rows to have no YoY diff when history < 12 months"
+        )
+
+    def test_yoy_uses_actual_for_history_rows_combined_p50_for_forecast(self):
+        from engine.combined_engine import _add_comparison_columns
+
+        # Build a tiny synthetic df with 2 history rows and 1 forecast row
+        rows = [
+            {"date": pd.Timestamp("2024-01-01"), "actual": 10_000.0,
+             "combined_p50": 10_000.0, "is_forecast": False},
+            {"date": pd.Timestamp("2024-02-01"), "actual": 11_000.0,
+             "combined_p50": 11_000.0, "is_forecast": False},
+            {"date": pd.Timestamp("2025-01-01"), "actual": None,
+             "combined_p50": 12_500.0, "is_forecast": True},
+        ]
+        df = pd.DataFrame(rows)
+
+        result = _add_comparison_columns(df)
+
+        # Jan 2024 history row: value = actual = 10,000
+        # Feb 2024 history row: MoM diff should use actual (11,000 - 10,000 = 1,000)
+        assert result.iloc[1]["mom_diff"] == pytest.approx(1_000.0, abs=1.0)
+
+        # Jan 2025 forecast: YoY prior = Jan 2024 actual = 10,000
+        # combined_p50 = 12,500 → yoy_diff = 2,500
+        assert result.iloc[2]["yoy_prior"] == pytest.approx(10_000.0, abs=1.0)
+        assert result.iloc[2]["yoy_diff"] == pytest.approx(2_500.0, abs=1.0)
+        assert result.iloc[2]["yoy_pct"] == pytest.approx(25.0, abs=0.5)

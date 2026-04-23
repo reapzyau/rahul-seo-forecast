@@ -125,12 +125,78 @@ def run_combined_forecast(
     if has_bands and "positional_uplift" not in result.columns:
         result["positional_uplift"] = result["positional_uplift_p50"]
 
+    result = _add_comparison_columns(result)
     return result
 
 
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
+
+def _add_comparison_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """Add mom_diff, mom_pct, yoy_diff, yoy_pct, yoy_prior columns.
+
+    Value source per row:
+      is_forecast=False → actual (GA4 traffic)
+      is_forecast=True  → combined_p50 when bands present, else combined
+
+    YoY: look back 12 months by calendar month key; blank when no match.
+    MoM: diff from the immediately preceding row; blank for row 0.
+    yoy_prior stores the prior-year value so the page can display it directly.
+    """
+    has_bands = "combined_p50" in df.columns
+    fc_col = "combined_p50" if has_bands else "combined"
+
+    # Build the effective value for each row
+    def _val(row):
+        if not row["is_forecast"]:
+            v = row.get("actual")
+            return float(v) if v is not None and pd.notna(v) else None
+        v = row.get(fc_col)
+        return float(v) if v is not None and pd.notna(v) else None
+
+    values = [_val(row) for _, row in df.iterrows()]
+
+    # month-key → value dict for YoY lookup
+    dates = pd.to_datetime(df["date"]).tolist()
+    date_to_val: dict[str, float] = {}
+    for d, v in zip(dates, values, strict=False):
+        if v is not None:
+            date_to_val[d.strftime("%Y-%m")] = v
+
+    mom_diff: list = [None] * len(df)
+    mom_pct: list = [None] * len(df)
+    yoy_diff: list = [None] * len(df)
+    yoy_pct: list = [None] * len(df)
+    yoy_prior: list = [None] * len(df)
+
+    for i, (d, v) in enumerate(zip(dates, values, strict=False)):
+        if v is None:
+            continue
+
+        # MoM — compare to previous row value
+        if i > 0:
+            prev = values[i - 1]
+            if prev is not None and prev > 0:
+                mom_diff[i] = round(v - prev, 1)
+                mom_pct[i] = round((v - prev) / prev * 100, 1)
+
+        # YoY — find same month 12 months prior
+        prior_key = (d - pd.DateOffset(months=12)).strftime("%Y-%m")
+        prior_val = date_to_val.get(prior_key)
+        yoy_prior[i] = prior_val
+        if prior_val is not None and prior_val > 0:
+            yoy_diff[i] = round(v - prior_val, 1)
+            yoy_pct[i] = round((v - prior_val) / prior_val * 100, 1)
+
+    df = df.copy()
+    df["mom_diff"] = mom_diff
+    df["mom_pct"] = mom_pct
+    df["yoy_diff"] = yoy_diff
+    df["yoy_pct"] = yoy_pct
+    df["yoy_prior"] = yoy_prior
+    return df
+
 
 def _seasonalised_baseline(
     dates: pd.Series,

@@ -300,7 +300,7 @@ if COMB_RESULTS in st.session_state:
         if baseline_end > 0 else 0
     )
 
-    tab_names = ["\U0001f4ca Combined Chart", "\U0001f4cb Uplift Table"]
+    tab_names = ["\U0001f4ca Combined Chart", "\U0001f4cb Uplift Table", "\U0001f4c8 YoY / MoM"]
     if r["enable_revenue"]:
         tab_names.append("\U0001f4b0 Revenue Analysis")
     tab_names.append("\U0001f4e5 Export")
@@ -390,6 +390,75 @@ if COMB_RESULTS in st.session_state:
         display_df["date"] = display_df["date"].dt.strftime("%b %Y")
         display_df = display_df.rename(columns=rename_map)
         st.dataframe(display_df, use_container_width=True, hide_index=True)
+
+    # ── Tab: YoY / MoM ─────────────────────────────────────────────
+    with tabs[tab_idx]:
+        tab_idx += 1
+
+        fc_rows = forecast_df.copy()
+
+        mom_vals = fc_rows["mom_pct"].dropna() if "mom_pct" in fc_rows.columns else pd.Series(dtype=float)
+        yoy_vals = fc_rows["yoy_pct"].dropna() if "yoy_pct" in fc_rows.columns else pd.Series(dtype=float)
+
+        k1, k2, k3, k4 = st.columns(4)
+        k1.metric("Avg MoM %", f"{mom_vals.mean():+.1f}%" if not mom_vals.empty else "—")
+        if not mom_vals.empty:
+            peak_mom_idx = mom_vals.abs().idxmax()
+            peak_mom_month = fc_rows.loc[peak_mom_idx, "date"].strftime("%b")
+            k2.metric("Peak MoM %", f"{mom_vals[peak_mom_idx]:+.1f}% ({peak_mom_month})")
+        else:
+            k2.metric("Peak MoM %", "—")
+        k3.metric("Avg YoY %", f"{yoy_vals.mean():+.1f}%" if not yoy_vals.empty else "—")
+        if not yoy_vals.empty:
+            peak_yoy_idx = yoy_vals.abs().idxmax()
+            k4.metric("Peak YoY %", f"{yoy_vals[peak_yoy_idx]:+.1f}%")
+        else:
+            k4.metric("Peak YoY %", "—")
+
+        # Build display table
+        yoy_table_rows = []
+        for _, row in fc_rows.iterrows():
+            cv = row.get(combined_col)
+            yoy_table_rows.append({
+                "Month": row["date"].strftime("%b %Y"),
+                "Forecast P50": f"{int(cv):,}" if pd.notna(cv) else "—",
+                "Prior Year Actual": (
+                    f"{int(row['yoy_prior']):,}"
+                    if "yoy_prior" in row.index and pd.notna(row.get("yoy_prior"))
+                    else "—"
+                ),
+                "YoY Diff": (
+                    f"{int(row['yoy_diff']):+,}"
+                    if "yoy_diff" in row.index and pd.notna(row.get("yoy_diff"))
+                    else "—"
+                ),
+                "YoY %": (
+                    f"{row['yoy_pct']:+.1f}%"
+                    if "yoy_pct" in row.index and pd.notna(row.get("yoy_pct"))
+                    else "—"
+                ),
+                "MoM Diff": (
+                    f"{int(row['mom_diff']):+,}"
+                    if "mom_diff" in row.index and pd.notna(row.get("mom_diff"))
+                    else "—"
+                ),
+                "MoM %": (
+                    f"{row['mom_pct']:+.1f}%"
+                    if "mom_pct" in row.index and pd.notna(row.get("mom_pct"))
+                    else "—"
+                ),
+            })
+
+        if yoy_table_rows:
+            st.dataframe(pd.DataFrame(yoy_table_rows), use_container_width=True, hide_index=True)
+        else:
+            st.info("No forecast data available for YoY/MoM comparison.")
+
+        st.caption(
+            "Seasonality is baked into the forecast so these comparisons represent "
+            "genuine growth, not seasonal noise. Prior Year Actual is pulled from "
+            "uploaded GA4 history where the date matches (12 months prior)."
+        )
 
     # ── Tab: Revenue Analysis ───────────────────────────────────────
     if r["enable_revenue"]:
