@@ -1871,3 +1871,149 @@ class TestDeseasonalise:
         expected = raw_value / (1.0 + nov_mod)
         assert deseasoned.iloc[0] == pytest.approx(expected, rel=1e-6)
         assert deseasoned.iloc[0] < raw_value
+
+
+# ── Combined seasonality ─────────────────────────────────────────────────────
+
+
+class TestCombinedSeasonality:
+    """Tests for seasonality-aware baseline in run_combined_forecast."""
+
+    def _make_hist_df(self, n_months: int = 12, base: int = 10_000, start_month: int = 1) -> pd.DataFrame:
+        rows = []
+        for i in range(n_months):
+            month = (start_month - 1 + i) % 12 + 1
+            year = 2024 + (start_month - 1 + i) // 12
+            rows.append({"date": pd.Timestamp(year, month, 1), "traffic": float(base + i * 200)})
+        return pd.DataFrame(rows)
+
+    def test_backward_compat_no_seasonality_matches_linear_forecast(self):
+        from engine.combined_engine import run_combined_forecast
+        from engine.historical_engine import linear_forecast
+
+        hist = self._make_hist_df(n_months=10)
+        dates = hist["date"]
+        traffic = hist["traffic"]
+
+        result_no_season = run_combined_forecast(
+            historical_df=hist,
+            positional_monthly=None,
+            new_content_monthly=None,
+            months=6,
+            seasonality=None,
+        )
+
+        # Without seasonality, baseline should match plain linear_forecast output
+        lf = linear_forecast(dates, traffic, 6, confidence=15.0)
+        lf_forecast = lf[lf["is_forecast"]].reset_index(drop=True)
+        combined_forecast = result_no_season[result_no_season["is_forecast"]].reset_index(drop=True)
+
+        for i in range(6):
+            expected = int(lf_forecast.iloc[i]["linear"])
+            actual = int(combined_forecast.iloc[i]["baseline"])
+            assert abs(actual - expected) <= 1, (
+                f"Month {i+1}: expected baseline={expected}, got {actual}"
+            )
+
+    def test_november_baseline_higher_than_may(self):
+        """With DEFAULT_SEASONALITY on short history, Nov forecast > May forecast."""
+        from engine.combined_engine import run_combined_forecast
+        from engine.seasonality_engine import DEFAULT_SEASONALITY
+
+        # 10 months of history starting May — so Nov and May both appear in forecast
+        hist = self._make_hist_df(n_months=10, base=10_000, start_month=5)
+
+        result = run_combined_forecast(
+            historical_df=hist,
+            positional_monthly=None,
+            new_content_monthly=None,
+            months=12,
+            seasonality=DEFAULT_SEASONALITY,
+        )
+
+        forecast = result[result["is_forecast"]].copy()
+        forecast["month"] = pd.to_datetime(forecast["date"]).dt.month
+
+        nov_rows = forecast[forecast["month"] == 11]
+        may_rows = forecast[forecast["month"] == 5]
+
+        if nov_rows.empty or may_rows.empty:
+            import pytest
+            pytest.skip("Forecast window does not include both Nov and May")
+
+        nov_baseline = nov_rows["baseline"].iloc[0]
+        may_baseline = may_rows["baseline"].iloc[0]
+
+        assert nov_baseline > may_baseline, (
+            f"Expected Nov baseline ({nov_baseline}) > May baseline ({may_baseline})"
+        )
+
+    def test_baseline_lift_matches_seasonality_spec(self):
+        """With perfectly seasonal history, Nov forecast ≈ base × (1 + nov_mod).
+
+        Build history where raw traffic = base × (1 + seasonal_mod) so that
+        deseasonalise_series() returns a perfectly flat series.  OLS on a flat
+        series gives a flat forecast; reseasonalising November multiplies by 1.25.
+        """
+        from engine.combined_engine import run_combined_forecast
+        from engine.seasonality_engine import DEFAULT_SEASONALITY
+
+        BASE = 10_000.0
+        # Raw traffic shaped by seasonality → deseasonalised series is flat at BASE
+        hist = pd.DataFrame([
+            {
+                "date": pd.Timestamp(2024, m, 1),
+                "traffic": BASE * (1.0 + DEFAULT_SEASONALITY[m]["traffic_mod"]),
+            }
+            for m in range(1, 11)  # Jan – Oct
+        ])
+
+        result = run_combined_forecast(
+            historical_df=hist,
+            positional_monthly=None,
+            new_content_monthly=None,
+            months=12,
+            seasonality=DEFAULT_SEASONALITY,
+        )
+
+        forecast = result[result["is_forecast"]].copy()
+        forecast["month"] = pd.to_datetime(forecast["date"]).dt.month
+        nov_rows = forecast[forecast["month"] == 11]
+
+        if nov_rows.empty:
+            import pytest
+            pytest.skip("November not in forecast window")
+
+        nov_baseline = float(nov_rows["baseline"].iloc[0])
+        nov_mod = DEFAULT_SEASONALITY[11]["traffic_mod"]  # +0.25
+        expected = BASE * (1.0 + nov_mod)  # 12 500
+
+        # OLS on flat deseasonalised data is flat ⇒ reseasonalised Nov ≈ BASE × 1.25
+        # Allow ±12% relative tolerance for any linear_forecast confidence-interval drift
+        assert abs(nov_baseline - expected) / expected < 0.12, (
+            f"Nov baseline={nov_baseline:.0f}, expected≈{expected:.0f}"
+        )
+
+    def test_forecast_start_month_derived_from_historical(self):
+        """When historical_df is provided, forecast dates follow from its last date."""
+        from engine.combined_engine import run_combined_forecast
+
+        hist = self._make_hist_df(n_months=8, base=10_000, start_month=1)
+        # Last historical date = August 2024 → first forecast = September 2024
+        last_hist_month = pd.Timestamp(hist["date"].iloc[-1]).month  # August = 8
+
+        result = run_combined_forecast(
+            historical_df=hist,
+            positional_monthly=None,
+            new_content_monthly=None,
+            months=3,
+            seasonality=None,
+            forecast_start_month=99,  # should be overridden
+        )
+
+        forecast = result[result["is_forecast"]].reset_index(drop=True)
+        first_forecast_month = pd.Timestamp(forecast.iloc[0]["date"]).month
+        expected = (last_hist_month % 12) + 1  # September = 9
+        assert first_forecast_month == expected, (
+            f"Expected first forecast month={expected}, got {first_forecast_month}"
+        )

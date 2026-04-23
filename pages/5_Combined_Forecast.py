@@ -20,6 +20,7 @@ from utils.session import (
     KW_EXISTING,
     NC_RESULT,
     POS_RESULT,
+    SEASONALITY,
 )
 
 store = setup_page("Combined Forecast", "Layer multiple forecast streams into a single projection with intent-weighted revenue.")
@@ -200,12 +201,21 @@ if st.button("Generate Combined Forecast", type="primary", key="comb_run"):
                     kw_for_decay, months, maintenance_coverage=maintenance_coverage,
                 )
 
+        seasonality = st.session_state.get(SEASONALITY)
+        forecast_start_month = None
+        if ga4_df is not None and not ga4_df.empty:
+            forecast_start_month = (
+                ga4_df["date"].iloc[-1] + pd.DateOffset(months=1)
+            ).month
+
         combined_df = run_combined_forecast(
             historical_df=historical_df,
             positional_monthly=pos_monthly,
             new_content_monthly=nc_monthly,
             months=months,
             decay_df=decay_df,
+            seasonality=seasonality,
+            forecast_start_month=forecast_start_month,
         )
 
         # Build merged keyword set for intent-weighted revenue
@@ -314,6 +324,19 @@ if COMB_RESULTS in st.session_state:
                 f"(median of same-month comparisons). "
                 f"Each forecast month anchors to the same calendar month 12 months prior."
             )
+
+        _season_src = st.session_state.get("assumptions", {}).get(
+            "seasonality_source", {}
+        )
+        _src_val = (
+            _season_src.get("value") if isinstance(_season_src, dict) else _season_src
+        ) or "default"
+        _season_captions = {
+            "learned": "Seasonality: learned from GA4 (24+ months of history).",
+            "blended": "Seasonality: 50/50 blend of GA4 actuals + AU retail defaults.",
+            "default": "Seasonality: AU retail defaults (upload ≥12 months of GA4 to learn).",
+        }
+        st.caption(_season_captions.get(str(_src_val), _season_captions["default"]))
 
         fig = combined_three_stream_chart(combined_df)
         st.plotly_chart(fig, use_container_width=True)

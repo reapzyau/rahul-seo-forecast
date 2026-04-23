@@ -1,6 +1,11 @@
 import pandas as pd
 
 from engine.historical_engine import linear_forecast, yoy_growth_forecast
+from engine.seasonality_engine import (
+    DEFAULT_SEASONALITY,
+    deseasonalise_series,
+    reseasonalise_values,
+)
 
 
 def run_combined_forecast(
@@ -9,6 +14,8 @@ def run_combined_forecast(
     new_content_monthly: pd.DataFrame | None,
     months: int,
     decay_df: pd.DataFrame | None = None,
+    seasonality: dict | None = None,
+    forecast_start_month: int | None = None,
 ) -> pd.DataFrame:
     """Layer every component into the canonical forecast.
 
@@ -19,6 +26,16 @@ def run_combined_forecast(
                     - decay[m]               (portfolio-level, stays at combined level)
 
     P10/P50/P90 bands propagated from positional stream; decay is a deterministic subtraction.
+
+    Args:
+        seasonality: Monthly seasonality dict (same schema as DEFAULT_SEASONALITY).
+                     When provided, the baseline is deseasonalised before OLS fitting
+                     and reseasonalised for forecast months. Positional and new-content
+                     streams already carry their own seasonality — do not double-apply.
+                     When None, behaviour is identical to the pre-v4.10 baseline.
+        forecast_start_month: Calendar month (1-12) of the first forecast month.
+                              Overridden when historical_df is provided (derived from
+                              last historical date + 1 month).
 
     Returns:
         DataFrame with actual, baseline, positional bands, new_content,
@@ -36,13 +53,15 @@ def run_combined_forecast(
     if historical_df is not None:
         dates = historical_df["date"]
         traffic = historical_df["traffic"]
-        # YoY growth baseline when ≥13 months: anchors each forecast month to the
-        # same calendar month from 12 months prior and applies median YoY rate.
-        # Falls back to OLS linear forecast for shorter histories.
-        if len(traffic) >= 13:
-            baseline_df = yoy_growth_forecast(dates, traffic, months)
-        else:
-            baseline_df = linear_forecast(dates, traffic, months, confidence=15.0)
+
+        # Derive forecast_start_month from last historical date (overrides arg)
+        forecast_start_month = (
+            (pd.Timestamp(dates.iloc[-1]) + pd.DateOffset(months=1)).month
+        )
+
+        baseline_df = _seasonalised_baseline(
+            dates, traffic, months, seasonality, forecast_start_month
+        )
 
         # Historical portion
         for i in range(len(traffic)):
@@ -107,6 +126,70 @@ def run_combined_forecast(
         result["positional_uplift"] = result["positional_uplift_p50"]
 
     return result
+
+
+# ---------------------------------------------------------------------------
+# Internal helpers
+# ---------------------------------------------------------------------------
+
+def _seasonalised_baseline(
+    dates: pd.Series,
+    traffic: pd.Series,
+    months: int,
+    seasonality: dict | None,
+    forecast_start_month: int,
+) -> pd.DataFrame:
+    """Compute the baseline DataFrame with optional seasonality adjustment.
+
+    When seasonality is None: falls back to plain linear_forecast / yoy_growth_forecast
+    (identical to pre-v4.10 behaviour).
+
+    When seasonality is provided and history has ≥13 months, uses
+    yoy_growth_forecast which anchors each forecast month to the same calendar
+    month one year prior — this implicitly captures seasonal shape, so we only
+    apply the deseasonalise-fit-reseasonalise pipeline for short histories
+    (< 13 months) where yoy anchoring is unavailable.
+
+    For < 13 months with seasonality:
+        1. Deseasonalise history (remove seasonal signal from OLS input)
+        2. Fit OLS on the clean trend
+        3. Reseasonalise forecast months only
+    """
+    n = len(traffic)
+
+    if seasonality is None:
+        # Backward-compat path — no seasonality
+        if n >= 13:
+            return yoy_growth_forecast(dates, traffic, months)
+        return linear_forecast(dates, traffic, months, confidence=15.0)
+
+    if n >= 13:
+        # yoy_growth_forecast already anchors to same calendar month, so seasonal
+        # shape is preserved without an extra deseasonalise step.
+        return yoy_growth_forecast(dates, traffic, months)
+
+    # Short history (< 13 months): deseasonalise → OLS → reseasonalise forecast
+    season = seasonality if seasonality is not None else DEFAULT_SEASONALITY
+    deseasoned = deseasonalise_series(dates, traffic, season)
+
+    # OLS on the deseasonalised series
+    raw_baseline = linear_forecast(dates, deseasoned, months, confidence=15.0)
+
+    # Reseasonalise only the forecast rows
+    forecast_mask = raw_baseline["is_forecast"]
+    forecast_dates = raw_baseline.loc[forecast_mask, "date"]
+    forecast_values = raw_baseline.loc[forecast_mask, "linear"]
+
+    reseasonalised = reseasonalise_values(
+        forecast_dates.reset_index(drop=True),
+        forecast_values.reset_index(drop=True),
+        season,
+    )
+
+    # linear_forecast returns int64; cast to float before assigning reseasonalised floats
+    raw_baseline["linear"] = raw_baseline["linear"].astype(float)
+    raw_baseline.loc[forecast_mask, "linear"] = reseasonalised.values
+    return raw_baseline
 
 
 def _hist_row(date, actual, baseline, has_bands):
