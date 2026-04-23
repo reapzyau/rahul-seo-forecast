@@ -458,14 +458,51 @@ The spreading AIO erosion model (`project_aio_erosion` in `engine/aio_risk_engin
 
 ## Mode 10: Forecast Variance & Calibration
 
-Every Combined Forecast can be downloaded as a JSON snapshot. Months later, upload it alongside fresh GA4 data to see how the forecast performed.
+Every Combined Forecast can be downloaded as a JSON snapshot (Deliverables → Forecast Grid → Download Forecast Snapshot JSON). Months later, upload it alongside fresh GA4 data to see how the forecast performed.
+
+Snapshots produced with the dynamic revenue model (v4.10+) include per-month CVR, AOV, transactions, and revenue — not just traffic. The variance analysis tab lets the analyst select which metric to grade:
+
+- **Traffic** — always available (backward compatible with pre-v4.10 snapshots)
+- **Revenue / Transactions / CVR / AOV** — available when snapshot has `dynamic_metrics: true`
+
+Old snapshots (no `dynamic_metrics` flag) remain loadable; the metric selector is disabled and only traffic variance is shown.
+
+Snapshots also carry an `assumptions_snapshot` — the full assumptions provenance captured at forecast time. The Variance Analysis tab surfaces these in an expander so analysts can compare "what we assumed then" vs. "what we know now" — closing the calibration loop properly.
 
 The variance analysis shows:
-- Per-month P50 forecast vs. actual traffic
-- Whether actuals fell within the P10–P90 band
+- Per-month P50 forecast vs. actual metric value
+- Whether actuals fell within the P10–P90 band (traffic only; other metrics have no bands currently)
 - Mean variance %, max overshoot/undershoot
 
 This is the tool's calibration loop. Without it, forecasts are guesses nobody ever grades. With accumulated snapshots, parameters can be tuned to improve accuracy over time.
+
+---
+
+## Forecast Grid Output Format
+
+The Deliverables page exports an xlsx via `utils/forecast_grid.py::build_seo_forecast_grid()`. The workbook contains up to three sheets:
+
+### Sheet 1: "SEO Forecast" (always present)
+
+Rows in order:
+- Traffic (Forecast / Actual / % Var per month + Annual Total)
+- Traffic P10 (forecast only, no Actual/Var) — when Monte Carlo bands available
+- Traffic P90 (forecast only) — when bands available
+- Transactions (Forecast / Actual / % Var per month + Annual Total)
+- CVR % (Forecast / Actual / % Var per month) — when dynamic revenue enabled
+- AOV (Forecast / Actual / % Var per month) — when dynamic revenue enabled
+- Revenue (Forecast / Actual / % Var per month + Annual Total)
+- Revenue P10 / P90 (forecast only) — when bands available
+
+Cell formats: CVR as `0.00%` (decimal stored, displayed as percentage), AOV as `$#,##0.00`, traffic/transactions as `#,##0`, revenue as `$#,##0.00`. Freeze panes at A4.
+
+### Sheet 2: "Stream Breakdown" (when Combined Forecast source with streams)
+
+Shows the layered traffic math per month: Baseline + Positional Uplift + New Content Uplift − Decay = Combined. Includes an explanatory note that AIO is baked into the positional and new content streams via per-stream CTR penalty — not a separate deduction.
+
+### Sheet 3: "Assumptions" (always included when store is available)
+
+Three columns: Assumption | Value | Source. Rows grouped by category (Client Info, Financial Model, AIO, Decay, etc.) with coloured group headers. Footer legend explains the three provenance states: `defaulted` / `detected` / `overridden`.
 
 ---
 

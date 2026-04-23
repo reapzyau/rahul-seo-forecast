@@ -5,13 +5,35 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
+from engine.assumptions import assumptions_summary as _assumptions_summary
 from engine.assumptions import get_assumption
 from engine.revenue_engine import CURRENCY_SYMBOLS
-from engine.snapshot_engine import compare_to_actuals, load_snapshot, summarise_variance
+from engine.snapshot_engine import (
+    build_snapshot,
+    compare_to_actuals,
+    load_snapshot,
+    snapshot_to_bytes,
+    summarise_variance,
+)
 from utils.chart_builder import _apply_layout
 from utils.forecast_grid import build_seo_forecast_grid
 from utils.page_base import setup_page
 from utils.session import COMB_RESULTS, GA4_DF, HIST_RESULTS, POS_RESULT
+
+_METRIC_LABELS = {
+    "Traffic": "traffic",
+    "Revenue": "revenue",
+    "Transactions": "transactions",
+    "CVR": "cvr",
+    "AOV": "aov",
+}
+_METRIC_ACTUALS_COL = {
+    "traffic": "traffic",
+    "revenue": "revenue",
+    "transactions": "transactions",
+    "cvr": "cr",
+    "aov": "aov",
+}
 
 
 def _render_variance(snapshot: dict, ga4_df: pd.DataFrame) -> None:
@@ -22,11 +44,46 @@ def _render_variance(snapshot: dict, ga4_df: pd.DataFrame) -> None:
     engine_versions = snapshot.get("engine_versions", {})
     meta_cols[2].metric("Engine Version", engine_versions.get("snapshot", "N/A"))
 
-    comparison = compare_to_actuals(snapshot, ga4_df)
+    # Metric selector — only revenue/conversion metrics if snapshot has dynamic data
+    has_dynamic = bool(snapshot.get("dynamic_metrics"))
+    if has_dynamic:
+        metric_label = st.selectbox(
+            "Metric to grade",
+            list(_METRIC_LABELS.keys()),
+            index=0,
+            key="variance_metric",
+        )
+    else:
+        metric_label = "Traffic"
+        st.selectbox(
+            "Metric to grade",
+            ["Traffic"],
+            index=0,
+            key="variance_metric",
+            disabled=True,
+        )
+        st.caption(
+            "This snapshot was created before the dynamic revenue model. "
+            "Only traffic variance is available."
+        )
+
+    metric = _METRIC_LABELS[metric_label]
+
+    # Check actuals column availability
+    actuals_col = _METRIC_ACTUALS_COL.get(metric, metric)
+    if actuals_col not in ga4_df.columns:
+        st.warning(
+            f"GA4 data does not contain a **{actuals_col}** column. "
+            f"Upload GA4 data with {actuals_col} to grade {metric_label} variance."
+        )
+        return
+
+    comparison = compare_to_actuals(snapshot, ga4_df, metric=metric)
 
     if comparison.empty:
-        st.warning("No overlapping months between forecast and actuals.")
-        st.stop()
+        st.warning(
+            f"No overlapping months between forecast and actuals for **{metric_label}**."
+        )
         return
 
     summary = summarise_variance(comparison)
@@ -40,7 +97,7 @@ def _render_variance(snapshot: dict, ga4_df: pd.DataFrame) -> None:
     max_under = summary["max_undershoot_pct"]
     kpi_cols[3].metric("Max Over / Undershoot", f"+{max_over:.1f}% / {max_under:.1f}%")
 
-    st.subheader("Forecast vs Actuals")
+    st.subheader(f"Forecast vs Actuals — {metric_label}")
     fig = go.Figure()
     has_bands = (
         comparison["forecast_p10"].notna().any() and comparison["forecast_p90"].notna().any()
@@ -58,17 +115,17 @@ def _render_variance(snapshot: dict, ga4_df: pd.DataFrame) -> None:
         ))
     fig.add_trace(go.Scatter(
         x=comparison["date"], y=comparison["forecast_p50"],
-        mode="lines", name="Forecast P50",
+        mode="lines", name=f"Forecast P50 ({metric_label})",
         line=dict(color="#2563EB", width=2, dash="dash"),
-        hovertemplate="%{x|%b %Y}<br>Forecast P50: %{y:,.0f}<extra></extra>",
+        hovertemplate="%{x|%b %Y}<br>Forecast: %{y:,.2f}<extra></extra>",
     ))
     fig.add_trace(go.Scatter(
         x=comparison["date"], y=comparison["actual"],
-        mode="lines+markers", name="Actual Traffic",
+        mode="lines+markers", name=f"Actual {metric_label}",
         line=dict(color="#0F172A", width=3),
-        hovertemplate="%{x|%b %Y}<br>Actual: %{y:,.0f}<extra></extra>",
+        hovertemplate="%{x|%b %Y}<br>Actual: %{y:,.2f}<extra></extra>",
     ))
-    fig = _apply_layout(fig, "Forecast vs Actual Traffic", "Date", "Monthly Organic Sessions")
+    fig = _apply_layout(fig, f"Forecast vs Actual {metric_label}", "Date", metric_label)
     st.plotly_chart(fig, use_container_width=True)
 
     st.subheader("Monthly Comparison")
@@ -76,23 +133,27 @@ def _render_variance(snapshot: dict, ga4_df: pd.DataFrame) -> None:
     display_df["date"] = display_df["date"].dt.strftime("%b %Y")
     display_df = display_df.rename(columns={
         "date": "Month", "forecast_p10": "Forecast P10", "forecast_p50": "Forecast P50",
-        "forecast_p90": "Forecast P90", "actual": "Actual",
+        "forecast_p90": "Forecast P90", "actual": f"Actual {metric_label}",
         "variance": "Variance", "variance_pct": "Variance %", "within_band": "Within Band",
     })
-    format_cols = ["Forecast P10", "Forecast P50", "Forecast P90", "Actual", "Variance"]
+    format_cols = ["Forecast P10", "Forecast P50", "Forecast P90",
+                   f"Actual {metric_label}", "Variance"]
     for col in format_cols:
         if col in display_df.columns:
-            display_df[col] = display_df[col].apply(lambda v: f"{v:,.0f}" if pd.notna(v) else "-")
+            display_df[col] = display_df[col].apply(
+                lambda v: f"{v:,.2f}" if pd.notna(v) else "-"
+            )
     display_df["Variance %"] = display_df["Variance %"].apply(lambda v: f"{v:+.1f}%")
     display_df["Within Band"] = display_df["Within Band"].map({True: "Yes", False: "No"})
 
     def _highlight_variance(row):
         styles = [""] * len(row)
+        if "Variance %" not in row.index or "Within Band" not in row.index:
+            return styles
         var_idx = row.index.get_loc("Variance %")
         band_idx = row.index.get_loc("Within Band")
-        var_str = row["Variance %"]
         try:
-            var_val = float(var_str.replace("%", "").replace("+", ""))
+            var_val = float(row["Variance %"].replace("%", "").replace("+", ""))
         except (ValueError, AttributeError):
             return styles
         if abs(var_val) > 20:
@@ -112,6 +173,24 @@ def _render_variance(snapshot: dict, ga4_df: pd.DataFrame) -> None:
         display_df.style.apply(_highlight_variance, axis=1),
         use_container_width=True, hide_index=True,
     )
+
+    # Assumption context expander — lets analyst compare "what we assumed vs what happened"
+    assumptions_at_snapshot = snapshot.get("assumptions_snapshot")
+    if assumptions_at_snapshot:
+        with st.expander("Assumptions at snapshot time", expanded=False):
+            st.caption(
+                "These are the assumptions that were active when the forecast was saved. "
+                "Compare them to your current settings to understand calibration drift."
+            )
+            assump_display = pd.DataFrame([
+                {
+                    "Assumption": row.get("label", row["key"]),
+                    "Value": str(row.get("value", "")),
+                    "Source": row.get("source", row.get("provenance", "")),
+                }
+                for row in assumptions_at_snapshot
+            ])
+            st.dataframe(assump_display, use_container_width=True, hide_index=True)
 
     st.subheader("Recommendations")
     mean_var = summary["mean_variance_pct"]
@@ -207,12 +286,36 @@ with tab_grid:
             scenario = "p50"
 
         monthly_traffic = []
+        monthly_baseline = None
+        monthly_positional_uplift = None
+        monthly_new_content_uplift = None
+        monthly_decay = None
+        traffic_p10 = None
+        traffic_p90 = None
+        comb_data = None
+
         if source == "Combined Forecast":
-            comb = st.session_state[COMB_RESULTS]
-            combined_df = comb["combined_df"]
-            forecast_rows = combined_df[combined_df["is_forecast"]]
+            comb_data = st.session_state[COMB_RESULTS]
+            combined_df = comb_data["combined_df"]
+            forecast_rows = combined_df[combined_df["is_forecast"]].reset_index(drop=True)
             col = f"combined_{scenario}" if f"combined_{scenario}" in forecast_rows.columns else "combined"
             monthly_traffic = forecast_rows[col].tolist()
+
+            # Stream breakdown columns
+            monthly_baseline = forecast_rows["baseline"].tolist()
+            pos_col = "positional_uplift_p50" if "positional_uplift_p50" in forecast_rows.columns else "positional_uplift"
+            if pos_col in forecast_rows.columns:
+                monthly_positional_uplift = forecast_rows[pos_col].tolist()
+            if "new_content_uplift" in forecast_rows.columns:
+                monthly_new_content_uplift = forecast_rows["new_content_uplift"].tolist()
+            if "decay" in forecast_rows.columns:
+                monthly_decay = forecast_rows["decay"].tolist()
+
+            # Traffic bands
+            if has_bands:
+                traffic_p10 = forecast_rows.get("combined_p10", pd.Series()).tolist()
+                traffic_p90 = forecast_rows.get("combined_p90", pd.Series()).tolist()
+
         elif source == "Positional Forecast":
             pos = st.session_state[POS_RESULT]
             pos_monthly = pos["monthly"]
@@ -231,9 +334,39 @@ with tab_grid:
             st.warning("The selected forecast source contains no forecast data.")
         else:
             n_months = len(monthly_traffic)
-            cvr_decimal = cvr / 100.0
-            monthly_transactions = [round(t * cvr_decimal) for t in monthly_traffic]
-            monthly_revenue = [round(t * aov, 2) for t in monthly_transactions]
+
+            # Per-month CVR/AOV: prefer dynamic metrics from Combined Forecast
+            monthly_cvr_list = None
+            monthly_aov_list = None
+            revenue_p10 = None
+            revenue_p90 = None
+
+            if source == "Combined Forecast" and comb_data is not None:
+                metrics_df = comb_data.get("metrics_df")
+                if metrics_df is not None and not metrics_df.empty and len(metrics_df) == n_months:
+                    monthly_cvr_list = metrics_df["cvr"].tolist()
+                    monthly_aov_list = metrics_df["aov"].tolist()
+                    monthly_transactions = metrics_df["transactions"].tolist()
+                    monthly_revenue = metrics_df["revenue"].tolist()
+                    # Revenue bands from traffic bands × CVR × AOV
+                    if traffic_p10 is not None:
+                        revenue_p10 = [
+                            round(traffic_p10[i] * monthly_cvr_list[i] / 100.0 * monthly_aov_list[i], 2)
+                            for i in range(n_months)
+                        ]
+                    if traffic_p90 is not None:
+                        revenue_p90 = [
+                            round(traffic_p90[i] * monthly_cvr_list[i] / 100.0 * monthly_aov_list[i], 2)
+                            for i in range(n_months)
+                        ]
+                else:
+                    cvr_decimal = cvr / 100.0
+                    monthly_transactions = [round(t * cvr_decimal) for t in monthly_traffic]
+                    monthly_revenue = [round(t * aov, 2) for t in monthly_transactions]
+            else:
+                cvr_decimal = cvr / 100.0
+                monthly_transactions = [round(t * cvr_decimal) for t in monthly_traffic]
+                monthly_revenue = [round(t * aov, 2) for t in monthly_transactions]
 
             total_traffic = sum(monthly_traffic)
             total_transactions = sum(monthly_transactions)
@@ -245,36 +378,96 @@ with tab_grid:
             c3.metric("Year 1 Revenue", f"{sym}{total_revenue:,.2f}")
 
             st.subheader("Monthly Preview")
-            preview_data = {
-                "Month": [
-                    calendar.month_abbr[(start_month - 1 + i) % 12 + 1]
-                    for i in range(n_months)
-                ],
-                "Traffic": [f"{t:,.0f}" for t in monthly_traffic],
-                "Transactions": [f"{t:,}" for t in monthly_transactions],
-                "Revenue": [f"{sym}{r:,.2f}" for r in monthly_revenue],
-            }
+            month_labels = [
+                calendar.month_abbr[(start_month - 1 + i) % 12 + 1]
+                for i in range(n_months)
+            ]
+            preview_data: dict = {"Month": month_labels}
+            preview_data["Traffic"] = [f"{t:,.0f}" for t in monthly_traffic]
+            if monthly_cvr_list is not None:
+                preview_data["CVR %"] = [f"{c:.2f}%" for c in monthly_cvr_list]
+            if monthly_aov_list is not None:
+                preview_data["AOV"] = [f"{sym}{a:,.2f}" for a in monthly_aov_list]
+            preview_data["Transactions"] = [f"{t:,}" for t in monthly_transactions]
+            preview_data["Revenue"] = [f"{sym}{r:,.2f}" for r in monthly_revenue]
             preview_df = pd.DataFrame(preview_data)
             st.dataframe(preview_df, use_container_width=True, hide_index=True)
 
             st.divider()
+
+            # Build assumptions summary for Assumptions sheet
+            assump_rows = _assumptions_summary(store)
+
             xlsx_buf = build_seo_forecast_grid(
-                monthly_traffic=monthly_traffic,
+                monthly_traffic=[float(t) for t in monthly_traffic],
                 monthly_transactions=[float(t) for t in monthly_transactions],
                 monthly_revenue=[float(r) for r in monthly_revenue],
+                monthly_cvr=monthly_cvr_list,
+                monthly_aov=monthly_aov_list,
                 months=n_months,
                 client_name=grid_client,
                 fy_label=fy_label,
                 start_month=start_month,
+                traffic_p10=[float(v) for v in traffic_p10] if traffic_p10 else None,
+                traffic_p90=[float(v) for v in traffic_p90] if traffic_p90 else None,
+                revenue_p10=revenue_p10,
+                revenue_p90=revenue_p90,
+                monthly_baseline=[float(v) for v in monthly_baseline] if monthly_baseline else None,
+                monthly_positional_uplift=[float(v) for v in monthly_positional_uplift] if monthly_positional_uplift else None,
+                monthly_new_content_uplift=[float(v) for v in monthly_new_content_uplift] if monthly_new_content_uplift else None,
+                monthly_decay=[float(v) for v in monthly_decay] if monthly_decay else None,
+                assumptions_summary=assump_rows,
             )
-            st.download_button(
-                "Download Forecast Grid XLSX",
-                xlsx_buf,
-                "seo-forecast-grid.xlsx",
-                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                key="grid_xlsx_dl",
-            )
-            st.caption("Matches the SEO row of the Pattern multi-channel plan.")
+
+            sheet_count = 1
+            if any(x is not None for x in [monthly_baseline, monthly_positional_uplift]):
+                sheet_count += 1
+            sheet_count += 1  # Assumptions always included
+
+            dl_col, snap_col = st.columns(2)
+            with dl_col:
+                st.download_button(
+                    "Download Forecast Grid XLSX",
+                    xlsx_buf,
+                    "seo-forecast-grid.xlsx",
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    key="grid_xlsx_dl",
+                )
+                st.caption(
+                    f"Includes {sheet_count} sheets: Forecast (GAZMAN row)"
+                    + (", Stream Breakdown" if sheet_count > 2 else "")
+                    + ", Assumptions trail."
+                )
+
+            # Snapshot download (Combined Forecast only)
+            if source == "Combined Forecast" and comb_data is not None:
+                with snap_col:
+                    snap_params = {
+                        "cvr": cvr,
+                        "aov": aov,
+                        "currency": currency,
+                        "months": n_months,
+                        "scenario": scenario,
+                    }
+                    metrics_df_for_snap = comb_data.get("metrics_df")
+                    snap = build_snapshot(
+                        client_name=grid_client or "Unknown",
+                        combined_df=comb_data["combined_df"],
+                        parameters=snap_params,
+                        metrics_df=metrics_df_for_snap,
+                        assumptions_snapshot=assump_rows,
+                    )
+                    st.download_button(
+                        "Download Forecast Snapshot JSON",
+                        snapshot_to_bytes(snap),
+                        "forecast-snapshot.json",
+                        "application/json",
+                        key="grid_snap_dl",
+                    )
+                    st.caption(
+                        "Re-upload to Variance Analysis tab months later "
+                        "to grade forecast accuracy."
+                    )
 
 # ── Tab: Variance Analysis ────────────────────────────────────────────────────
 with tab_variance:
