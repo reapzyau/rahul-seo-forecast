@@ -1809,3 +1809,65 @@ class TestPrompt9Integration:
         assert method == "deterministic"
         assert "content_plan" in bundle
         assert isinstance(bundle["content_plan"], list)
+
+
+# ── Deseasonalise helpers ────────────────────────────────────────────────────
+
+
+class TestDeseasonalise:
+    """Tests for engine.seasonality_engine.deseasonalise_series / reseasonalise_values."""
+
+    def _make_dates(self, months: list[int], year: int = 2025) -> pd.Series:
+        return pd.Series([pd.Timestamp(year, m, 1) for m in months])
+
+    def test_deseasonalise_then_reseasonalise_is_identity(self):
+        from engine.seasonality_engine import (
+            DEFAULT_SEASONALITY,
+            deseasonalise_series,
+            reseasonalise_values,
+        )
+        months = list(range(1, 13))
+        dates = self._make_dates(months)
+        values = pd.Series([10_000.0 + m * 500 for m in months])
+
+        deseasoned = deseasonalise_series(dates, values, DEFAULT_SEASONALITY)
+        roundtripped = reseasonalise_values(dates, deseasoned, DEFAULT_SEASONALITY)
+
+        for original, result in zip(values, roundtripped, strict=True):
+            assert abs(original - result) < 1e-6, (
+                f"Round-trip failed: original={original}, result={result}"
+            )
+
+    def test_missing_months_treated_as_neutral(self):
+        from engine.seasonality_engine import deseasonalise_series, reseasonalise_values
+
+        sparse_seasonality = {11: {"traffic_mod": 0.25}}  # only Nov defined
+        dates = self._make_dates([1, 6, 11])
+        values = pd.Series([10_000.0, 10_000.0, 10_000.0])
+
+        deseasoned = deseasonalise_series(dates, values, sparse_seasonality)
+        # Jan and Jun are missing → multiplier 1.0 → unchanged
+        assert deseasoned.iloc[0] == pytest.approx(10_000.0)
+        assert deseasoned.iloc[1] == pytest.approx(10_000.0)
+        # Nov has +25% modifier → deseasonalised = 10_000 / 1.25 = 8_000
+        assert deseasoned.iloc[2] == pytest.approx(8_000.0)
+
+        reseasoned = reseasonalise_values(dates, values, sparse_seasonality)
+        assert reseasoned.iloc[0] == pytest.approx(10_000.0)
+        assert reseasoned.iloc[1] == pytest.approx(10_000.0)
+        assert reseasoned.iloc[2] == pytest.approx(12_500.0)
+
+    def test_deseasonalised_november_is_lower_than_raw(self):
+        from engine.seasonality_engine import DEFAULT_SEASONALITY, deseasonalise_series
+
+        nov_mod = DEFAULT_SEASONALITY[11]["traffic_mod"]  # +0.25
+        assert nov_mod > 0, "Test assumes November has positive traffic_mod"
+
+        dates = self._make_dates([11])
+        raw_value = 12_500.0
+        values = pd.Series([raw_value])
+
+        deseasoned = deseasonalise_series(dates, values, DEFAULT_SEASONALITY)
+        expected = raw_value / (1.0 + nov_mod)
+        assert deseasoned.iloc[0] == pytest.approx(expected, rel=1e-6)
+        assert deseasoned.iloc[0] < raw_value
