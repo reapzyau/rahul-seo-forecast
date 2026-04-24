@@ -351,6 +351,45 @@ def apply_industry_bias(
     return result
 
 
+def deseasonalise_series(
+    dates: pd.Series,
+    values: pd.Series,
+    seasonality: dict,
+) -> pd.Series:
+    """Divide each value by (1 + traffic_mod) for its calendar month.
+
+    Missing months treated as neutral (multiplier = 1.0).
+    Use before fitting a trend so seasonal peaks don't bias the slope.
+    """
+    multipliers = [
+        1.0 + seasonality.get(int(pd.Timestamp(d).month), {}).get("traffic_mod", 0.0)
+        for d in dates
+    ]
+    return pd.Series(
+        [v / m if m != 0 else v for v, m in zip(values, multipliers, strict=False)],
+        index=values.index,
+    )
+
+
+def reseasonalise_values(
+    dates: pd.Series,
+    values: pd.Series,
+    seasonality: dict,
+) -> pd.Series:
+    """Multiply each value by (1 + traffic_mod) for its calendar month.
+
+    Inverse of deseasonalise_series. Missing months treated as neutral.
+    """
+    multipliers = [
+        1.0 + seasonality.get(int(pd.Timestamp(d).month), {}).get("traffic_mod", 0.0)
+        for d in dates
+    ]
+    return pd.Series(
+        [v * m for v, m in zip(values, multipliers, strict=False)],
+        index=values.index,
+    )
+
+
 def build_campaign_list(campaign_text: str) -> list[dict]:
     """Parse campaign definitions from user text input.
 
