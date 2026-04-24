@@ -45,7 +45,8 @@ Keywords CSV (`keyword, volume, kd`) and traffic CSV (`date, traffic`) are still
 
 ```bash
 pip install -r requirements.txt
-streamlit run app.py
+streamlit run streamlit_app.py   # new entry point (Forecast Dashboard + Data Sources + About)
+streamlit run app.py             # legacy Python forecasting engine entry
 ```
 
 Prophet support (optional — enables v4 Historical Forecast with ≥24 months of data, falls back to Holt's exponential smoothing otherwise):
@@ -63,12 +64,13 @@ pytest tests/ -v
 
 ## Deployment
 
-This app is designed for Streamlit Community Cloud:
+This app auto-deploys to Streamlit Community Cloud on every push to `main`.
 
-1. Push to GitHub
-2. Connect at [share.streamlit.io](https://share.streamlit.io)
-3. Set main file path to `app.py`
-4. No secrets or API keys needed
+1. Entry point is `streamlit_app.py` — set this in the Streamlit Cloud app settings.
+2. Push to `main` — Streamlit Cloud picks up the change automatically.
+3. No secrets or environment variables are required for the core forecast pages.
+4. The `assets/` directory is bundled with the repo and served at runtime.
+5. Prophet is optional — install `requirements-prophet.txt` only if you need the v4 historical engine.
 
 ## Methodology
 
