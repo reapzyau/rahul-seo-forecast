@@ -6,13 +6,14 @@
 app.py                  # Streamlit home page + shared sidebar (AI settings)
 pages/                  # One file per page (numbered for sidebar order)
   1_Data_Upload.py      # Upload, brand filtering, seasonality tuning, assumptions
-  2_Historical_Forecast.py   # Holt / Prophet baseline from GA4 history
-  3_Positional_Forecast.py   # MC uplift for existing keywords (P10/P50/P90)
-  4_New_Content_Forecast.py  # Probabilistic ranking for net-new keywords
-  5_Combined_Forecast.py     # Canonical hub: baseline + streams − decay
-  6_Diagnostics.py      # AIO risk | keyword pipeline | decay projection (tabs)
-  7_Roadmap.py          # AI content roadmap | GAZMAN SEO task hours (tabs)
-  8_Deliverables.py     # Forecast grid XLSX | variance analysis | methodology (tabs)
+  2_Strategy.py         # Portfolio diagnosis + 3 scenario presets + run-all forecasts
+  3_Historical_Forecast.py   # Holt / Prophet baseline from GA4 history
+  4_Positional_Forecast.py   # MC uplift for existing keywords (P10/P50/P90)
+  5_New_Content_Forecast.py  # Probabilistic ranking for net-new keywords
+  6_Combined_Forecast.py     # Canonical hub: baseline + streams − decay
+  7_Diagnostics.py      # AIO risk | keyword pipeline | decay projection (tabs)
+  8_Roadmap.py          # AI content roadmap | GAZMAN SEO task hours (tabs)
+  9_Deliverables.py     # Forecast grid XLSX | variance analysis | methodology (tabs)
 engine/                 # Pure-Python computation — no Streamlit imports
 utils/                  # Shared helpers (charts, export, data loading, sidebar)
   page_base.py          # setup_page() — shared header/assumptions scaffold
@@ -23,6 +24,18 @@ tests/                  # pytest unit tests (engine logic only, no Streamlit)
 ```
 
 Pages import from `engine/` and `utils/`. Engine modules never import from pages or utils.
+
+## Strategy page orchestration
+
+The Strategy page (page 2) is the canonical entry point after Data Upload. It
+orchestrates three scenario forecasts via `engine.scenario_engine.run_three_scenarios`
+and stores results in `st.session_state["scenario_results"]` keyed by scenario
+name. The Deliverables page reads from this when building the three-sheet
+forecast grid export.
+
+Individual forecast pages (Historical / Positional / New Content / Combined)
+remain available for deep-dive analysis but the common flow is Data Upload →
+Strategy → Deliverables.
 
 ## Session state wiring
 
