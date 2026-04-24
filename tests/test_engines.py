@@ -1587,6 +1587,61 @@ class TestMovementLearning:
         )
         assert monthly_learned.iloc[-1]["uplift_p50"] != monthly_default.iloc[-1]["uplift_p50"]
 
+    def test_target_position_actually_changes_for_easy_keywords(self):
+        # Regression: near-zero learned gain (stable site) used to round to 0,
+        # collapsing target_position == current_position for every keyword.
+        from engine.positional_engine import estimate_target_position
+        # Simulate a flat site: previous_position=6, position=5 → mean_gain=1.0 < min_learned_gain=2.0
+        flat_stats = {"Easy": {"mean_gain": 1.0, "std_gain": 0.5, "sample_size": 20}}
+        targets = [
+            estimate_target_position(5, 15, "moderate", flat_stats)
+            for _ in range(20)
+        ]
+        mean_target = sum(targets) / len(targets)
+        assert mean_target < 4.0, (
+            f"Expected target < 4.0 (positions should improve), got {mean_target}. "
+            "Near-zero learned gain should blend toward tier default, not collapse to current position."
+        )
+
+    def test_uplift_meaningful_for_realistic_portfolio(self):
+        # Regression: near-zero learned gain (flat/declining site) collapsed
+        # target_position == current_position → 0% uplift before the blending fix.
+        # Attention curve is disabled here to isolate the target-position bug from
+        # the separate concern of attention weighting.
+        from engine.positional_engine import run_positional_forecast_mc
+        rng = np.random.default_rng(99)
+        n = 50
+        positions = rng.integers(4, 19, size=n).tolist()          # 4–18
+        kds = rng.integers(15, 61, size=n).tolist()               # 15–60
+        df = pd.DataFrame({
+            "keyword": [f"kw_{i}" for i in range(n)],
+            "position": positions,
+            "volume": [500] * n,
+            "kd": kds,
+            "intent": ["commercial"] * n,
+            "has_aio": [False] * n,
+        })
+        # near-zero learned gain across all tiers (simulates a flat/declining site)
+        flat_stats = {
+            tier: {"mean_gain": 0.0, "std_gain": 0.5, "sample_size": 20}
+            for tier in ("Easy", "Moderate", "Hard", "Very Hard", "Extreme")
+        }
+        _, monthly = run_positional_forecast_mc(
+            df, months=12, n_trials=300, seed=7,
+            historical_movement_stats=flat_stats,
+            use_attention_curve=False,
+        )
+        # Use the engine's own CTR-derived baseline (not current_traffic which the
+        # engine ignores when ga4_baseline is None).
+        engine_baseline = monthly.iloc[-1]["baseline"]
+        uplift_month12 = monthly.iloc[-1]["uplift_p50"]
+        uplift_pct = uplift_month12 / engine_baseline * 100
+        assert uplift_pct >= 8.0, (
+            f"Expected ≥8% uplift at month 12, got {uplift_pct:.1f}% "
+            f"(uplift={uplift_month12}, baseline={engine_baseline}). "
+            "Blending with tier defaults should produce meaningful uplift even for flat-history sites."
+        )
+
 
 # ── Maturation Curve (Task 4) ─────────────────────────────────────────────
 

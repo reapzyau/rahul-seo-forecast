@@ -316,6 +316,17 @@ movement = previous_position - position  (positive = improvement)
 
 **Minimum sample threshold:** a tier must have at least 10 valid samples before its learned mean replaces the default gain. Tiers with fewer than 10 samples fall back to `_BASE_GAIN_BY_TIER`. This prevents noisy statistics from a handful of keywords distorting the forecast.
 
+**Handling flat or declining history:** A site with low historical movement (mean gain < 2 positions) or net position losses is treated as a signal of low *past effort*, not a ceiling on what concerted effort can achieve. In these cases the engine blends the learned gain toward the tier default rather than taking the learned value at face value:
+
+```
+confidence = min(1.0, sample_size / 50.0)
+clamped    = max(0.0, learned_gain)          # clamp to avoid backwards projection
+blended    = clamped × confidence + default_gain × (1 − confidence)
+base_gain  = max(blended, default_gain × 0.4)  # floor: never below 40% of default
+```
+
+At n = 50 samples the learned value is trusted fully; below that, weight shifts toward the default. The 40% floor ensures even a high-confidence flat-history site still shows achievable upside (e.g. Easy tier always projects at least 2 positions gained under moderate effort). Negative mean gains are clamped to zero before blending so the engine never projects backwards movement from deliberate effort.
+
 The Positional Forecast page shows an info banner indicating whether learned stats or defaults are active, and reports the total sample count across all tiers.
 
 ---

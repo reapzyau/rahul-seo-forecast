@@ -67,23 +67,46 @@ def estimate_target_position(
     kd: int,
     effort: str,
     historical_movement_stats: dict | None = None,
+    min_learned_gain: float = 2.0,
 ) -> int:
     """Estimate where a keyword could realistically move given KD and effort level.
 
     When historical_movement_stats has ≥10 samples for a tier, learned gain is used
-    instead of the default tier table.
+    instead of the default tier table — unless learned gain is below `min_learned_gain`.
+
+    Low or negative learned gain (e.g. stable or declining site history) is treated
+    as a signal of low *past effort*, not a ceiling on what effort can achieve. When
+    learned_gain < min_learned_gain the function blends toward the tier default:
+      - Fewer samples (lower confidence) → more weight on default
+      - Higher samples → blended with a 40%-of-default floor so the forecast
+        always shows some potential even when history is reliably flat
+
+    Negative mean gain (keywords lost positions on average) is clamped to 0
+    before blending to prevent projecting backwards movement.
     """
     tier = classify_difficulty(kd)
     effort_factor = _EFFORT_FACTORS[effort]
+    default_gain = _BASE_GAIN_BY_TIER[tier]
 
     if (
         historical_movement_stats
         and tier in historical_movement_stats
         and historical_movement_stats[tier]["sample_size"] >= 10
     ):
-        base_gain = historical_movement_stats[tier]["mean_gain"]
+        learned_gain = historical_movement_stats[tier]["mean_gain"]
+        if learned_gain < min_learned_gain:
+            # Blend toward defaults. Clamp to 0 to avoid backwards projection.
+            n = historical_movement_stats[tier]["sample_size"]
+            confidence = min(1.0, n / 50.0)
+            clamped = max(0.0, learned_gain)
+            blended = clamped * confidence + default_gain * (1.0 - confidence)
+            # Floor at 40% of the tier default so high-confidence-zero history
+            # still shows achievable upside (effort can shift even stagnant sites).
+            base_gain = max(blended, default_gain * 0.4)
+        else:
+            base_gain = learned_gain
     else:
-        base_gain = _BASE_GAIN_BY_TIER[tier]
+        base_gain = default_gain
 
     gain = round(base_gain * effort_factor)
     return max(1, current_pos - gain)
