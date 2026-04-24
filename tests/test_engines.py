@@ -2220,3 +2220,114 @@ class TestForecastGridHeader:
         wb = self._open(self._make_grid())
         ws = wb["SEO Channel Forecast"]
         assert ws.freeze_panes == "B13"
+
+
+# ── Forecast Grid — Metric Data Population ───────────────────────────────────
+
+
+class TestForecastGridMetricData:
+    """Tests for the B1b metric data population in utils.forecast_grid."""
+
+    _MONTHS = 3  # small grid so column maths stay readable in tests
+    _TRAFFIC = [10_000.0, 11_000.0, 12_000.0]
+    _CVR = [2.5, 2.6, 2.7]          # percentage form
+    _AOV = [100.0, 101.0, 102.0]
+    _TRANSACTIONS = [t * c / 100 for t, c in zip(_TRAFFIC, _CVR, strict=True)]
+    _REVENUE = [tr * a for tr, a in zip(_TRANSACTIONS, _AOV, strict=True)]
+    _BUDGET = [5_000.0, 5_000.0, 5_000.0]
+
+    def _make(self, **kwargs):
+        from utils.forecast_grid import build_seo_forecast_grid
+        defaults = dict(
+            monthly_traffic=self._TRAFFIC,
+            monthly_transactions=self._TRANSACTIONS,
+            monthly_revenue=self._REVENUE,
+            monthly_cvr=self._CVR,
+            monthly_aov=self._AOV,
+            monthly_budget=self._BUDGET,
+            months=self._MONTHS,
+            start_month=7,
+        )
+        defaults.update(kwargs)
+        return build_seo_forecast_grid(**defaults)
+
+    def _ws(self, buf):
+        from openpyxl import load_workbook
+        buf.seek(0)
+        return load_workbook(buf)["SEO Channel Forecast"]
+
+    # fc(0)=3, ac(0)=4, pc(0)=5; for m=3: ann=12, ytd=13, prior=15, yoy=16
+    _FC0 = 3
+    _AC0 = 4
+    _PC0 = 5
+    _ANN = 12   # _col_annual(3) = 3 + 3*3 = 12
+    _PRIOR = 15  # _col_prior(3) = 12 + 3 = 15
+    _YOY = 16    # _col_yoy(3) = 12 + 4 = 16
+
+    def test_budget_row_populated_from_monthly_budget(self):
+        ws = self._ws(self._make())
+        assert ws.cell(row=13, column=self._FC0).value == pytest.approx(self._BUDGET[0])
+
+    def test_revenue_row_populated_from_monthly_revenue(self):
+        ws = self._ws(self._make())
+        assert ws.cell(row=14, column=self._FC0).value == pytest.approx(self._REVENUE[0], rel=1e-3)
+
+    def test_roas_computed_from_revenue_div_budget_per_month(self):
+        ws = self._ws(self._make())
+        expected = self._REVENUE[0] / self._BUDGET[0]
+        assert ws.cell(row=15, column=self._FC0).value == pytest.approx(expected, rel=1e-3)
+
+    def test_roas_blank_when_budget_zero(self):
+        ws = self._ws(self._make(monthly_budget=[0.0, 0.0, 0.0]))
+        assert ws.cell(row=15, column=self._FC0).value is None
+
+    def test_pct_change_negative_when_actual_below_forecast(self):
+        actuals = [b * 0.8 for b in self._BUDGET]   # 20% below forecast
+        ws = self._ws(self._make(actuals_budget=actuals))
+        pct = ws.cell(row=13, column=self._PC0).value
+        assert pct is not None and pct < 0
+
+    def test_pct_change_neg_one_when_actual_zero_and_forecast_nonzero(self):
+        ws = self._ws(self._make(actuals_budget=[0.0, 0.0, 0.0]))
+        pct = ws.cell(row=13, column=self._PC0).value
+        assert pct == pytest.approx(-1.0)
+
+    def test_pct_change_blank_when_no_actual(self):
+        ws = self._ws(self._make())   # no actuals_* passed
+        assert ws.cell(row=13, column=self._PC0).value is None
+
+    def test_annual_forecast_col_sums_monthly(self):
+        ws = self._ws(self._make())
+        expected = sum(self._BUDGET)
+        assert ws.cell(row=13, column=self._ANN).value == pytest.approx(expected)
+
+    def test_annual_roas_is_sum_revenue_div_sum_budget(self):
+        ws = self._ws(self._make())
+        expected = sum(self._REVENUE) / sum(self._BUDGET)
+        assert ws.cell(row=15, column=self._ANN).value == pytest.approx(expected, rel=1e-3)
+
+    def test_yoy_pct_computed_when_prior_year_provided(self):
+        prior = sum(self._BUDGET) * 0.9  # 10% growth expected
+        ws = self._ws(self._make(prior_year_budget=prior))
+        yoy = ws.cell(row=13, column=self._YOY).value
+        assert yoy is not None
+        expected = (sum(self._BUDGET) - prior) / prior
+        assert yoy == pytest.approx(expected, rel=1e-3)
+
+    def test_yoy_pct_blank_when_prior_year_none(self):
+        ws = self._ws(self._make())  # no prior_year_* passed
+        assert ws.cell(row=13, column=self._YOY).value is None
+
+    def test_cvr_cell_value_divided_by_100_for_percentage_format(self):
+        ws = self._ws(self._make())
+        # CVR row is 19; CVR input is e.g. 2.5 → cell should be 0.025
+        cvr_cell_val = ws.cell(row=19, column=self._FC0).value
+        assert cvr_cell_val is not None
+        assert cvr_cell_val == pytest.approx(self._CVR[0] / 100.0, rel=1e-6)
+
+    def test_negative_pct_change_has_red_font(self):
+        actuals = [b * 0.5 for b in self._BUDGET]
+        ws = self._ws(self._make(actuals_budget=actuals))
+        cell = ws.cell(row=13, column=self._PC0)
+        assert cell.value is not None and cell.value < 0
+        assert "FF0000" in cell.font.color.rgb

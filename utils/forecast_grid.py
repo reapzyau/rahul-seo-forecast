@@ -17,7 +17,7 @@ import calendar
 import io
 
 from openpyxl import Workbook
-from openpyxl.styles import Alignment, Font, PatternFill
+from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
 # ---------------------------------------------------------------------------
@@ -27,10 +27,15 @@ from openpyxl.utils import get_column_letter
 _HEADER_FILL = PatternFill(start_color="2563EB", end_color="2563EB", fill_type="solid")
 _HEADER_FONT = Font(bold=True, color="FFFFFF", size=11)
 _BOLD_FONT = Font(bold=True, size=11)
+_RED_FONT = Font(color="FF0000")
 _NUMBER_FMT = "#,##0"
 _CURRENCY_FMT = "$#,##0.00"
 _PERCENT_FMT = "0.00%"
 _PCT_CHANGE_FMT = "0%"
+_THIN_BORDER = Border(
+    left=Side(style="thin"), right=Side(style="thin"),
+    top=Side(style="thin"), bottom=Side(style="thin"),
+)
 
 # ---------------------------------------------------------------------------
 # GAZMAN column layout constants and helpers
@@ -117,6 +122,153 @@ def _hcell(ws, row: int, col: int, value: str) -> None:
     cell.alignment = Alignment(horizontal="center")
 
 
+def _pct_change(forecast: float | None, actual: float | None) -> float | None:
+    """Return (actual - forecast) / forecast, with edge-case handling.
+
+    Rules:
+      - None when either input is None.
+      - None when forecast == 0 (undefined, including both-zero case).
+      - -1.0 when actual == 0 and forecast != 0 (renders as -100%).
+    """
+    if actual is None or forecast is None:
+        return None
+    if forecast == 0:
+        return None
+    if actual == 0:
+        return -1.0
+    return (actual - forecast) / forecast
+
+
+def _write_metric_rows(
+    ws,
+    months: int,
+    col_ranges: list,
+    monthly_traffic: list[float],
+    monthly_transactions: list[float],
+    monthly_revenue: list[float],
+    monthly_cvr: list[float],
+    monthly_aov: list[float],
+    monthly_budget: list[float],
+    actuals_traffic: list[float] | None,
+    actuals_transactions: list[float] | None,
+    actuals_revenue: list[float] | None,
+    actuals_cvr: list[float] | None,
+    actuals_aov: list[float] | None,
+    actuals_budget: list[float] | None,
+    prior_year_traffic: float | None,
+    prior_year_transactions: float | None,
+    prior_year_revenue: float | None,
+    prior_year_cvr: float | None,
+    prior_year_aov: float | None,
+    prior_year_budget: float | None,
+) -> None:
+    """Fill rows 13-19 with forecast, actuals, % Change, and trailing totals."""
+    ann_col = _col_annual(months)
+
+    def _v(row: int, col: int, val, fmt: str, *, neg_red: bool = False):
+        cell = ws.cell(row=row, column=col, value=val)
+        cell.number_format = fmt
+        cell.border = _THIN_BORDER
+        cell.alignment = Alignment(horizontal="right")
+        if neg_red and val is not None and val < 0:
+            cell.font = _RED_FONT
+        return cell
+
+    def _get(lst: list | None, i: int):
+        return lst[i] if lst and i < len(lst) else None
+
+    # Pre-compute per-month ROAS (forecast and actual)
+    roas_fc = [
+        monthly_revenue[i] / monthly_budget[i]
+        if i < len(monthly_budget) and monthly_budget[i] != 0 else None
+        for i in range(months)
+    ]
+    roas_ac: list[float | None] = []
+    for i in range(months):
+        rev_a = _get(actuals_revenue, i)
+        bud_a = _get(actuals_budget, i)
+        roas_ac.append(
+            rev_a / bud_a if rev_a is not None and bud_a is not None and bud_a != 0
+            else None
+        )
+
+    # (excel_row, fc_list, ac_list, prior_raw, fmt, is_cvr, agg)
+    _METRICS = [
+        (13, monthly_budget,       actuals_budget,       prior_year_budget,       "$#,##0",    False, "sum"),
+        (14, monthly_revenue,      actuals_revenue,      prior_year_revenue,      "$#,##0",    False, "sum"),
+        (15, roas_fc,              roas_ac,              None,                    "$#,##0.00", False, "roas"),
+        (16, monthly_transactions, actuals_transactions, prior_year_transactions, "#,##0",     False, "sum"),
+        (17, monthly_aov,          actuals_aov,          prior_year_aov,          "$#,##0.00", False, "avg"),
+        (18, monthly_traffic,      actuals_traffic,      prior_year_traffic,      "#,##0",     False, "sum"),
+        (19, monthly_cvr,          actuals_cvr,          prior_year_cvr,          "0.00%",     True,  "avg"),
+    ]
+
+    for row, fc_raw, ac_raw, prior_raw, fmt, is_cvr, agg in _METRICS:
+        fc_cells: list[float | None] = []
+        ac_cells: list[float | None] = []
+
+        for i, (_, fc_col, ac_col, pc_col) in enumerate(col_ranges):
+            fv_raw = _get(fc_raw, i)
+            av_raw = _get(ac_raw, i)
+
+            fv = fv_raw / 100.0 if is_cvr and fv_raw is not None else fv_raw
+            av = av_raw / 100.0 if is_cvr and av_raw is not None else av_raw
+
+            fc_cells.append(fv)
+            ac_cells.append(av)
+
+            if fv is not None:
+                _v(row, fc_col, fv, fmt)
+            if av is not None:
+                _v(row, ac_col, av, fmt)
+
+            pct = _pct_change(fv, av)
+            if pct is not None:
+                _v(row, pc_col, pct, _PCT_CHANGE_FMT, neg_red=True)
+
+        # Annual Forecast
+        if agg == "roas":
+            total_rev = sum(monthly_revenue[:months])
+            total_bud = sum(monthly_budget[:months])
+            ann_fc = total_rev / total_bud if total_bud != 0 else None
+        elif agg == "sum":
+            nonnull = [v for v in fc_cells if v is not None]
+            ann_fc = sum(nonnull) if nonnull else None
+        else:  # avg (AOV, CVR)
+            nonnull = [v for v in fc_cells if v is not None]
+            ann_fc = sum(nonnull) / len(nonnull) if nonnull else None
+
+        if ann_fc is not None:
+            _v(row, ann_col, ann_fc, fmt)
+
+        # YTD Actuals
+        if agg == "roas":
+            rev_vals = [_get(actuals_revenue, i) for i in range(months)]
+            bud_vals = [_get(actuals_budget, i) for i in range(months)]
+            rev_sum = sum(v for v in rev_vals if v is not None)
+            bud_sum = sum(v for v in bud_vals if v is not None)
+            ytd: float | None = rev_sum / bud_sum if bud_sum != 0 else None
+        elif agg == "sum":
+            nonnull_ac = [v for v in ac_cells if v is not None]
+            ytd = sum(nonnull_ac) if nonnull_ac else None
+        else:
+            nonnull_ac = [v for v in ac_cells if v is not None]
+            ytd = sum(nonnull_ac) / len(nonnull_ac) if nonnull_ac else None
+
+        if ytd is not None:
+            _v(row, _col_ytd(months), ytd, fmt)
+
+        # Prior Year
+        prior_cell = prior_raw / 100.0 if is_cvr and prior_raw is not None else prior_raw
+        if prior_cell is not None:
+            _v(row, _col_prior(months), prior_cell, fmt)
+
+        # YoY %
+        if ann_fc is not None and prior_cell is not None and prior_cell != 0:
+            yoy = (ann_fc - prior_cell) / prior_cell
+            _v(row, _col_yoy(months), yoy, _PCT_CHANGE_FMT, neg_red=True)
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -151,9 +303,9 @@ def build_seo_forecast_grid(
 ) -> io.BytesIO:
     """Build a GAZMAN-style SEO Channel Forecast xlsx.
 
-    Returns a BytesIO buffer containing a single-sheet workbook.
-    Data cells (per-month values, ROAS, % Change, trailing totals) are
-    populated in sessions B1b and B1c.
+    Returns a BytesIO buffer containing a single-sheet workbook with rows 13-19
+    populated: per-month Forecast / Actuals / % Change, plus Annual Forecast,
+    YTD Actuals, Prior Year, and YoY % trailing columns.
     """
     wb = Workbook()
     ws = wb.active
@@ -249,13 +401,23 @@ def build_seo_forecast_grid(
     _hcell(ws, 12, _col_prior(months), f"{prior_year_label} Actuals")
     _hcell(ws, 12, _col_yoy(months), "YoY %")
 
-    # Rows 13-19: 7-metric scaffold (labels only; data populated in B1b)
+    # Rows 13-19: metric labels + data
     _METRIC_LABELS = ["BUDGET", "REVENUE", "ROAS", "TRANSACTIONS", "AOV", "TRAFFIC", "CVR"]
     for r_off, label in enumerate(_METRIC_LABELS):
         row = 13 + r_off
         if r_off == 0:
             ws.cell(row=row, column=1, value="SEO").font = _BOLD_FONT
         ws.cell(row=row, column=2, value=label).font = _BOLD_FONT
+
+    _write_metric_rows(
+        ws, months, col_ranges,
+        monthly_traffic, monthly_transactions, monthly_revenue,
+        monthly_cvr, monthly_aov, monthly_budget,
+        actuals_traffic, actuals_transactions, actuals_revenue,
+        actuals_cvr, actuals_aov, actuals_budget,
+        prior_year_traffic, prior_year_transactions, prior_year_revenue,
+        prior_year_cvr, prior_year_aov, prior_year_budget,
+    )
 
     ws.freeze_panes = "B13"
     _auto_width(ws)
