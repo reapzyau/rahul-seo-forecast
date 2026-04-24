@@ -2121,3 +2121,301 @@ class TestComparisonColumns:
         assert result.iloc[2]["yoy_prior"] == pytest.approx(10_000.0, abs=1.0)
         assert result.iloc[2]["yoy_diff"] == pytest.approx(2_500.0, abs=1.0)
         assert result.iloc[2]["yoy_pct"] == pytest.approx(25.0, abs=0.5)
+
+
+# ── Forecast Grid — GAZMAN Header Scaffold ──────────────────────────────────
+
+
+class TestForecastGridHeader:
+    """Tests for the GAZMAN header scaffold in utils.forecast_grid (Session B1a)."""
+
+    def _make_grid(self, months: int = 12, **kwargs) -> "io.BytesIO":
+        import io  # noqa: F401 (used in type hint above)
+
+        from utils.forecast_grid import build_seo_forecast_grid
+
+        traffic = [10_000.0 + i * 100 for i in range(months)]
+        return build_seo_forecast_grid(
+            monthly_traffic=traffic,
+            monthly_transactions=[t * 0.025 for t in traffic],
+            monthly_revenue=[t * 0.025 * 100 for t in traffic],
+            monthly_cvr=[2.5] * months,
+            monthly_aov=[100.0] * months,
+            monthly_budget=[5_000.0] * months,
+            months=months,
+            client_name="GAZMAN",
+            fy_label="FY26",
+            start_month=7,
+            last_updated="2026-04-24",
+            currency_notes="All figures in AUD",
+            **kwargs,
+        )
+
+    def _open(self, buf):
+        from openpyxl import load_workbook
+        buf.seek(0)
+        return load_workbook(buf)
+
+    def test_sheet_title_in_row_2(self):
+        wb = self._open(self._make_grid())
+        ws = wb["SEO Channel Forecast"]
+        title = ws.cell(row=2, column=1).value or ""
+        assert "GAZMAN" in title and "FY26" in title
+
+    def test_last_updated_in_row_4(self):
+        wb = self._open(self._make_grid())
+        ws = wb["SEO Channel Forecast"]
+        label = ws.cell(row=4, column=2).value or ""
+        value = ws.cell(row=4, column=3).value or ""
+        assert "Last Updated" in label and "2026-04-24" in str(value)
+
+    def test_month_names_in_row_7(self):
+        wb = self._open(self._make_grid())
+        ws = wb["SEO Channel Forecast"]
+        row7 = [ws.cell(row=7, column=c).value for c in range(1, 50)]
+        assert "Jul" in row7
+
+    def test_each_month_header_spans_three_columns(self):
+        from utils.forecast_grid import _month_column_ranges
+        ranges = _month_column_ranges(7, 12)
+        # First month July: forecast=col3, actuals=col4, pct=col5
+        assert ranges[0] == ("Jul", 3, 4, 5)
+        # Second month August: forecast=col6, actuals=col7, pct=col8
+        assert ranges[1] == ("Aug", 6, 7, 8)
+
+    def test_totals_column_exists(self):
+        wb = self._open(self._make_grid())
+        ws = wb["SEO Channel Forecast"]
+        row7 = [ws.cell(row=7, column=c).value for c in range(1, 50)]
+        assert "TOTALS" in row7
+
+    def test_row_12_channel_header_strip(self):
+        wb = self._open(self._make_grid())
+        ws = wb["SEO Channel Forecast"]
+        assert ws.cell(row=12, column=1).value == "CHANNEL"
+        row12 = [ws.cell(row=12, column=c).value for c in range(1, 50)]
+        assert "Forecast" in row12
+        assert "Actuals" in row12
+        assert "% Change" in row12
+
+    def test_row_13_col_a_contains_seo(self):
+        wb = self._open(self._make_grid())
+        ws = wb["SEO Channel Forecast"]
+        assert ws.cell(row=13, column=1).value == "SEO"
+
+    def test_rows_14_to_19_col_a_blank(self):
+        wb = self._open(self._make_grid())
+        ws = wb["SEO Channel Forecast"]
+        for row in range(14, 20):
+            val = ws.cell(row=row, column=1).value
+            assert val is None, f"Row {row} col A expected blank, got {val!r}"
+
+    def test_seven_metric_labels_in_col_b_bold(self):
+        wb = self._open(self._make_grid())
+        ws = wb["SEO Channel Forecast"]
+        col_b = [ws.cell(row=r, column=2).value for r in range(13, 20)]
+        assert col_b == ["BUDGET", "REVENUE", "ROAS", "TRANSACTIONS", "AOV", "TRAFFIC", "CVR"]
+
+    def test_freeze_panes_at_b13(self):
+        wb = self._open(self._make_grid())
+        ws = wb["SEO Channel Forecast"]
+        assert ws.freeze_panes == "B13"
+
+
+# ── Forecast Grid — Metric Data Population ───────────────────────────────────
+
+
+class TestForecastGridMetricData:
+    """Tests for the B1b metric data population in utils.forecast_grid."""
+
+    _MONTHS = 3  # small grid so column maths stay readable in tests
+    _TRAFFIC = [10_000.0, 11_000.0, 12_000.0]
+    _CVR = [2.5, 2.6, 2.7]          # percentage form
+    _AOV = [100.0, 101.0, 102.0]
+    _TRANSACTIONS = [t * c / 100 for t, c in zip(_TRAFFIC, _CVR, strict=True)]
+    _REVENUE = [tr * a for tr, a in zip(_TRANSACTIONS, _AOV, strict=True)]
+    _BUDGET = [5_000.0, 5_000.0, 5_000.0]
+
+    def _make(self, **kwargs):
+        from utils.forecast_grid import build_seo_forecast_grid
+        defaults = dict(
+            monthly_traffic=self._TRAFFIC,
+            monthly_transactions=self._TRANSACTIONS,
+            monthly_revenue=self._REVENUE,
+            monthly_cvr=self._CVR,
+            monthly_aov=self._AOV,
+            monthly_budget=self._BUDGET,
+            months=self._MONTHS,
+            start_month=7,
+        )
+        defaults.update(kwargs)
+        return build_seo_forecast_grid(**defaults)
+
+    def _ws(self, buf):
+        from openpyxl import load_workbook
+        buf.seek(0)
+        return load_workbook(buf)["SEO Channel Forecast"]
+
+    # fc(0)=3, ac(0)=4, pc(0)=5; for m=3: ann=12, ytd=13, prior=15, yoy=16
+    _FC0 = 3
+    _AC0 = 4
+    _PC0 = 5
+    _ANN = 12   # _col_annual(3) = 3 + 3*3 = 12
+    _PRIOR = 15  # _col_prior(3) = 12 + 3 = 15
+    _YOY = 16    # _col_yoy(3) = 12 + 4 = 16
+
+    def test_budget_row_populated_from_monthly_budget(self):
+        ws = self._ws(self._make())
+        assert ws.cell(row=13, column=self._FC0).value == pytest.approx(self._BUDGET[0])
+
+    def test_revenue_row_populated_from_monthly_revenue(self):
+        ws = self._ws(self._make())
+        assert ws.cell(row=14, column=self._FC0).value == pytest.approx(self._REVENUE[0], rel=1e-3)
+
+    def test_roas_computed_from_revenue_div_budget_per_month(self):
+        ws = self._ws(self._make())
+        expected = self._REVENUE[0] / self._BUDGET[0]
+        assert ws.cell(row=15, column=self._FC0).value == pytest.approx(expected, rel=1e-3)
+
+    def test_roas_blank_when_budget_zero(self):
+        ws = self._ws(self._make(monthly_budget=[0.0, 0.0, 0.0]))
+        assert ws.cell(row=15, column=self._FC0).value is None
+
+    def test_pct_change_negative_when_actual_below_forecast(self):
+        actuals = [b * 0.8 for b in self._BUDGET]   # 20% below forecast
+        ws = self._ws(self._make(actuals_budget=actuals))
+        pct = ws.cell(row=13, column=self._PC0).value
+        assert pct is not None and pct < 0
+
+    def test_pct_change_neg_one_when_actual_zero_and_forecast_nonzero(self):
+        ws = self._ws(self._make(actuals_budget=[0.0, 0.0, 0.0]))
+        pct = ws.cell(row=13, column=self._PC0).value
+        assert pct == pytest.approx(-1.0)
+
+    def test_pct_change_blank_when_no_actual(self):
+        ws = self._ws(self._make())   # no actuals_* passed
+        assert ws.cell(row=13, column=self._PC0).value is None
+
+    def test_annual_forecast_col_sums_monthly(self):
+        ws = self._ws(self._make())
+        expected = sum(self._BUDGET)
+        assert ws.cell(row=13, column=self._ANN).value == pytest.approx(expected)
+
+    def test_annual_roas_is_sum_revenue_div_sum_budget(self):
+        ws = self._ws(self._make())
+        expected = sum(self._REVENUE) / sum(self._BUDGET)
+        assert ws.cell(row=15, column=self._ANN).value == pytest.approx(expected, rel=1e-3)
+
+    def test_yoy_pct_computed_when_prior_year_provided(self):
+        prior = sum(self._BUDGET) * 0.9  # 10% growth expected
+        ws = self._ws(self._make(prior_year_budget=prior))
+        yoy = ws.cell(row=13, column=self._YOY).value
+        assert yoy is not None
+        expected = (sum(self._BUDGET) - prior) / prior
+        assert yoy == pytest.approx(expected, rel=1e-3)
+
+    def test_yoy_pct_blank_when_prior_year_none(self):
+        ws = self._ws(self._make())  # no prior_year_* passed
+        assert ws.cell(row=13, column=self._YOY).value is None
+
+    def test_cvr_cell_value_divided_by_100_for_percentage_format(self):
+        ws = self._ws(self._make())
+        # CVR row is 19; CVR input is e.g. 2.5 → cell should be 0.025
+        cvr_cell_val = ws.cell(row=19, column=self._FC0).value
+        assert cvr_cell_val is not None
+        assert cvr_cell_val == pytest.approx(self._CVR[0] / 100.0, rel=1e-6)
+
+    def test_negative_pct_change_has_red_font(self):
+        actuals = [b * 0.5 for b in self._BUDGET]
+        ws = self._ws(self._make(actuals_budget=actuals))
+        cell = ws.cell(row=13, column=self._PC0)
+        assert cell.value is not None and cell.value < 0
+        assert "FF0000" in cell.font.color.rgb
+
+# ── Forecast Grid — Assumptions Column + Fee Rows ────────────────────────────
+
+
+class TestForecastGridFees:
+    """Tests for B1c: assumptions text column and management fee rows."""
+
+    _MONTHS = 3
+    _TRAFFIC = [10_000.0, 11_000.0, 12_000.0]
+    _CVR = [2.5, 2.6, 2.7]
+    _AOV = [100.0, 101.0, 102.0]
+    _TRANSACTIONS = [t * c / 100 for t, c in zip(_TRAFFIC, _CVR, strict=True)]
+    _REVENUE = [tr * a for tr, a in zip(_TRANSACTIONS, _AOV, strict=True)]
+    _BUDGET = [5_000.0, 5_000.0, 5_000.0]
+    _ASS_TEXT = "CVR: 2.5%\nAOV: $100\nBudget: $5k/month"
+
+    # For months=3: _col_ass(3) = _col_annual(3) + 2 = (3 + 9) + 2 = 14
+    _ASS_COL = 14
+    _FC0 = 3
+    _AC0 = 4
+    _PC0 = 5
+    _ANN = 12  # _col_annual(3) = 12
+
+    def _make(self, **kwargs):
+        from utils.forecast_grid import build_seo_forecast_grid
+        defaults = dict(
+            monthly_traffic=self._TRAFFIC,
+            monthly_transactions=self._TRANSACTIONS,
+            monthly_revenue=self._REVENUE,
+            monthly_cvr=self._CVR,
+            monthly_aov=self._AOV,
+            monthly_budget=self._BUDGET,
+            months=self._MONTHS,
+            start_month=7,
+            assumptions_text=self._ASS_TEXT,
+        )
+        defaults.update(kwargs)
+        return build_seo_forecast_grid(**defaults)
+
+    def _ws(self, buf):
+        from openpyxl import load_workbook
+        buf.seek(0)
+        return load_workbook(buf)["SEO Channel Forecast"]
+
+    def test_assumptions_text_in_row_13(self):
+        ws = self._ws(self._make())
+        assert ws.cell(row=13, column=self._ASS_COL).value == self._ASS_TEXT
+
+    def test_assumptions_col_merged_across_rows_13_to_19(self):
+        from openpyxl.utils import get_column_letter
+        ws = self._ws(self._make())
+        col_letter = get_column_letter(self._ASS_COL)
+        expected = f"{col_letter}13:{col_letter}19"
+        merged = [str(r) for r in ws.merged_cells.ranges]
+        assert expected in merged, f"Expected {expected!r} in merged ranges {merged}"
+
+    def test_assumptions_col_has_wrap_text(self):
+        ws = self._ws(self._make())
+        cell = ws.cell(row=13, column=self._ASS_COL)
+        assert cell.alignment.wrap_text is True
+
+    def test_row_21_has_seo_management_tech_fee_label(self):
+        ws = self._ws(self._make())
+        assert ws.cell(row=21, column=1).value == "SEO Management + Tech Fee"
+
+    def test_row_22_has_seo_total_label(self):
+        ws = self._ws(self._make())
+        assert ws.cell(row=22, column=1).value == "SEO Total"
+
+    def test_fee_rows_forecast_actuals_populated(self):
+        actuals = [4_800.0, 4_900.0, 5_100.0]
+        ws = self._ws(self._make(actuals_budget=actuals))
+        assert ws.cell(row=21, column=self._FC0).value == pytest.approx(self._BUDGET[0])
+        assert ws.cell(row=21, column=self._AC0).value == pytest.approx(actuals[0])
+        assert ws.cell(row=22, column=self._FC0).value == pytest.approx(self._BUDGET[0])
+        assert ws.cell(row=22, column=self._AC0).value == pytest.approx(actuals[0])
+
+    def test_fee_rows_pct_change_column_is_blank(self):
+        actuals = [4_800.0, 4_900.0, 5_100.0]
+        ws = self._ws(self._make(actuals_budget=actuals))
+        assert ws.cell(row=21, column=self._PC0).value is None
+        assert ws.cell(row=22, column=self._PC0).value is None
+
+    def test_fee_rows_annual_total_populated(self):
+        ws = self._ws(self._make())
+        expected = sum(self._BUDGET)
+        assert ws.cell(row=21, column=self._ANN).value == pytest.approx(expected)
+        assert ws.cell(row=22, column=self._ANN).value == pytest.approx(expected)
