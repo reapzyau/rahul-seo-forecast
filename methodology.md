@@ -194,6 +194,18 @@ The combined forecast merges the historical baseline with keyword-based incremen
 
 This framing helps build a business case: the gap between baseline and combined represents the ROI of content investment.
 
+### Baseline source
+
+By default the baseline is a linear projection of the historical data. When a
+full historical forecast (Prophet / Holt's / linear, from `run_historical_forecast_v4`)
+is passed via the `historical_forecast_df` parameter, the Combined engine uses
+that projection instead — with column priority `prophet → exponential_smoothing → linear`,
+or the `chosen_method` attribute if available.
+
+This keeps the Combined chart's baseline consistent with whatever the Historical
+Forecast page is showing. Without this, the two pages can silently disagree on
+the "do nothing" trajectory for the same site.
+
 ---
 
 ## Revenue Projection

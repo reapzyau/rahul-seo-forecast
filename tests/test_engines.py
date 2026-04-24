@@ -537,6 +537,72 @@ class TestCombinedHub:
         assert "combined" in combined.columns
         assert "positional_uplift" in combined.columns
 
+    def test_combined_uses_historical_forecast_when_provided(self):
+        """When historical_forecast_df is passed, its projection drives the baseline."""
+        from engine.combined_engine import run_combined_forecast
+        from engine.historical_engine import run_historical_forecast_v4
+
+        historical = pd.DataFrame({
+            "date": pd.date_range("2023-01-01", periods=18, freq="MS"),
+            "traffic": [10000 + i * 300 for i in range(18)],
+        })
+        hist_forecast = run_historical_forecast_v4(historical, months=12)
+
+        positional = pd.DataFrame({
+            "month": range(1, 13),
+            "baseline": [10000] * 12,
+            "uplift_p10": [100] * 12,
+            "uplift_p50": [300] * 12,
+            "uplift_p90": [500] * 12,
+        })
+
+        combined_with_hf = run_combined_forecast(
+            historical_df=historical,
+            positional_monthly=positional,
+            new_content_monthly=None,
+            months=12,
+            historical_forecast_df=hist_forecast,
+        )
+
+        # Determine which column the engine picked (mirror _resolve_baseline_projection logic)
+        hf_forecast_rows = hist_forecast[hist_forecast["is_forecast"]]
+        chosen = hist_forecast.attrs.get("chosen_method")
+        candidates = ["prophet", "exponential_smoothing", "linear"]
+        if chosen and chosen in hf_forecast_rows.columns:
+            col = chosen
+        else:
+            col = next((c for c in candidates if c in hf_forecast_rows.columns), "linear")
+
+        expected_m12 = int(hf_forecast_rows[col].iloc[-1])
+        actual_m12 = int(combined_with_hf[combined_with_hf["is_forecast"]]["baseline"].iloc[-1])
+        assert abs(actual_m12 - expected_m12) <= 2
+
+    def test_combined_backward_compat_without_historical_forecast(self):
+        """Without historical_forecast_df, output matches the pre-change behaviour."""
+        from engine.combined_engine import run_combined_forecast
+
+        historical = pd.DataFrame({
+            "date": pd.date_range("2023-01-01", periods=12, freq="MS"),
+            "traffic": [10000 + i * 200 for i in range(12)],
+        })
+        positional = pd.DataFrame({
+            "month": range(1, 13),
+            "baseline": [10000] * 12,
+            "uplift_p10": [200] * 12,
+            "uplift_p50": [500] * 12,
+            "uplift_p90": [800] * 12,
+        })
+        result = run_combined_forecast(
+            historical_df=historical,
+            positional_monthly=positional,
+            new_content_monthly=None,
+            months=12,
+        )
+        assert "combined_p50" in result.columns
+        assert "baseline" in result.columns
+        forecast = result[result["is_forecast"]]
+        assert forecast["baseline"].iloc[-1] > forecast["baseline"].iloc[0]
+
 
 # ── Revenue Engine ──────────────────────────────────────────────────────────
 
