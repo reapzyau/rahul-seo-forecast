@@ -258,6 +258,18 @@ Three scenario multipliers adjust overall traffic estimates:
 
 The positional forecast projects traffic uplift from moving keywords you **already rank for** up the SERP. Unlike new content forecasting, it uses real current positions from SEMrush.
 
+### Scoping the forecast
+
+By default the engine runs on all keywords in positions 1–100. An optional
+`position_range` parameter scopes the forecast to a specific window — for
+example `(5, 20)` restricts to keywords already on page 1 (positions 5–10)
+or page 2 (11–20), the zone where moderate effort produces the clearest
+uplift. Keywords outside the window are excluded entirely — no uplift, no
+baseline contribution, no impact on the forecast.
+
+This is used by the Strategy page to present the "realistic quick-wins" view
+alongside the full-portfolio forecast.
+
 ### Step 1: Current position to target position
 
 For each keyword, the engine looks at its current position and chooses a target position based on effort level and keyword difficulty tier. "Moderate" effort at a moderate KD might move a keyword from position 14 to position 8.

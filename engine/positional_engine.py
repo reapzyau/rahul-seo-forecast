@@ -97,6 +97,7 @@ def run_positional_forecast(
     ctr_model: dict | None = None,
     traffic_multiplier: float = 1.0,
     historical_movement_stats: dict | None = None,
+    position_range: tuple[int, int] | None = None,
     seed: int = 42,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Backward-compatible wrapper around run_positional_forecast_mc.
@@ -113,6 +114,7 @@ def run_positional_forecast(
         traffic_multiplier=traffic_multiplier,
         ga4_baseline=ga4_baseline,
         use_attention_curve=True,
+        position_range=position_range,
         historical_movement_stats=historical_movement_stats,
         seed=seed,
     )
@@ -190,6 +192,7 @@ def run_positional_forecast_mc(
     traffic_multiplier: float = 1.0,
     ga4_baseline: int | None = None,
     use_attention_curve: bool = True,
+    position_range: tuple[int, int] | None = None,
     historical_movement_stats: dict | None = None,
     seasonality: dict | None = None,
     forecast_start_month: int | None = None,
@@ -203,6 +206,10 @@ def run_positional_forecast_mc(
     AIO CTR penalties are applied per-keyword at the target-CTR step based on intent.
 
     Args:
+        position_range: Optional (low, high) tuple to restrict forecast to a
+            specific position window after the standard 1-100 filter. E.g.
+            (5, 20) scopes to page-1/page-2 keywords only. When None (default),
+            all positions 1-100 are included.
         seasonality: Dict {month_num: {traffic_mod: float}} — applied to uplift.
         forecast_start_month: Calendar month (1-12) of horizon month 1 (for seasonality).
         aio_intent_penalties: Dict {intent: penalty_pct} e.g. {"informational": 45.0}.
@@ -213,6 +220,9 @@ def run_positional_forecast_mc(
     """
     df = df.copy()
     df = df[df["position"].between(1, 100)].reset_index(drop=True)
+    if position_range is not None:
+        low, high = position_range
+        df = df[df["position"].between(low, high)].reset_index(drop=True)
     df["kd"] = df["kd"].fillna(0)
     df["volume"] = df["volume"].fillna(0)
 

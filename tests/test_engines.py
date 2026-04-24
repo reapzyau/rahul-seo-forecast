@@ -987,6 +987,46 @@ class TestPositionalMonteCarlo:
         assert "traffic" in monthly.columns
         assert (monthly["uplift"] == monthly["uplift_p50"]).all()
 
+    def test_position_range_filter_scopes_portfolio(self):
+        """Passing position_range=(5, 20) excludes keywords outside that window."""
+        from engine.positional_engine import run_positional_forecast_mc
+        df = pd.DataFrame({
+            "keyword": [f"kw_{i}" for i in range(20)],
+            "position": [2, 3, 5, 8, 10, 15, 18, 22, 30, 45] * 2,
+            "volume": [1000] * 20,
+            "kd": [30] * 20,
+            "current_traffic": [100] * 20,
+            "intent": ["commercial"] * 20,
+            "has_aio": [False] * 20,
+        })
+        kw_full, _ = run_positional_forecast_mc(df, months=6, n_trials=100, seed=42)
+        kw_scoped, _ = run_positional_forecast_mc(
+            df, months=6, n_trials=100, seed=42,
+            position_range=(5, 20),
+        )
+        assert len(kw_full) > len(kw_scoped)
+        assert kw_scoped["position"].between(5, 20).all()
+
+    def test_position_range_empty_result_returns_empty_frames(self):
+        """When filter removes everything, engine returns empty frames rather than crashing."""
+        from engine.positional_engine import run_positional_forecast_mc
+        df = pd.DataFrame({
+            "keyword": ["kw_a", "kw_b"],
+            "position": [2, 3],
+            "volume": [1000, 1000],
+            "kd": [30, 30],
+            "current_traffic": [100, 100],
+            "intent": ["commercial", "commercial"],
+            "has_aio": [False, False],
+        })
+        kw_df, monthly = run_positional_forecast_mc(
+            df, months=6, n_trials=50, seed=42,
+            position_range=(50, 100),
+        )
+        assert kw_df.empty
+        assert len(monthly) == 6
+        assert (monthly["uplift_p50"] == 0).all()
+
 
 class TestAttentionCurve:
     def test_top_keywords_get_full_weight(self):
