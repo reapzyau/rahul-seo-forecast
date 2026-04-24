@@ -10,15 +10,15 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
-# Hide all Streamlit chrome so the React app fills the viewport edge-to-edge
+# Remove top chrome and padding so the React app fills the content area.
+# Sidebar is kept (collapsed by default) so Python pages remain accessible.
 st.markdown("""
 <style>
 .block-container { padding: 0 !important; max-width: 100% !important; }
 header[data-testid="stHeader"] { display: none !important; }
 footer { display: none !important; }
 #MainMenu { display: none !important; }
-[data-testid="collapsedControl"] { display: none !important; }
-section[data-testid="stSidebar"] { display: none !important; }
+section[data-testid="stSidebar"] > div { padding-top: 1rem; }
 </style>
 """, unsafe_allow_html=True)
 
