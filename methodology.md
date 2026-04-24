@@ -112,6 +112,25 @@ Traffic begins in the month the keyword ranks (publish month + time to rank).
 
 The month-by-month projection sums all keywords whose traffic has started by that month. Keywords are published according to the cadence (e.g., 4 per month) in efficiency-score order.
 
+### Roadmap as keyword source
+
+When a Pattern-native roadmap is uploaded with target keywords specified per
+content piece, the New Content Forecast page can use the roadmap's content
+plan as its keyword source instead of requiring a manual CSV upload.
+
+The conversion (`utils.roadmap_to_keywords.build_keyword_df_from_roadmap`):
+- Explodes each content_plan entry into one row per target keyword
+- Joins against the SEMrush portfolio for volume/KD enrichment
+- Falls back to defaults (200 volume, 35 KD) for keywords not in SEMrush
+- Deduplicates so each keyword appears once with its first content URL
+- Carries `_content_url`, `_content_type`, and `_publish_month` metadata
+  through to the forecast engine, which uses them to drive publish-month
+  assignment via direct URL matching (preferred over legacy keyword-in-URL
+  substring matching)
+
+Optimisation-type content uses a faster S-curve maturation (`t_mid=1.5`,
+amplitude=0.3) compared to new_page content's standard tier-based curve.
+
 ---
 
 ## Mode 2: Historical Trend Forecast

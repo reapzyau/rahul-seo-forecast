@@ -23,9 +23,11 @@ from utils.chart_builder import (
 from utils.data_loader import load_keywords
 from utils.export import keyword_template_csv, to_csv, to_html_report
 from utils.page_base import setup_page
+from utils.roadmap_to_keywords import build_keyword_df_from_roadmap, summarise_roadmap_extraction
 from utils.session import (
     BIFROST_API_KEY,
     BIFROST_MODEL,
+    KW_DF,
     NC_RESULT,
     ROADMAP_CONTENT_PLAN,
 )
@@ -133,47 +135,89 @@ cadence_options = st.sidebar.multiselect(
     disabled=not enable_scenarios,
 )
 
-# ── Upload ───────────────────────────────────────────────────────────────────
-st.subheader("Upload Keywords CSV")
-st.caption("Required columns: keyword, volume, kd — supports CSV, TSV, Excel")
+# ── Keyword Source ────────────────────────────────────────────────────────────
+content_plan = st.session_state.get(ROADMAP_CONTENT_PLAN)
+semrush_kw_df = st.session_state.get(KW_DF)
 
-col1, col2, col3 = st.columns([3, 2, 2])
-with col1:
-    uploaded_file = st.file_uploader("Upload your file", type=["csv", "tsv", "xlsx", "xls"], key="kw_upload")
-with col2:
-    use_sample = st.checkbox("Use sample data to explore the tool", key="kw_sample")
-with col3:
-    st.download_button(
-        "Download CSV Template",
-        keyword_template_csv(),
-        "keyword-template.csv",
-        "text/csv",
-        key="kw_template_dl",
-    )
+source_options = ["Manual upload (CSV / Excel)"]
+if content_plan:
+    source_options.insert(0, f"Roadmap content plan ({len(content_plan)} pieces)")
+
+source = st.radio(
+    "Keyword source",
+    source_options,
+    key="nc_source",
+    horizontal=True,
+    help="When a roadmap is uploaded, its content plan can drive the forecast directly.",
+)
 
 df = None
-if uploaded_file is not None:
-    df = load_keywords(uploaded_file)
-elif use_sample:
-    sample_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "assets", "sample-keywords.csv")
-    df = load_keywords(sample_path)
 
-if df is not None:
-    st.markdown(
-        f"**{len(df)} keywords loaded** | "
-        f"Avg volume: {df['volume'].mean():,.0f} | "
-        f"Avg KD: {df['kd'].mean():.0f} | "
-        f"Volume range: {df['volume'].min():,} – {df['volume'].max():,}"
-    )
-    st.dataframe(df.head(10), use_container_width=True, hide_index=True)
+if source.startswith("Roadmap"):
+    df = build_keyword_df_from_roadmap(content_plan, semrush_kw_df=semrush_kw_df)
+    if df.empty:
+        st.warning(
+            "Roadmap content plan has no keywords with usable volume data. "
+            "Either add target keywords to the content plan, or fall back to manual upload."
+        )
+    else:
+        summary = summarise_roadmap_extraction(content_plan, df)
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Content pieces", summary["n_content_pieces"])
+        c2.metric("Target keywords", summary["n_keywords_total"])
+        c3.metric("With SEMrush volume", summary["n_keywords_with_semrush"])
+        c4.metric("Using defaults", summary["n_keywords_default"])
+
+        if summary["n_keywords_default"] > 0:
+            st.caption(
+                f"{summary['n_keywords_default']} keywords don't appear in your SEMrush export — "
+                "they use default volume (200) and KD (35). Consider running a SEMrush keyword "
+                "research export for your full target set to improve accuracy."
+            )
+
+        with st.expander("Preview the extracted keyword set", expanded=False):
+            display_cols = ["keyword", "volume", "kd", "_content_url", "_content_type", "_publish_month"]
+            available = [c for c in display_cols if c in df.columns]
+            st.dataframe(df[available].head(50), use_container_width=True, hide_index=True)
+
+else:
+    # ── Upload ────────────────────────────────────────────────────────────────
+    st.subheader("Upload Keywords CSV")
+    st.caption("Required columns: keyword, volume, kd — supports CSV, TSV, Excel")
+
+    col1, col2, col3 = st.columns([3, 2, 2])
+    with col1:
+        uploaded_file = st.file_uploader("Upload your file", type=["csv", "tsv", "xlsx", "xls"], key="kw_upload")
+    with col2:
+        use_sample = st.checkbox("Use sample data to explore the tool", key="kw_sample")
+    with col3:
+        st.download_button(
+            "Download CSV Template",
+            keyword_template_csv(),
+            "keyword-template.csv",
+            "text/csv",
+            key="kw_template_dl",
+        )
+
+    if uploaded_file is not None:
+        df = load_keywords(uploaded_file)
+    elif use_sample:
+        sample_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "assets", "sample-keywords.csv")
+        df = load_keywords(sample_path)
+
+    if df is not None:
+        st.markdown(
+            f"**{len(df)} keywords loaded** | "
+            f"Avg volume: {df['volume'].mean():,.0f} | "
+            f"Avg KD: {df['kd'].mean():.0f} | "
+            f"Volume range: {df['volume'].min():,} – {df['volume'].max():,}"
+        )
+        st.dataframe(df.head(10), use_container_width=True, hide_index=True)
 
 # ── Run Forecast ─────────────────────────────────────────────────────────────
 if df is not None:
-    _roadmap_plan = st.session_state.get(ROADMAP_CONTENT_PLAN) or None
-    if _roadmap_plan:
-        st.info(f"Roadmap content plan active: {len(_roadmap_plan)} URL(s) will drive publish-month assignment.")
-
     if st.button("Generate Forecast", type="primary", key="kw_run"):
+        roadmap_plan_for_engine = content_plan if source.startswith("Roadmap") else None
         with st.spinner("Running keyword forecast..."):
             keyword_df, monthly_df = run_new_content_forecast(
                 df, da, cadence, months, seed,
@@ -181,7 +225,7 @@ if df is not None:
                 traffic_multiplier=traffic_multiplier,
                 include_informational=not exclude_informational,
                 ai_overview_ctr_penalty=informational_ctr_penalty,
-                roadmap_content_plan=_roadmap_plan,
+                roadmap_content_plan=roadmap_plan_for_engine,
             )
 
             # Run scenarios if enabled
