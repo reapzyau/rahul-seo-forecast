@@ -1244,6 +1244,78 @@ class TestDecayRespectsMaintenance:
         # At 0.9 coverage, effective decay should be reduced by at least 50%
         assert cumulative_hi < cumulative_no * 0.5
 
+    def test_non_branded_informational_decays_faster(self):
+        """Non-branded informational keyword decays more than non-branded commercial in same position."""
+        from engine.decay_engine import calculate_portfolio_decay
+        info_df = pd.DataFrame({
+            "keyword": ["info_kw"],
+            "position": [8],
+            "current_traffic": [1000],
+            "intent": ["informational"],
+            "is_branded": [False],
+        })
+        comm_df = pd.DataFrame({
+            "keyword": ["commercial_kw"],
+            "position": [8],
+            "current_traffic": [1000],
+            "intent": ["commercial"],
+            "is_branded": [False],
+        })
+        info_decay = calculate_portfolio_decay(info_df, months=12).iloc[-1]["cumulative_decay"]
+        comm_decay = calculate_portfolio_decay(comm_df, months=12).iloc[-1]["cumulative_decay"]
+        assert info_decay > comm_decay
+
+    def test_branded_informational_does_not_get_multiplier(self):
+        """Branded informational decays same as branded commercial."""
+        from engine.decay_engine import calculate_portfolio_decay
+        info = calculate_portfolio_decay(pd.DataFrame({
+            "keyword": ["brand info"], "position": [5], "current_traffic": [500],
+            "intent": ["informational"], "is_branded": [True],
+        }), months=12).iloc[-1]["cumulative_decay"]
+        comm = calculate_portfolio_decay(pd.DataFrame({
+            "keyword": ["brand comm"], "position": [5], "current_traffic": [500],
+            "intent": ["commercial"], "is_branded": [True],
+        }), months=12).iloc[-1]["cumulative_decay"]
+        assert info == comm
+
+    def test_missing_intent_column_no_crash(self):
+        """If intent column missing, decay still runs with no multiplier applied."""
+        from engine.decay_engine import calculate_portfolio_decay
+        df = pd.DataFrame({
+            "keyword": ["kw"], "position": [10], "current_traffic": [500],
+        })
+        result = calculate_portfolio_decay(df, months=6)
+        assert len(result) == 6
+        assert result["cumulative_decay"].iloc[-1] > 0
+
+    def test_apply_intent_multipliers_false_disables_logic(self):
+        """When apply_intent_multipliers=False, non-branded info decays same as commercial."""
+        from engine.decay_engine import calculate_portfolio_decay
+        df = pd.DataFrame({
+            "keyword": ["info", "comm"],
+            "position": [8, 8],
+            "current_traffic": [1000, 1000],
+            "intent": ["informational", "commercial"],
+            "is_branded": [False, False],
+        })
+        result_on = calculate_portfolio_decay(df, months=12, apply_intent_multipliers=True)
+        result_off = calculate_portfolio_decay(df, months=12, apply_intent_multipliers=False)
+        assert result_on.iloc[-1]["cumulative_decay"] > result_off.iloc[-1]["cumulative_decay"]
+
+    def test_custom_multiplier_overrides_default(self):
+        """Pass a harsher multiplier, confirm decay scales with it."""
+        from engine.decay_engine import calculate_portfolio_decay
+        df = pd.DataFrame({
+            "keyword": ["info"], "position": [10], "current_traffic": [1000],
+            "intent": ["informational"], "is_branded": [False],
+        })
+        default = calculate_portfolio_decay(df, months=12).iloc[-1]["cumulative_decay"]
+        harsh = calculate_portfolio_decay(
+            df, months=12,
+            intent_decay_multipliers={"informational_non_branded": 2.5},
+        ).iloc[-1]["cumulative_decay"]
+        assert harsh > default
+
 
 # ── Intent-Weighted Revenue ───────────────────────────────────────────────
 

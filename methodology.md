@@ -396,6 +396,30 @@ Monthly retention is calculated as `(1 - annual_rate)^(1/12)`. The **maintenance
 
 The "honest baseline" is the linear projection minus cumulative decay — this is what happens if you stop all SEO work.
 
+### Intent-aware decay multiplier
+
+Non-branded informational keywords decay faster than their position bucket alone
+would suggest. Google's AI Overviews increasingly absorb informational query
+intent, competitors publish fresher Q&A content constantly, and the pages
+themselves age out of relevance more quickly than product or category pages.
+
+When both `is_branded` and `intent` columns are present in the keyword portfolio,
+the decay engine multiplies the annual rate by **1.5×** for keywords where
+`is_branded == False` AND `intent == "informational"`. Branded informational
+content (FAQ pages for a named product, brand glossaries, etc.) is not affected
+— branded informational content is trust and brand-building that doesn't follow
+the same decay curve.
+
+The multiplier is configurable via the `decay_multiplier_informational_non_branded`
+assumption (default 1.5, range 1.0–3.0). The full intent-aware logic can be
+disabled via `decay_intent_aware_enabled = False`.
+
+Note: this multiplier is a separate mechanism from the AIO CTR penalty applied
+in the stream engines. AIO CTR penalty reduces *current* CTR when an AI
+Overview is present. Intent-aware decay reduces *future retention* regardless
+of whether an AIO currently shows. Together they model both the immediate
+and compounding effects of informational content losing ground over time.
+
 ---
 
 ## Mode 7: Monte Carlo Confidence Bands

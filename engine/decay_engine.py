@@ -19,6 +19,10 @@ DEFAULT_DECAY_RATES = {
     "51_plus": 0.35,
 }
 
+DEFAULT_INTENT_DECAY_MULTIPLIERS = {
+    "informational_non_branded": 1.5,
+}
+
 
 def position_bucket(position: int | None) -> str:
     if position is None or pd.isna(position):
@@ -45,6 +49,8 @@ def calculate_portfolio_decay(
     months: int,
     decay_rates: dict | None = None,
     maintenance_coverage: float = 0.0,
+    intent_decay_multipliers: dict | None = None,
+    apply_intent_multipliers: bool = True,
 ) -> pd.DataFrame:
     """Project monthly traffic loss from decay across the keyword portfolio.
 
@@ -53,6 +59,12 @@ def calculate_portfolio_decay(
         months: Forecast horizon.
         decay_rates: Override default annual rates by bucket.
         maintenance_coverage: 0.0 = no maintenance, 1.0 = full.
+        intent_decay_multipliers: Per-intent-class annual rate multipliers.
+            Defaults to DEFAULT_INTENT_DECAY_MULTIPLIERS when None.
+            Key 'informational_non_branded' applies to rows where
+            is_branded == False AND intent == 'informational'.
+        apply_intent_multipliers: When False, skip intent multiplier logic
+            entirely (backward-compat escape hatch).
 
     Returns:
         DataFrame with month, decay_loss, cumulative_decay, retained_traffic.
@@ -66,9 +78,20 @@ def calculate_portfolio_decay(
         })
 
     rates = decay_rates or DEFAULT_DECAY_RATES
+    multipliers = intent_decay_multipliers if intent_decay_multipliers is not None else DEFAULT_INTENT_DECAY_MULTIPLIERS
     df = keyword_df.copy()
     df["bucket"] = df["position"].apply(position_bucket)
     df["annual_rate"] = df["bucket"].map(rates)
+
+    if apply_intent_multipliers:
+        has_intent = "intent" in df.columns
+        has_branded = "is_branded" in df.columns
+        if has_intent and has_branded:
+            intent_mult = pd.Series(1.0, index=df.index)
+            non_branded_info = (~df["is_branded"].astype(bool)) & (df["intent"].str.lower() == "informational")
+            intent_mult[non_branded_info] = multipliers.get("informational_non_branded", 1.0)
+            df["annual_rate"] = df["annual_rate"] * intent_mult
+
     df["effective_rate"] = df["annual_rate"] * (1.0 - maintenance_coverage)
     df["monthly_retention"] = df["effective_rate"].apply(monthly_decay_factor)
 
