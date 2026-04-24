@@ -526,31 +526,42 @@ This is the tool's calibration loop. Without it, forecasts are guesses nobody ev
 
 ---
 
-## Forecast Grid Output Format
+## Forecast grid output formats
 
-The Deliverables page exports an xlsx via `utils/forecast_grid.py::build_seo_forecast_grid()`. The workbook contains up to three sheets:
+Two grid formats are available:
 
-### Sheet 1: "SEO Forecast" (always present)
+### Single-scenario grid
 
-Rows in order:
-- Traffic (Forecast / Actual / % Var per month + Annual Total)
-- Traffic P10 (forecast only, no Actual/Var) — when Monte Carlo bands available
-- Traffic P90 (forecast only) — when bands available
-- Transactions (Forecast / Actual / % Var per month + Annual Total)
-- CVR % (Forecast / Actual / % Var per month) — when dynamic revenue enabled
-- AOV (Forecast / Actual / % Var per month) — when dynamic revenue enabled
-- Revenue (Forecast / Actual / % Var per month + Annual Total)
-- Revenue P10 / P90 (forecast only) — when bands available
+`utils.forecast_grid.build_seo_forecast_grid` produces the original GAZMAN-style
+xlsx with monthly columns grouped as Forecast / Actual / % Variance, rows for
+Traffic / Transactions / Revenue. Used for analyst–client reconciliation after
+the fact.
 
-Cell formats: CVR as `0.00%` (decimal stored, displayed as percentage), AOV as `$#,##0.00`, traffic/transactions as `#,##0`, revenue as `$#,##0.00`. Freeze panes at A4.
+### Three-scenario expanded grid
 
-### Sheet 2: "Stream Breakdown" (when Combined Forecast source with streams)
+`utils.forecast_grid.build_three_scenario_grid` produces a four-sheet xlsx for
+budget-tier presentations:
 
-Shows the layered traffic math per month: Baseline + Positional Uplift + New Content Uplift − Decay = Combined. Includes an explanatory note that AIO is baked into the positional and new content streams via per-stream CTR penalty — not a separate deduction.
+- **Conservative** — light effort preset, full monthly metrics
+- **Moderate** — moderate effort preset (or roadmap-detected), full monthly metrics
+- **Aggressive** — aggressive effort preset, full monthly metrics
+- **Comparison** — side-by-side totals: traffic, revenue, hours, retainer, ROI
 
-### Sheet 3: "Assumptions" (always included when store is available)
+Each scenario sheet contains, per month: baseline traffic, positional uplift,
+new content uplift, decay, P10/P50/P90 traffic, transactions, revenue, AOV used,
+CVR used, average portfolio position, average portfolio CTR, and the
+seasonality modifier applied.
 
-Three columns: Assumption | Value | Source. Rows grouped by category (Client Info, Financial Model, AIO, Decay, etc.) with coloured group headers. Footer legend explains the three provenance states: `defaulted` / `detected` / `overridden`.
+AOV can optionally follow the `aov_mod` seasonality values — a November AOV
+boost of 20% produces a higher basket value in the forecast for that month.
+Enable via the `apply_seasonal_aov` flag (default True when seasonality is
+detected from GA4 or AU retail defaults).
+
+Cell formats: CVR / CTR as `0.00%` (decimal stored, percentage displayed), AOV /
+Revenue as `$#,##0.00`, traffic / transactions as `#,##0`, position as `0.0`.
+Freeze panes at row 5 (below title, subtitle, blank, and header rows). Scenario
+tabs are colour-coded: Conservative grey (`94A3B8`), Moderate blue (`2563EB`),
+Aggressive green (`22C55E`), Comparison dark (`0F172A`).
 
 ---
 
