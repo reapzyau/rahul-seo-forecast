@@ -419,6 +419,63 @@ class TestCombinedForecast:
         assert (combined["baseline"] == 0).all()
 
 
+class TestCombinedBaselineFromHistorical:
+    def test_combined_baseline_follows_historical_trend(self):
+        """Regression: Combined page was not passing historical_forecast_df to the engine.
+        A 36-month upward-trending GA4 dataset should produce a Combined baseline that grows
+        when historical_forecast_df is provided, confirming the linkage fires correctly.
+        """
+        from engine.combined_engine import run_combined_forecast
+        from engine.historical_engine import run_historical_forecast_v4
+
+        ga4 = pd.DataFrame({
+            "date": pd.date_range("2023-01-01", periods=36, freq="MS"),
+            "traffic": [1000 + i * 100 for i in range(36)],  # 1000→4500 over 36 months
+        })
+        hist = run_historical_forecast_v4(ga4, months=12)
+
+        combined = run_combined_forecast(
+            historical_df=ga4,
+            positional_monthly=None,
+            new_content_monthly=None,
+            months=12,
+            historical_forecast_df=hist,
+        )
+        fc = combined[combined["is_forecast"]]
+        baseline_growth_pct = (fc["baseline"].iloc[-1] / fc["baseline"].iloc[0] - 1) * 100
+        assert baseline_growth_pct >= 5.0, (
+            f"Expected baseline to grow ≥5% over 12 months given strong trend; "
+            f"got {baseline_growth_pct:.1f}%"
+        )
+
+    def test_combined_baseline_differs_with_and_without_historical_forecast(self):
+        """Passing historical_forecast_df should change the baseline from the default YoY calc."""
+        from engine.combined_engine import run_combined_forecast
+        from engine.historical_engine import run_historical_forecast_v4
+
+        ga4 = pd.DataFrame({
+            "date": pd.date_range("2022-07-01", periods=45, freq="MS"),
+            "traffic": [700 + i * 94 for i in range(45)],  # 700→4930 over 45 months
+        })
+        hist = run_historical_forecast_v4(ga4, months=12)
+
+        combined_default = run_combined_forecast(
+            historical_df=ga4, positional_monthly=None, new_content_monthly=None, months=12
+        )
+        combined_hf = run_combined_forecast(
+            historical_df=ga4, positional_monthly=None, new_content_monthly=None, months=12,
+            historical_forecast_df=hist,
+        )
+
+        default_end = combined_default[combined_default["is_forecast"]]["baseline"].iloc[-1]
+        hf_end = combined_hf[combined_hf["is_forecast"]]["baseline"].iloc[-1]
+        # The two baselines should differ — confirming the parameter is being used
+        assert default_end != hf_end, (
+            "historical_forecast_df had no effect on Combined baseline — "
+            "the linkage is not firing."
+        )
+
+
 class TestCombinedHub:
     def test_layered_math_with_bands(self):
         """v4 math: combined = baseline + positional + new_content - decay (no AIO deduction)."""
