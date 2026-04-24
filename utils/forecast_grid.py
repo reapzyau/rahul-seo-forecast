@@ -5,8 +5,8 @@ Generates a single-sheet xlsx "SEO Channel Forecast" with:
   - Row 12: column sub-header strip (Forecast | Actuals | % Change per month)
   - Rows 13-19: 7-metric scaffold (BUDGET, REVENUE, ROAS, TRANSACTIONS, AOV, TRAFFIC, CVR)
 
-Data population (B1b), % Change / trailing columns (B1c), and supporting sheets
-(Stream Breakdown, Assumptions) are added in subsequent sessions.
+Also provides `build_three_scenario_grid` — a four-sheet xlsx for budget-tier
+presentations: Conservative / Moderate / Aggressive / Comparison.
 
 Pure Python + openpyxl.  No Streamlit imports.
 """
@@ -16,9 +16,12 @@ from __future__ import annotations
 import calendar
 import io
 
+import pandas as pd
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
+
+from engine.new_content_engine import get_ctr
 
 # ---------------------------------------------------------------------------
 # Style constants
@@ -457,6 +460,425 @@ def build_seo_forecast_grid(
     ws.freeze_panes = "B13"
     _auto_width(ws)
     ws.column_dimensions[get_column_letter(ass_col)].width = 30
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return buf
+
+
+# ---------------------------------------------------------------------------
+# Three-scenario grid helpers
+# ---------------------------------------------------------------------------
+
+_TAB_COLORS: dict[str, str] = {
+    "Conservative": "94A3B8",
+    "Moderate": "2563EB",
+    "Aggressive": "22C55E",
+    "Comparison": "0F172A",
+}
+
+_SCENARIO_HEADER_FILLS: dict[str, PatternFill] = {
+    name: PatternFill(start_color=color, end_color=color, fill_type="solid")
+    for name, color in _TAB_COLORS.items()
+}
+
+_WHITE_FONT = Font(bold=True, color="FFFFFF", size=11)
+_DARK_FONT = Font(bold=True, color="FFFFFF", size=11)
+
+_COL_FORMATS: dict[str, str] = {
+    "Baseline Traffic": "#,##0",
+    "Positional Uplift": "#,##0",
+    "New Content Uplift": "#,##0",
+    "Decay": "#,##0",
+    "Traffic P10": "#,##0",
+    "Traffic P50": "#,##0",
+    "Traffic P90": "#,##0",
+    "Transactions": "#,##0",
+    "Revenue": "$#,##0.00",
+    "AOV Used": "$#,##0.00",
+    "CVR Used (%)": "0.00%",
+    "Avg Portfolio Position": "0.0",
+    "Avg Portfolio CTR (%)": "0.00%",
+    "Seasonality Modifier": "0.00%",
+}
+
+# Columns whose values are stored divided by 100 for Excel percentage display
+_PCT_DIVIDE_COLS = {"CVR Used (%)", "Avg Portfolio CTR (%)"}
+
+
+def _preset_subtitle(preset: dict) -> str:
+    effort = preset.get("effort_level", "—").title()
+    cadence = preset.get("content_cadence", 0)
+    maint = int(preset.get("maintenance_coverage", 0.0) * 100)
+    hours = preset.get("total_monthly_hours", 0.0)
+    retainer = preset.get("retainer_aud_monthly", 0.0)
+    return (
+        f"{effort} effort | {cadence} posts/month | "
+        f"{maint}% maintenance | {hours} hrs/month | "
+        f"${retainer:,.0f}/month retainer"
+    )
+
+
+def _write_scenario_ws(
+    ws,
+    df: pd.DataFrame,
+    scenario_name: str,
+    preset: dict,
+    fy_label: str,
+) -> None:
+    """Write a scenario DataFrame to an openpyxl worksheet (rows 1-5+)."""
+    fill = _SCENARIO_HEADER_FILLS[scenario_name]
+
+    # Row 1: Title
+    title_cell = ws.cell(row=1, column=1, value=f"{scenario_name} Scenario — {fy_label} SEO Forecast")
+    title_cell.font = Font(bold=True, size=14)
+
+    # Row 2: Subtitle (preset summary)
+    sub_cell = ws.cell(row=2, column=1, value=_preset_subtitle(preset))
+    sub_cell.font = Font(italic=True, size=10)
+
+    # Row 3: Blank — leave empty
+
+    # Row 4: Column headers
+    columns = list(df.columns)
+    for col_idx, col_name in enumerate(columns, start=1):
+        cell = ws.cell(row=4, column=col_idx, value=col_name)
+        cell.font = _WHITE_FONT
+        cell.fill = fill
+        cell.alignment = Alignment(horizontal="center")
+
+    # Freeze panes below header
+    ws.freeze_panes = "A5"
+
+    # Rows 5+: Data
+    for row_idx, (_, data_row) in enumerate(df.iterrows(), start=5):
+        for col_idx, col_name in enumerate(columns, start=1):
+            raw_val = data_row[col_name]
+            # Convert NaN / None to None for Excel
+            if raw_val is None or (isinstance(raw_val, float) and pd.isna(raw_val)):
+                val = None
+            elif col_name in _PCT_DIVIDE_COLS and raw_val is not None:
+                val = float(raw_val) / 100.0
+            else:
+                val = raw_val
+
+            cell = ws.cell(row=row_idx, column=col_idx, value=val)
+            fmt = _COL_FORMATS.get(col_name)
+            if fmt and val is not None:
+                cell.number_format = fmt
+            cell.alignment = Alignment(horizontal="right" if isinstance(val, (int, float)) else "left")
+
+    _auto_width(ws)
+
+
+def build_scenario_grid_sheet(
+    scenario_name: str,
+    scenario_result: dict,
+    preset: dict,
+    cvr_series: list[float] | float,
+    aov_series: list[float] | float,
+    currency: str = "AUD",
+    start_month: int = 7,
+    include_seasonality_column: bool = True,
+    seasonality: dict | None = None,
+) -> pd.DataFrame:
+    """Build the full monthly DataFrame for one scenario's sheet.
+
+    Only forecast rows (is_forecast=True) from combined_df are included.
+    Month labels and calendar months are derived from the date column in
+    combined_df; the caller is responsible for ensuring the forecast starts
+    at start_month if label alignment matters.
+
+    Avg Portfolio Position is a static traffic-weighted mean of target_position
+    across all ranked keywords — the same value appears in every forecast month.
+    This is an approximation; the true per-month position ramps via the S-curve
+    maturation schedule but is too expensive to compute per-row in a grid export.
+
+    Args:
+        scenario_name: "Conservative" / "Moderate" / "Aggressive"
+        scenario_result: Dict from run_three_scenarios (has combined_df, positional_keyword_df, etc.)
+        preset: The scenario's preset dict (effort, cadence, etc.)
+        cvr_series: Per-month CVR as %, or single scalar.
+        aov_series: Per-month AOV, or single scalar.
+        currency: ISO code (currently informational only).
+        start_month: Calendar month (1–12) of horizon month 1 (for label generation).
+        include_seasonality_column: Add a "Seasonality Modifier" column (traffic_mod).
+        seasonality: Monthly seasonality dict keyed by calendar month integer.
+
+    Returns:
+        DataFrame with one row per forecast month.
+    """
+    combined_df = scenario_result.get("combined_df", pd.DataFrame())
+    if combined_df.empty or "is_forecast" not in combined_df.columns:
+        return pd.DataFrame()
+
+    forecast_df = combined_df[combined_df["is_forecast"]].reset_index(drop=True)
+    n_months = len(forecast_df)
+    if n_months == 0:
+        return pd.DataFrame()
+
+    # Normalise CVR / AOV to per-month lists
+    if isinstance(cvr_series, (int, float)):
+        cvr_list = [float(cvr_series)] * n_months
+    else:
+        cvr_list = list(cvr_series)[:n_months]
+        if len(cvr_list) < n_months:
+            cvr_list += [cvr_list[-1]] * (n_months - len(cvr_list))
+
+    if isinstance(aov_series, (int, float)):
+        aov_list = [float(aov_series)] * n_months
+    else:
+        aov_list = list(aov_series)[:n_months]
+        if len(aov_list) < n_months:
+            aov_list += [aov_list[-1]] * (n_months - len(aov_list))
+
+    # Compute static avg portfolio position (traffic-weighted target position)
+    kw = scenario_result.get("positional_keyword_df", pd.DataFrame())
+    avg_position: float | None = None
+    if (
+        not kw.empty
+        and "target_position" in kw.columns
+        and "volume" in kw.columns
+    ):
+        weights = kw["volume"] * kw["target_position"].apply(lambda p: get_ctr(int(p)))
+        total_weight = weights.sum()
+        if total_weight > 0:
+            avg_position = float((kw["target_position"] * weights).sum() / total_weight)
+
+    avg_ctr: float | None = None
+    if avg_position is not None:
+        avg_ctr = get_ctr(round(avg_position))
+
+    rows = []
+    for i, (_, row) in enumerate(forecast_df.iterrows()):
+        date = pd.Timestamp(row["date"])
+        calendar_month = date.month
+        month_label = date.strftime("%b %Y")
+
+        baseline = int(row.get("baseline", 0) or 0)
+        pos_uplift = int(row.get("positional_uplift_p50", row.get("positional_uplift", 0)) or 0)
+        nc_uplift = int(row.get("new_content_uplift", 0) or 0)
+        decay_raw = int(row.get("decay", 0) or 0)
+        decay_display = -abs(decay_raw)
+
+        p10 = int(row.get("combined_p10", row.get("combined", 0)) or 0)
+        p50 = int(row.get("combined_p50", row.get("combined", 0)) or 0)
+        p90 = int(row.get("combined_p90", row.get("combined", 0)) or 0)
+
+        cvr = cvr_list[i]
+        aov = aov_list[i]
+        transactions = p50 * cvr / 100.0
+        revenue = transactions * aov
+
+        r: dict = {
+            "Month Label": month_label,
+            "Calendar Month": calendar_month,
+            "Is Forecast": True,
+            "Baseline Traffic": baseline,
+            "Positional Uplift": pos_uplift,
+            "New Content Uplift": nc_uplift,
+            "Decay": decay_display,
+            "Traffic P10": p10,
+            "Traffic P50": p50,
+            "Traffic P90": p90,
+            "Transactions": round(transactions, 1),
+            "Revenue": round(revenue, 2),
+            "AOV Used": float(aov),
+            "CVR Used (%)": float(cvr),
+            "Avg Portfolio Position": avg_position,
+            "Avg Portfolio CTR (%)": avg_ctr,
+        }
+
+        if include_seasonality_column:
+            modifier = 0.0
+            if seasonality:
+                modifier = float(seasonality.get(calendar_month, {}).get("traffic_mod", 0.0))
+            r["Seasonality Modifier"] = modifier
+
+        rows.append(r)
+
+    return pd.DataFrame(rows)
+
+
+def build_three_scenario_grid(
+    scenario_results: dict[str, dict],
+    presets: dict[str, dict],
+    cvr: float,
+    aov: float,
+    seasonality: dict | None = None,
+    apply_seasonal_aov: bool = True,
+    currency: str = "AUD",
+    start_month: int = 7,
+    client_name: str = "",
+    fy_label: str = "FY26",
+) -> io.BytesIO:
+    """Build a four-sheet xlsx: Conservative, Moderate, Aggressive, Comparison.
+
+    Each scenario sheet is produced by build_scenario_grid_sheet using monthly
+    CVR and AOV series derived from start_month + seasonality offsets.
+
+    Seasonal AOV: when apply_seasonal_aov=True and seasonality has 'aov_mod'
+    values, per-month AOV = base_aov × (1 + aov_mod). Similarly for CVR via
+    'cr_mod'. Months are indexed from start_month (e.g. start_month=7 → Jul,
+    Aug, Sep, …) regardless of actual calendar dates in combined_df.
+
+    Args:
+        scenario_results: Output of run_three_scenarios().
+        presets: Output of build_scenario_presets().
+        cvr: Base conversion rate as % (e.g. 2.5 for 2.5%).
+        aov: Base average order value.
+        seasonality: Monthly seasonality dict keyed by int 1–12. Each entry
+                     may have 'traffic_mod', 'cr_mod', 'aov_mod' (all floats).
+        apply_seasonal_aov: Apply aov_mod from seasonality to AOV when True.
+        currency: ISO currency code (informational).
+        start_month: Calendar month (1–12) of forecast month 1.
+        client_name: Optional client name for sheet titles.
+        fy_label: Financial year label (e.g. "FY26").
+
+    Returns:
+        BytesIO buffer containing the xlsx workbook.
+    """
+    wb = Workbook()
+    # Remove default sheet
+    if wb.active is not None:
+        wb.remove(wb.active)
+
+    scenario_dfs: dict[str, pd.DataFrame] = {}
+
+    for scenario_name in ("Conservative", "Moderate", "Aggressive"):
+        result = scenario_results.get(scenario_name, {})
+        if "error" in result or not result:
+            scenario_dfs[scenario_name] = pd.DataFrame()
+            continue
+
+        preset_dict = presets.get(scenario_name, {})
+        combined_df = result.get("combined_df", pd.DataFrame())
+        if combined_df.empty or "is_forecast" not in combined_df.columns:
+            scenario_dfs[scenario_name] = pd.DataFrame()
+            continue
+
+        n_months = int(combined_df["is_forecast"].sum())
+
+        # Build per-month CVR and AOV series indexed by start_month offset
+        aov_list: list[float] = []
+        cvr_list: list[float] = []
+        for i in range(n_months):
+            cal_month = (start_month - 1 + i) % 12 + 1
+            month_sea = (seasonality or {}).get(cal_month, {})
+            aov_mod = float(month_sea.get("aov_mod", 0.0)) if (apply_seasonal_aov and seasonality) else 0.0
+            cr_mod = float(month_sea.get("cr_mod", 0.0)) if seasonality else 0.0
+            aov_list.append(aov * (1.0 + aov_mod))
+            cvr_list.append(cvr * (1.0 + cr_mod))
+
+        df = build_scenario_grid_sheet(
+            scenario_name=scenario_name,
+            scenario_result=result,
+            preset=preset_dict,
+            cvr_series=cvr_list,
+            aov_series=aov_list,
+            currency=currency,
+            start_month=start_month,
+            include_seasonality_column=True,
+            seasonality=seasonality,
+        )
+        scenario_dfs[scenario_name] = df
+
+        ws = wb.create_sheet(title=scenario_name)
+        ws.sheet_properties.tabColor = _TAB_COLORS[scenario_name]
+        _write_scenario_ws(ws, df, scenario_name, preset_dict, fy_label)
+
+    # ── Comparison sheet ──────────────────────────────────────────────────
+    comp_ws = wb.create_sheet(title="Comparison")
+    comp_ws.sheet_properties.tabColor = _TAB_COLORS["Comparison"]
+
+    title_text = (
+        f"{client_name} | Scenario Comparison — {fy_label} SEO Forecast"
+        if client_name
+        else f"Scenario Comparison — {fy_label} SEO Forecast"
+    )
+    title_c = comp_ws.cell(row=1, column=1, value=title_text)
+    title_c.font = Font(bold=True, size=14)
+
+    # Row 2: blank
+
+    # Row 3: Header
+    comp_headers = ["Metric", "Conservative", "Moderate", "Aggressive"]
+    comp_fill = PatternFill(
+        start_color=_TAB_COLORS["Comparison"],
+        end_color=_TAB_COLORS["Comparison"],
+        fill_type="solid",
+    )
+    for col_idx, h in enumerate(comp_headers, start=1):
+        cell = comp_ws.cell(row=3, column=col_idx, value=h)
+        cell.font = _WHITE_FONT
+        cell.fill = comp_fill
+        cell.alignment = Alignment(horizontal="center")
+
+    # Metric rows
+    _COMP_METRICS = [
+        "Total Traffic (P50)",
+        "Total Uplift",
+        "Total Revenue",
+        "End Traffic (P50)",
+        "Monthly Hours",
+        "Retainer/month",
+        "ROI multiplier",
+    ]
+
+    def _extract_comparison_values(sname: str) -> dict:
+        df = scenario_dfs.get(sname, pd.DataFrame())
+        preset_dict = presets.get(sname, {})
+        result = scenario_results.get(sname, {})
+        if df.empty or "error" in result:
+            return {m: None for m in _COMP_METRICS}
+
+        total_traffic = int(df["Traffic P50"].sum()) if "Traffic P50" in df.columns else 0
+        total_uplift = (
+            int(df["Positional Uplift"].sum() + df["New Content Uplift"].sum())
+            if "Positional Uplift" in df.columns
+            else 0
+        )
+        total_revenue = float(df["Revenue"].sum()) if "Revenue" in df.columns else 0.0
+        end_traffic = int(df["Traffic P50"].iloc[-1]) if not df.empty and "Traffic P50" in df.columns else 0
+        monthly_hours = float(preset_dict.get("total_monthly_hours", 0.0))
+        retainer = float(preset_dict.get("retainer_aud_monthly", 0.0))
+        annual_retainer = retainer * 12
+        roi = round(total_revenue / annual_retainer, 2) if annual_retainer > 0 else None
+
+        return {
+            "Total Traffic (P50)": total_traffic,
+            "Total Uplift": total_uplift,
+            "Total Revenue": total_revenue,
+            "End Traffic (P50)": end_traffic,
+            "Monthly Hours": monthly_hours,
+            "Retainer/month": retainer,
+            "ROI multiplier": roi,
+        }
+
+    comp_data = {sn: _extract_comparison_values(sn) for sn in ("Conservative", "Moderate", "Aggressive")}
+
+    _COMP_FMTS = {
+        "Total Traffic (P50)": "#,##0",
+        "Total Uplift": "#,##0",
+        "Total Revenue": "$#,##0.00",
+        "End Traffic (P50)": "#,##0",
+        "Monthly Hours": "#,##0.0",
+        "Retainer/month": "$#,##0.00",
+        "ROI multiplier": "0.00",
+    }
+
+    for row_off, metric in enumerate(_COMP_METRICS, start=0):
+        excel_row = 4 + row_off
+        comp_ws.cell(row=excel_row, column=1, value=metric).font = _BOLD_FONT
+        for col_idx, sname in enumerate(("Conservative", "Moderate", "Aggressive"), start=2):
+            val = comp_data[sname].get(metric)
+            cell = comp_ws.cell(row=excel_row, column=col_idx, value=val)
+            if val is not None:
+                cell.number_format = _COMP_FMTS.get(metric, "#,##0")
+            cell.alignment = Alignment(horizontal="right")
+
+    _auto_width(comp_ws)
 
     buf = io.BytesIO()
     wb.save(buf)

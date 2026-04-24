@@ -537,6 +537,72 @@ class TestCombinedHub:
         assert "combined" in combined.columns
         assert "positional_uplift" in combined.columns
 
+    def test_combined_uses_historical_forecast_when_provided(self):
+        """When historical_forecast_df is passed, its projection drives the baseline."""
+        from engine.combined_engine import run_combined_forecast
+        from engine.historical_engine import run_historical_forecast_v4
+
+        historical = pd.DataFrame({
+            "date": pd.date_range("2023-01-01", periods=18, freq="MS"),
+            "traffic": [10000 + i * 300 for i in range(18)],
+        })
+        hist_forecast = run_historical_forecast_v4(historical, months=12)
+
+        positional = pd.DataFrame({
+            "month": range(1, 13),
+            "baseline": [10000] * 12,
+            "uplift_p10": [100] * 12,
+            "uplift_p50": [300] * 12,
+            "uplift_p90": [500] * 12,
+        })
+
+        combined_with_hf = run_combined_forecast(
+            historical_df=historical,
+            positional_monthly=positional,
+            new_content_monthly=None,
+            months=12,
+            historical_forecast_df=hist_forecast,
+        )
+
+        # Determine which column the engine picked (mirror _resolve_baseline_projection logic)
+        hf_forecast_rows = hist_forecast[hist_forecast["is_forecast"]]
+        chosen = hist_forecast.attrs.get("chosen_method")
+        candidates = ["prophet", "exponential_smoothing", "linear"]
+        if chosen and chosen in hf_forecast_rows.columns:
+            col = chosen
+        else:
+            col = next((c for c in candidates if c in hf_forecast_rows.columns), "linear")
+
+        expected_m12 = int(hf_forecast_rows[col].iloc[-1])
+        actual_m12 = int(combined_with_hf[combined_with_hf["is_forecast"]]["baseline"].iloc[-1])
+        assert abs(actual_m12 - expected_m12) <= 2
+
+    def test_combined_backward_compat_without_historical_forecast(self):
+        """Without historical_forecast_df, output matches the pre-change behaviour."""
+        from engine.combined_engine import run_combined_forecast
+
+        historical = pd.DataFrame({
+            "date": pd.date_range("2023-01-01", periods=12, freq="MS"),
+            "traffic": [10000 + i * 200 for i in range(12)],
+        })
+        positional = pd.DataFrame({
+            "month": range(1, 13),
+            "baseline": [10000] * 12,
+            "uplift_p10": [200] * 12,
+            "uplift_p50": [500] * 12,
+            "uplift_p90": [800] * 12,
+        })
+        result = run_combined_forecast(
+            historical_df=historical,
+            positional_monthly=positional,
+            new_content_monthly=None,
+            months=12,
+        )
+        assert "combined_p50" in result.columns
+        assert "baseline" in result.columns
+        forecast = result[result["is_forecast"]]
+        assert forecast["baseline"].iloc[-1] > forecast["baseline"].iloc[0]
+
 
 # ── Revenue Engine ──────────────────────────────────────────────────────────
 
@@ -987,6 +1053,46 @@ class TestPositionalMonteCarlo:
         assert "traffic" in monthly.columns
         assert (monthly["uplift"] == monthly["uplift_p50"]).all()
 
+    def test_position_range_filter_scopes_portfolio(self):
+        """Passing position_range=(5, 20) excludes keywords outside that window."""
+        from engine.positional_engine import run_positional_forecast_mc
+        df = pd.DataFrame({
+            "keyword": [f"kw_{i}" for i in range(20)],
+            "position": [2, 3, 5, 8, 10, 15, 18, 22, 30, 45] * 2,
+            "volume": [1000] * 20,
+            "kd": [30] * 20,
+            "current_traffic": [100] * 20,
+            "intent": ["commercial"] * 20,
+            "has_aio": [False] * 20,
+        })
+        kw_full, _ = run_positional_forecast_mc(df, months=6, n_trials=100, seed=42)
+        kw_scoped, _ = run_positional_forecast_mc(
+            df, months=6, n_trials=100, seed=42,
+            position_range=(5, 20),
+        )
+        assert len(kw_full) > len(kw_scoped)
+        assert kw_scoped["position"].between(5, 20).all()
+
+    def test_position_range_empty_result_returns_empty_frames(self):
+        """When filter removes everything, engine returns empty frames rather than crashing."""
+        from engine.positional_engine import run_positional_forecast_mc
+        df = pd.DataFrame({
+            "keyword": ["kw_a", "kw_b"],
+            "position": [2, 3],
+            "volume": [1000, 1000],
+            "kd": [30, 30],
+            "current_traffic": [100, 100],
+            "intent": ["commercial", "commercial"],
+            "has_aio": [False, False],
+        })
+        kw_df, monthly = run_positional_forecast_mc(
+            df, months=6, n_trials=50, seed=42,
+            position_range=(50, 100),
+        )
+        assert kw_df.empty
+        assert len(monthly) == 6
+        assert (monthly["uplift_p50"] == 0).all()
+
 
 class TestAttentionCurve:
     def test_top_keywords_get_full_weight(self):
@@ -1243,6 +1349,78 @@ class TestDecayRespectsMaintenance:
         assert cumulative_hi < cumulative_no
         # At 0.9 coverage, effective decay should be reduced by at least 50%
         assert cumulative_hi < cumulative_no * 0.5
+
+    def test_non_branded_informational_decays_faster(self):
+        """Non-branded informational keyword decays more than non-branded commercial in same position."""
+        from engine.decay_engine import calculate_portfolio_decay
+        info_df = pd.DataFrame({
+            "keyword": ["info_kw"],
+            "position": [8],
+            "current_traffic": [1000],
+            "intent": ["informational"],
+            "is_branded": [False],
+        })
+        comm_df = pd.DataFrame({
+            "keyword": ["commercial_kw"],
+            "position": [8],
+            "current_traffic": [1000],
+            "intent": ["commercial"],
+            "is_branded": [False],
+        })
+        info_decay = calculate_portfolio_decay(info_df, months=12).iloc[-1]["cumulative_decay"]
+        comm_decay = calculate_portfolio_decay(comm_df, months=12).iloc[-1]["cumulative_decay"]
+        assert info_decay > comm_decay
+
+    def test_branded_informational_does_not_get_multiplier(self):
+        """Branded informational decays same as branded commercial."""
+        from engine.decay_engine import calculate_portfolio_decay
+        info = calculate_portfolio_decay(pd.DataFrame({
+            "keyword": ["brand info"], "position": [5], "current_traffic": [500],
+            "intent": ["informational"], "is_branded": [True],
+        }), months=12).iloc[-1]["cumulative_decay"]
+        comm = calculate_portfolio_decay(pd.DataFrame({
+            "keyword": ["brand comm"], "position": [5], "current_traffic": [500],
+            "intent": ["commercial"], "is_branded": [True],
+        }), months=12).iloc[-1]["cumulative_decay"]
+        assert info == comm
+
+    def test_missing_intent_column_no_crash(self):
+        """If intent column missing, decay still runs with no multiplier applied."""
+        from engine.decay_engine import calculate_portfolio_decay
+        df = pd.DataFrame({
+            "keyword": ["kw"], "position": [10], "current_traffic": [500],
+        })
+        result = calculate_portfolio_decay(df, months=6)
+        assert len(result) == 6
+        assert result["cumulative_decay"].iloc[-1] > 0
+
+    def test_apply_intent_multipliers_false_disables_logic(self):
+        """When apply_intent_multipliers=False, non-branded info decays same as commercial."""
+        from engine.decay_engine import calculate_portfolio_decay
+        df = pd.DataFrame({
+            "keyword": ["info", "comm"],
+            "position": [8, 8],
+            "current_traffic": [1000, 1000],
+            "intent": ["informational", "commercial"],
+            "is_branded": [False, False],
+        })
+        result_on = calculate_portfolio_decay(df, months=12, apply_intent_multipliers=True)
+        result_off = calculate_portfolio_decay(df, months=12, apply_intent_multipliers=False)
+        assert result_on.iloc[-1]["cumulative_decay"] > result_off.iloc[-1]["cumulative_decay"]
+
+    def test_custom_multiplier_overrides_default(self):
+        """Pass a harsher multiplier, confirm decay scales with it."""
+        from engine.decay_engine import calculate_portfolio_decay
+        df = pd.DataFrame({
+            "keyword": ["info"], "position": [10], "current_traffic": [1000],
+            "intent": ["informational"], "is_branded": [False],
+        })
+        default = calculate_portfolio_decay(df, months=12).iloc[-1]["cumulative_decay"]
+        harsh = calculate_portfolio_decay(
+            df, months=12,
+            intent_decay_multipliers={"informational_non_branded": 2.5},
+        ).iloc[-1]["cumulative_decay"]
+        assert harsh > default
 
 
 # ── Intent-Weighted Revenue ───────────────────────────────────────────────

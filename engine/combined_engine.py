@@ -8,12 +8,51 @@ from engine.seasonality_engine import (
 )
 
 
+def _resolve_baseline_projection(
+    historical_df: pd.DataFrame | None,
+    historical_forecast_df: pd.DataFrame | None,
+    months: int,
+) -> tuple[pd.DataFrame, list[int]]:
+    """Return (historical_rows_df, forecast_baseline_values).
+
+    historical_rows_df has columns (date, traffic) for past months.
+    forecast_baseline_values is a list of length `months` with projected baseline.
+    """
+    if historical_forecast_df is not None:
+        chosen = historical_forecast_df.attrs.get("chosen_method")
+        # Priority: chosen (if column exists) → prophet → exponential_smoothing → linear
+        candidates = ["prophet", "exponential_smoothing", "linear"]
+        if chosen and chosen in historical_forecast_df.columns:
+            col = chosen
+        else:
+            col = next((c for c in candidates if c in historical_forecast_df.columns), "linear")
+
+        forecast_rows = historical_forecast_df[historical_forecast_df["is_forecast"]]
+        baseline_values = forecast_rows[col].astype(int).tolist()[:months]
+
+        hist_rows = (
+            historical_forecast_df[~historical_forecast_df["is_forecast"]][["date", "actual"]]
+            .rename(columns={"actual": "traffic"})
+        )
+        return hist_rows, baseline_values
+
+    if historical_df is not None:
+        baseline_df = linear_forecast(
+            historical_df["date"], historical_df["traffic"], months, confidence=15.0
+        )
+        forecast_baseline = baseline_df[baseline_df["is_forecast"]]["linear"].astype(int).tolist()
+        return historical_df[["date", "traffic"]].copy(), forecast_baseline
+
+    return pd.DataFrame(columns=["date", "traffic"]), [0] * months
+
+
 def run_combined_forecast(
     historical_df: pd.DataFrame | None,
     positional_monthly: pd.DataFrame | None,
     new_content_monthly: pd.DataFrame | None,
     months: int,
     decay_df: pd.DataFrame | None = None,
+    historical_forecast_df: pd.DataFrame | None = None,
     seasonality: dict | None = None,
     forecast_start_month: int | None = None,
 ) -> pd.DataFrame:
@@ -28,6 +67,13 @@ def run_combined_forecast(
     P10/P50/P90 bands propagated from positional stream; decay is a deterministic subtraction.
 
     Args:
+        historical_forecast_df: Optional output of run_historical_forecast_v4. When
+                                 provided, its projection (column priority: chosen_method
+                                 attr → prophet → exponential_smoothing → linear) is used
+                                 as the forecast baseline instead of the internally computed
+                                 linear projection. This keeps Combined consistent with the
+                                 Historical Forecast page. historical_df, when also supplied,
+                                 still provides the historical (actual) rows.
         seasonality: Monthly seasonality dict (same schema as DEFAULT_SEASONALITY).
                      When provided, the baseline is deseasonalised before OLS fitting
                      and reseasonalised for forecast months. Positional and new-content
@@ -76,9 +122,19 @@ def run_combined_forecast(
         last_date = dates.iloc[-1]
         _yoy_rate = baseline_df.attrs.get("yoy_rate")
 
+        # When a pre-computed historical forecast is supplied, use its projection
+        # for the baseline instead of the internally derived linear/yoy baseline.
+        if historical_forecast_df is not None:
+            _, _hf_baseline_values = _resolve_baseline_projection(None, historical_forecast_df, months)
+        else:
+            _hf_baseline_values = None
+
         for j in range(1, months + 1):
             forecast_date = last_date + pd.DateOffset(months=j)
-            baseline_val = int(baseline_forecast.iloc[j - 1]["linear"])
+            if _hf_baseline_values is not None:
+                baseline_val = _hf_baseline_values[j - 1] if j - 1 < len(_hf_baseline_values) else 0
+            else:
+                baseline_val = int(baseline_forecast.iloc[j - 1]["linear"])
             rows.append(_forecast_row(
                 date=forecast_date,
                 baseline_val=baseline_val,
