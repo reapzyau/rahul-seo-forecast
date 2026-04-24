@@ -2331,3 +2331,91 @@ class TestForecastGridMetricData:
         cell = ws.cell(row=13, column=self._PC0)
         assert cell.value is not None and cell.value < 0
         assert "FF0000" in cell.font.color.rgb
+
+# ── Forecast Grid — Assumptions Column + Fee Rows ────────────────────────────
+
+
+class TestForecastGridFees:
+    """Tests for B1c: assumptions text column and management fee rows."""
+
+    _MONTHS = 3
+    _TRAFFIC = [10_000.0, 11_000.0, 12_000.0]
+    _CVR = [2.5, 2.6, 2.7]
+    _AOV = [100.0, 101.0, 102.0]
+    _TRANSACTIONS = [t * c / 100 for t, c in zip(_TRAFFIC, _CVR, strict=True)]
+    _REVENUE = [tr * a for tr, a in zip(_TRANSACTIONS, _AOV, strict=True)]
+    _BUDGET = [5_000.0, 5_000.0, 5_000.0]
+    _ASS_TEXT = "CVR: 2.5%\nAOV: $100\nBudget: $5k/month"
+
+    # For months=3: _col_ass(3) = _col_annual(3) + 2 = (3 + 9) + 2 = 14
+    _ASS_COL = 14
+    _FC0 = 3
+    _AC0 = 4
+    _PC0 = 5
+    _ANN = 12  # _col_annual(3) = 12
+
+    def _make(self, **kwargs):
+        from utils.forecast_grid import build_seo_forecast_grid
+        defaults = dict(
+            monthly_traffic=self._TRAFFIC,
+            monthly_transactions=self._TRANSACTIONS,
+            monthly_revenue=self._REVENUE,
+            monthly_cvr=self._CVR,
+            monthly_aov=self._AOV,
+            monthly_budget=self._BUDGET,
+            months=self._MONTHS,
+            start_month=7,
+            assumptions_text=self._ASS_TEXT,
+        )
+        defaults.update(kwargs)
+        return build_seo_forecast_grid(**defaults)
+
+    def _ws(self, buf):
+        from openpyxl import load_workbook
+        buf.seek(0)
+        return load_workbook(buf)["SEO Channel Forecast"]
+
+    def test_assumptions_text_in_row_13(self):
+        ws = self._ws(self._make())
+        assert ws.cell(row=13, column=self._ASS_COL).value == self._ASS_TEXT
+
+    def test_assumptions_col_merged_across_rows_13_to_19(self):
+        from openpyxl.utils import get_column_letter
+        ws = self._ws(self._make())
+        col_letter = get_column_letter(self._ASS_COL)
+        expected = f"{col_letter}13:{col_letter}19"
+        merged = [str(r) for r in ws.merged_cells.ranges]
+        assert expected in merged, f"Expected {expected!r} in merged ranges {merged}"
+
+    def test_assumptions_col_has_wrap_text(self):
+        ws = self._ws(self._make())
+        cell = ws.cell(row=13, column=self._ASS_COL)
+        assert cell.alignment.wrap_text is True
+
+    def test_row_21_has_seo_management_tech_fee_label(self):
+        ws = self._ws(self._make())
+        assert ws.cell(row=21, column=1).value == "SEO Management + Tech Fee"
+
+    def test_row_22_has_seo_total_label(self):
+        ws = self._ws(self._make())
+        assert ws.cell(row=22, column=1).value == "SEO Total"
+
+    def test_fee_rows_forecast_actuals_populated(self):
+        actuals = [4_800.0, 4_900.0, 5_100.0]
+        ws = self._ws(self._make(actuals_budget=actuals))
+        assert ws.cell(row=21, column=self._FC0).value == pytest.approx(self._BUDGET[0])
+        assert ws.cell(row=21, column=self._AC0).value == pytest.approx(actuals[0])
+        assert ws.cell(row=22, column=self._FC0).value == pytest.approx(self._BUDGET[0])
+        assert ws.cell(row=22, column=self._AC0).value == pytest.approx(actuals[0])
+
+    def test_fee_rows_pct_change_column_is_blank(self):
+        actuals = [4_800.0, 4_900.0, 5_100.0]
+        ws = self._ws(self._make(actuals_budget=actuals))
+        assert ws.cell(row=21, column=self._PC0).value is None
+        assert ws.cell(row=22, column=self._PC0).value is None
+
+    def test_fee_rows_annual_total_populated(self):
+        ws = self._ws(self._make())
+        expected = sum(self._BUDGET)
+        assert ws.cell(row=21, column=self._ANN).value == pytest.approx(expected)
+        assert ws.cell(row=22, column=self._ANN).value == pytest.approx(expected)

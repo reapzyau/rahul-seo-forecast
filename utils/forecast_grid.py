@@ -419,8 +419,44 @@ def build_seo_forecast_grid(
         prior_year_cvr, prior_year_aov, prior_year_budget,
     )
 
+    # Assumptions text column — merged vertically across rows 13-19
+    ass_col = _col_ass(months)
+    ass_cell = ws.cell(row=13, column=ass_col, value=assumptions_text)
+    ws.merge_cells(
+        start_row=13, start_column=ass_col,
+        end_row=19, end_column=ass_col,
+    )
+    ass_cell.alignment = Alignment(wrap_text=True, vertical="top")
+
+    # Fee rows 21-22
+    for fee_row, fee_label in (
+        (21, "SEO Management + Tech Fee"),
+        (22, "SEO Total"),
+    ):
+        ws.cell(row=fee_row, column=1, value=fee_label).font = _BOLD_FONT
+        for i, (_, fc, ac_col, _) in enumerate(col_ranges):
+            fv = monthly_budget[i] if i < len(monthly_budget) else None
+            if fv is not None:
+                c = ws.cell(row=fee_row, column=fc, value=fv)
+                c.number_format = _CURRENCY_FMT
+                c.border = _THIN_BORDER
+            if actuals_budget and i < len(actuals_budget):
+                av = actuals_budget[i]
+                if av is not None:
+                    ca = ws.cell(row=fee_row, column=ac_col, value=av)
+                    ca.number_format = _CURRENCY_FMT
+                    ca.border = _THIN_BORDER
+        if monthly_budget:
+            ann_c = ws.cell(
+                row=fee_row, column=ann_col,
+                value=sum(monthly_budget[:months]),
+            )
+            ann_c.number_format = _CURRENCY_FMT
+            ann_c.border = _THIN_BORDER
+
     ws.freeze_panes = "B13"
     _auto_width(ws)
+    ws.column_dimensions[get_column_letter(ass_col)].width = 30
 
     buf = io.BytesIO()
     wb.save(buf)
