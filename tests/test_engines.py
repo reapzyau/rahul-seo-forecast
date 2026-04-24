@@ -2121,3 +2121,102 @@ class TestComparisonColumns:
         assert result.iloc[2]["yoy_prior"] == pytest.approx(10_000.0, abs=1.0)
         assert result.iloc[2]["yoy_diff"] == pytest.approx(2_500.0, abs=1.0)
         assert result.iloc[2]["yoy_pct"] == pytest.approx(25.0, abs=0.5)
+
+
+# ── Forecast Grid — GAZMAN Header Scaffold ──────────────────────────────────
+
+
+class TestForecastGridHeader:
+    """Tests for the GAZMAN header scaffold in utils.forecast_grid (Session B1a)."""
+
+    def _make_grid(self, months: int = 12, **kwargs) -> "io.BytesIO":
+        import io  # noqa: F401 (used in type hint above)
+
+        from utils.forecast_grid import build_seo_forecast_grid
+
+        traffic = [10_000.0 + i * 100 for i in range(months)]
+        return build_seo_forecast_grid(
+            monthly_traffic=traffic,
+            monthly_transactions=[t * 0.025 for t in traffic],
+            monthly_revenue=[t * 0.025 * 100 for t in traffic],
+            monthly_cvr=[2.5] * months,
+            monthly_aov=[100.0] * months,
+            monthly_budget=[5_000.0] * months,
+            months=months,
+            client_name="GAZMAN",
+            fy_label="FY26",
+            start_month=7,
+            last_updated="2026-04-24",
+            currency_notes="All figures in AUD",
+            **kwargs,
+        )
+
+    def _open(self, buf):
+        from openpyxl import load_workbook
+        buf.seek(0)
+        return load_workbook(buf)
+
+    def test_sheet_title_in_row_2(self):
+        wb = self._open(self._make_grid())
+        ws = wb["SEO Channel Forecast"]
+        title = ws.cell(row=2, column=1).value or ""
+        assert "GAZMAN" in title and "FY26" in title
+
+    def test_last_updated_in_row_4(self):
+        wb = self._open(self._make_grid())
+        ws = wb["SEO Channel Forecast"]
+        label = ws.cell(row=4, column=2).value or ""
+        value = ws.cell(row=4, column=3).value or ""
+        assert "Last Updated" in label and "2026-04-24" in str(value)
+
+    def test_month_names_in_row_7(self):
+        wb = self._open(self._make_grid())
+        ws = wb["SEO Channel Forecast"]
+        row7 = [ws.cell(row=7, column=c).value for c in range(1, 50)]
+        assert "Jul" in row7
+
+    def test_each_month_header_spans_three_columns(self):
+        from utils.forecast_grid import _month_column_ranges
+        ranges = _month_column_ranges(7, 12)
+        # First month July: forecast=col3, actuals=col4, pct=col5
+        assert ranges[0] == ("Jul", 3, 4, 5)
+        # Second month August: forecast=col6, actuals=col7, pct=col8
+        assert ranges[1] == ("Aug", 6, 7, 8)
+
+    def test_totals_column_exists(self):
+        wb = self._open(self._make_grid())
+        ws = wb["SEO Channel Forecast"]
+        row7 = [ws.cell(row=7, column=c).value for c in range(1, 50)]
+        assert "TOTALS" in row7
+
+    def test_row_12_channel_header_strip(self):
+        wb = self._open(self._make_grid())
+        ws = wb["SEO Channel Forecast"]
+        assert ws.cell(row=12, column=1).value == "CHANNEL"
+        row12 = [ws.cell(row=12, column=c).value for c in range(1, 50)]
+        assert "Forecast" in row12
+        assert "Actuals" in row12
+        assert "% Change" in row12
+
+    def test_row_13_col_a_contains_seo(self):
+        wb = self._open(self._make_grid())
+        ws = wb["SEO Channel Forecast"]
+        assert ws.cell(row=13, column=1).value == "SEO"
+
+    def test_rows_14_to_19_col_a_blank(self):
+        wb = self._open(self._make_grid())
+        ws = wb["SEO Channel Forecast"]
+        for row in range(14, 20):
+            val = ws.cell(row=row, column=1).value
+            assert val is None, f"Row {row} col A expected blank, got {val!r}"
+
+    def test_seven_metric_labels_in_col_b_bold(self):
+        wb = self._open(self._make_grid())
+        ws = wb["SEO Channel Forecast"]
+        col_b = [ws.cell(row=r, column=2).value for r in range(13, 20)]
+        assert col_b == ["BUDGET", "REVENUE", "ROAS", "TRANSACTIONS", "AOV", "TRAFFIC", "CVR"]
+
+    def test_freeze_panes_at_b13(self):
+        wb = self._open(self._make_grid())
+        ws = wb["SEO Channel Forecast"]
+        assert ws.freeze_panes == "B13"
