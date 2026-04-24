@@ -679,6 +679,45 @@ Without a Bi Frost API key, the page falls back to the legacy `utils/roadmap_loa
 
 ---
 
+---
+
+## Mode 11: Three-Scenario Forecasting
+
+The Strategy page runs three full forecasts in parallel — Conservative,
+Moderate, and Aggressive — each with its own effort level, content cadence,
+and maintenance coverage. This lets analysts present budget-tier options
+side-by-side rather than picking one and calling it "the forecast."
+
+### Generic presets (no roadmap)
+
+| | Conservative | Moderate | Aggressive |
+|---|---|---|---|
+| Effort | light | moderate | aggressive |
+| Cadence (posts/month) | 2 | 4 | 8 |
+| Maintenance coverage | 30% | 60% | 90% |
+| Total monthly hours | 10 | 25 | 50 |
+| Retainer (AUD) | $2,000 | $5,000 | $10,000 |
+| Position scope | 5–20 | 5–20 | 1–30 |
+
+### Roadmap-sourced presets
+
+When a roadmap has been ingested, the Moderate preset is pre-filled from
+the roadmap's detected effort, cadence, maintenance, hours, and retainer.
+Conservative = 60% of Moderate's hours and retainer (effort tier downgraded
+one level). Aggressive = 160% of Moderate's hours and retainer (effort tier
+upgraded one level, maintenance capped at 95%).
+
+### Shared baseline, independent uplifts
+
+All three scenarios share the same historical baseline — "what happens if
+you do nothing" is a property of the site, not the retainer. What differs
+between scenarios is the uplift from positional improvement, new content
+publishing rate, and decay offset from maintenance coverage. The Combined
+output for each scenario is `baseline + positional + new_content − decay`
+with the scenario's parameters applied to each stream.
+
+---
+
 ## Assumptions and Limitations
 
 1. **CTR data is based on industry averages** — actual CTR varies by industry, SERP features, and brand recognition.
