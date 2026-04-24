@@ -13,13 +13,26 @@ from utils.chart_builder import historical_comparison_chart, revenue_projection_
 from utils.data_loader import load_traffic
 from utils.export import to_csv, to_html_report, traffic_template_csv
 from utils.page_base import setup_page
-from utils.session import HIST_N_MONTHS, HIST_RESULTS, SEASONALITY
+from utils.session import HIST_N_MONTHS, HIST_RESULTS, SCENARIO_RESULTS, SEASONALITY
 
 setup_page(
     "Historical Forecast",
     "Project traffic from your past organic data using statistical models.",
     show_assumptions_banner=False,
 )
+
+if SCENARIO_RESULTS not in st.session_state:
+    st.info(
+        "💡 **Want to compare three scenarios at once?** "
+        "Use the **Strategy** page to run a Historical baseline plus three scenario uplifts in one click. "
+        "This page is for deep-dive analysis on a single forecast configuration."
+    )
+else:
+    st.success(
+        "✅ Three scenarios already run via Strategy. "
+        "This page lets you drill into a single forecast configuration in detail. "
+        "Download the 3-scenario xlsx from **Deliverables** or the Strategy page."
+    )
 
 # ── Sidebar ──────────────────────────────────────────────────────────────────
 st.sidebar.header("Historical Forecast Settings")
@@ -344,3 +357,11 @@ if HIST_RESULTS in st.session_state:
                 "historical-report.html",
                 "text/html",
             )
+
+st.divider()
+st.caption(
+    "**Looking for the three-scenario comparison?** "
+    "The Strategy page runs Conservative / Moderate / Aggressive in one click and "
+    "produces a four-sheet xlsx ready for client presentations. "
+    "This deep-dive page is best for analysts tuning a single forecast configuration."
+)

@@ -30,6 +30,7 @@ from utils.session import (
     KW_DF,
     NC_RESULT,
     ROADMAP_CONTENT_PLAN,
+    SCENARIO_RESULTS,
 )
 
 _nc_store = setup_page(
@@ -37,6 +38,19 @@ _nc_store = setup_page(
     "Project traffic from new content targeting keywords you don't yet rank for.",
     show_assumptions_banner=False,
 )
+
+if SCENARIO_RESULTS not in st.session_state:
+    st.info(
+        "💡 **Want to compare three scenarios at once?** "
+        "Use the **Strategy** page to run new content forecasts at three production cadences in one click. "
+        "This page is for deep-dive analysis on a single forecast configuration."
+    )
+else:
+    st.success(
+        "✅ Three scenarios already run via Strategy. "
+        "This page lets you drill into a single forecast configuration in detail. "
+        "Download the 3-scenario xlsx from **Deliverables** or the Strategy page."
+    )
 
 # ── Sidebar ──────────────────────────────────────────────────────────────────
 st.sidebar.header("Keyword Forecast Settings")
@@ -519,3 +533,11 @@ if NC_RESULT in st.session_state:
                 "forecast-report.html",
                 "text/html",
             )
+
+st.divider()
+st.caption(
+    "**Looking for the three-scenario comparison?** "
+    "The Strategy page runs Conservative / Moderate / Aggressive in one click and "
+    "produces a four-sheet xlsx ready for client presentations. "
+    "This deep-dive page is best for analysts tuning a single forecast configuration."
+)

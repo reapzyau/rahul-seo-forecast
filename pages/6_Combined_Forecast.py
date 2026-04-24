@@ -20,10 +20,25 @@ from utils.session import (
     KW_EXISTING,
     NC_RESULT,
     POS_RESULT,
+    SCENARIO_RESULTS,
     SEASONALITY,
 )
 
 store = setup_page("Combined Forecast", "Layer multiple forecast streams into a single projection with intent-weighted revenue.")
+
+if SCENARIO_RESULTS not in st.session_state:
+    st.info(
+        "💡 **Want to compare three scenarios at once?** "
+        "Use the **Strategy** page to see the Combined view across three scenarios — "
+        "Conservative, Moderate, Aggressive — side-by-side. "
+        "This page is for deep-dive analysis on a single forecast configuration."
+    )
+else:
+    st.success(
+        "✅ Three scenarios already run via Strategy. "
+        "This page lets you drill into a single forecast configuration in detail. "
+        "Download the 3-scenario xlsx from **Deliverables** or the Strategy page."
+    )
 
 # ── Data Availability ──────────────────────────────────────────────────────
 ga4_df = st.session_state.get(GA4_DF)
@@ -583,3 +598,11 @@ if COMB_RESULTS in st.session_state:
                 "text/html",
                 key="comb_dl_html",
             )
+
+st.divider()
+st.caption(
+    "**Looking for the three-scenario comparison?** "
+    "The Strategy page runs Conservative / Moderate / Aggressive in one click and "
+    "produces a four-sheet xlsx ready for client presentations. "
+    "This deep-dive page is best for analysts tuning a single forecast configuration."
+)

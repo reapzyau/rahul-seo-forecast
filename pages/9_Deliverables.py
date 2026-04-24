@@ -266,6 +266,11 @@ with tab_grid:
     sources = []
     if SCENARIO_RESULTS in st.session_state:
         sources.insert(0, "All Three Scenarios (Conservative / Moderate / Aggressive)")
+    else:
+        st.info(
+            "💡 To export all three scenarios in one xlsx, run the **Strategy** page first. "
+            "It will populate the 'All Three Scenarios' source option here."
+        )
     if COMB_RESULTS in st.session_state:
         sources.append("Combined Forecast")
     if POS_RESULT in st.session_state:
@@ -282,6 +287,11 @@ with tab_grid:
         source = st.selectbox("Forecast Source", sources, key="grid_source")
 
         if source.startswith("All Three Scenarios"):
+            st.caption(
+                "Four-sheet xlsx: one sheet per scenario (Conservative / Moderate / Aggressive) "
+                "plus a Comparison summary. Each sheet has the full monthly metric grid — traffic bands, "
+                "transactions, revenue, AOV, CVR, average position, average CTR, seasonality."
+            )
             from engine.scenario_engine import summarise_scenarios
             from utils.forecast_grid import build_three_scenario_grid
 
