@@ -392,9 +392,51 @@ else:
                 )
 
     st.divider()
-    st.button(
-        "Download 3-scenario forecast grid",
-        disabled=True,
-        help="Available once the expanded grid export is built.",
-        key="strat_download_disabled",
+
+    if SCENARIO_RESULTS in st.session_state:
+        from utils.forecast_grid import build_three_scenario_grid
+
+        _dl_results = st.session_state[SCENARIO_RESULTS]
+        _dl_presets = (
+            st.session_state.get(SCENARIO_PRESETS_EDITED)
+            or st.session_state[SCENARIO_PRESETS]
+        )
+        _dl_seasonality = st.session_state.get(SEASONALITY)
+        _dl_cvr = float(get_assumption(store, "blended_cr_pct"))
+        _dl_aov = float(get_assumption(store, "aov"))
+        _dl_currency = str(get_assumption(store, "currency"))
+        _dl_client = get_assumption(store, "client_name") or ""
+
+        _dl_buf = build_three_scenario_grid(
+            scenario_results=_dl_results,
+            presets=_dl_presets,
+            cvr=_dl_cvr,
+            aov=_dl_aov,
+            seasonality=_dl_seasonality,
+            apply_seasonal_aov=True,
+            currency=_dl_currency,
+            start_month=pd.Timestamp.now().month,
+            client_name=_dl_client,
+            fy_label="FY26",
+        )
+        st.download_button(
+            "Download 3-Scenario Forecast Grid XLSX",
+            _dl_buf,
+            "seo-forecast-three-scenarios.xlsx",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            type="primary",
+            key="strat_grid_dl",
+        )
+        st.caption(
+            "For deeper customisation (retainer, FY label, start month, CR/AOV overrides), "
+            "use the **Deliverables** page."
+        )
+
+    st.divider()
+    st.info(
+        "The three-scenario forecast grid is the headline deliverable for client "
+        "presentations. You can also download individual scenario forecasts from the "
+        "forecast pages (Historical, Positional, New Content, Combined) for deeper "
+        "analysis, or use the **Deliverables** page for full export options including "
+        "variance grading and methodology."
     )

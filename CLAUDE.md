@@ -46,6 +46,12 @@ The Data Upload page (1_Data_Upload.py) is the single source for uploaded data. 
 - `st.session_state["kw_existing"]` — keywords with position <= 100 (ranking)
 - `st.session_state["kw_new"]` — keywords not ranking (typically empty for SEMrush exports)
 
+The Strategy page (2_Strategy.py) populates after "Run All Forecasts":
+
+- `st.session_state["scenario_presets"]` — Three scenario preset dicts (unedited defaults)
+- `st.session_state["scenario_presets_edited"]` — User-modified presets from the Strategy page UI
+- `st.session_state["scenario_results"]` — Output of run_three_scenarios, keyed by scenario name
+
 Downstream pages (Positional, AIO Risk, Combined, Grid Export) read from these keys. If a page can't find the data, it should warn and `st.stop()` rather than prompting for re-upload.
 
 ## GA4 anchoring

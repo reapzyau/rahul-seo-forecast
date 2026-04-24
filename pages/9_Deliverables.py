@@ -18,7 +18,16 @@ from engine.snapshot_engine import (
 from utils.chart_builder import _apply_layout
 from utils.forecast_grid import build_seo_forecast_grid
 from utils.page_base import setup_page
-from utils.session import COMB_RESULTS, GA4_DF, HIST_RESULTS, POS_RESULT
+from utils.session import (
+    COMB_RESULTS,
+    GA4_DF,
+    HIST_RESULTS,
+    POS_RESULT,
+    SCENARIO_PRESETS,
+    SCENARIO_PRESETS_EDITED,
+    SCENARIO_RESULTS,
+    SEASONALITY,
+)
 
 _METRIC_LABELS = {
     "Traffic": "traffic",
@@ -255,6 +264,8 @@ tab_grid, tab_variance, tab_methodology = st.tabs([
 # ── Tab: Forecast Grid ────────────────────────────────────────────────────────
 with tab_grid:
     sources = []
+    if SCENARIO_RESULTS in st.session_state:
+        sources.insert(0, "All Three Scenarios (Conservative / Moderate / Aggressive)")
     if COMB_RESULTS in st.session_state:
         sources.append("Combined Forecast")
     if POS_RESULT in st.session_state:
@@ -263,211 +274,269 @@ with tab_grid:
         sources.append("Historical Forecast")
 
     if not sources:
-        st.info("Run a **Positional**, **Historical**, or **Combined** forecast first.")
+        st.info(
+            "Run forecasts first. The fastest path: **Data Upload → Strategy → Run All Forecasts**. "
+            "Or run individual forecasts on the Positional / Historical / Combined pages."
+        )
     else:
         source = st.selectbox("Forecast Source", sources, key="grid_source")
 
-        scenario_options = {"Conservative (P10)": "p10", "Median (P50)": "p50", "Aggressive (P90)": "p90"}
-        has_bands = False
+        if source.startswith("All Three Scenarios"):
+            from engine.scenario_engine import summarise_scenarios
+            from utils.forecast_grid import build_three_scenario_grid
 
-        if source == "Combined Forecast":
-            comb_df = st.session_state[COMB_RESULTS]["combined_df"]
-            has_bands = "combined_p10" in comb_df.columns
-        elif source == "Positional Forecast":
-            pos_monthly = st.session_state[POS_RESULT]["monthly"]
-            has_bands = "traffic_p10" in pos_monthly.columns
-
-        if has_bands:
-            scenario_label = st.selectbox(
-                "Scenario", list(scenario_options.keys()), index=1, key="grid_scenario"
+            _results = st.session_state[SCENARIO_RESULTS]
+            _presets = (
+                st.session_state.get(SCENARIO_PRESETS_EDITED)
+                or st.session_state[SCENARIO_PRESETS]
             )
-            scenario = scenario_options[scenario_label]
+            _seasonality = st.session_state.get(SEASONALITY)
+            _months = st.session_state.get("strat_months", 12)
+
+            st.subheader("Scenario Comparison")
+            _summary = summarise_scenarios(_results, months=_months)
+            st.dataframe(_summary, use_container_width=True, hide_index=True)
+
+            _mod = _results.get("Moderate", {})
+            if "combined_df" in _mod:
+                _combined = _mod["combined_df"]
+                _forecast = _combined[_combined["is_forecast"]]
+                _col = "combined_p50" if "combined_p50" in _forecast.columns else "combined"
+                _total_traffic = int(_forecast[_col].sum())
+                _total_transactions = int(_total_traffic * cvr / 100.0)
+                _total_revenue = _total_transactions * aov
+                c1, c2, c3 = st.columns(3)
+                c1.metric("Moderate — Year 1 Traffic", f"{_total_traffic:,.0f}")
+                c2.metric("Moderate — Year 1 Transactions", f"{_total_transactions:,.0f}")
+                c3.metric("Moderate — Year 1 Revenue", f"{sym}{_total_revenue:,.2f}")
+                st.caption("Conservative and Aggressive totals are in the downloaded xlsx.")
+
+            _buf = build_three_scenario_grid(
+                scenario_results=_results,
+                presets=_presets,
+                cvr=cvr,
+                aov=aov,
+                seasonality=_seasonality,
+                apply_seasonal_aov=True,
+                currency=currency,
+                start_month=start_month,
+                client_name=grid_client,
+                fy_label=fy_label,
+            )
+            st.download_button(
+                "Download 3-Scenario Forecast Grid XLSX",
+                _buf,
+                "seo-forecast-three-scenarios.xlsx",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key="grid_three_scenario_dl",
+            )
+            st.caption(
+                "Four-sheet xlsx: Conservative, Moderate, Aggressive scenarios plus "
+                "a comparison summary. Drop into your client deck or multi-channel plan."
+            )
+
         else:
-            scenario = "p50"
+            scenario_options = {"Conservative (P10)": "p10", "Median (P50)": "p50", "Aggressive (P90)": "p90"}
+            has_bands = False
 
-        monthly_traffic = []
-        monthly_baseline = None
-        monthly_positional_uplift = None
-        monthly_new_content_uplift = None
-        monthly_decay = None
-        traffic_p10 = None
-        traffic_p90 = None
-        comb_data = None
+            if source == "Combined Forecast":
+                comb_df = st.session_state[COMB_RESULTS]["combined_df"]
+                has_bands = "combined_p10" in comb_df.columns
+            elif source == "Positional Forecast":
+                pos_monthly = st.session_state[POS_RESULT]["monthly"]
+                has_bands = "traffic_p10" in pos_monthly.columns
 
-        if source == "Combined Forecast":
-            comb_data = st.session_state[COMB_RESULTS]
-            combined_df = comb_data["combined_df"]
-            forecast_rows = combined_df[combined_df["is_forecast"]].reset_index(drop=True)
-            col = f"combined_{scenario}" if f"combined_{scenario}" in forecast_rows.columns else "combined"
-            monthly_traffic = forecast_rows[col].tolist()
-
-            # Stream breakdown columns
-            monthly_baseline = forecast_rows["baseline"].tolist()
-            pos_col = "positional_uplift_p50" if "positional_uplift_p50" in forecast_rows.columns else "positional_uplift"
-            if pos_col in forecast_rows.columns:
-                monthly_positional_uplift = forecast_rows[pos_col].tolist()
-            if "new_content_uplift" in forecast_rows.columns:
-                monthly_new_content_uplift = forecast_rows["new_content_uplift"].tolist()
-            if "decay" in forecast_rows.columns:
-                monthly_decay = forecast_rows["decay"].tolist()
-
-            # Traffic bands
             if has_bands:
-                traffic_p10 = forecast_rows.get("combined_p10", pd.Series()).tolist()
-                traffic_p90 = forecast_rows.get("combined_p90", pd.Series()).tolist()
+                scenario_label = st.selectbox(
+                    "Scenario", list(scenario_options.keys()), index=1, key="grid_scenario"
+                )
+                scenario = scenario_options[scenario_label]
+            else:
+                scenario = "p50"
 
-        elif source == "Positional Forecast":
-            pos = st.session_state[POS_RESULT]
-            pos_monthly = pos["monthly"]
-            col = f"traffic_{scenario}" if f"traffic_{scenario}" in pos_monthly.columns else "traffic"
-            monthly_traffic = pos_monthly[col].tolist()
-        elif source == "Historical Forecast":
-            hist = st.session_state[HIST_RESULTS]
-            result = hist["result"]
-            forecast_rows = result[result["is_forecast"]]
-            best_col = "linear" if "linear" in result.columns else (
-                "exponential_smoothing" if "exponential_smoothing" in result.columns else "sma"
-            )
-            monthly_traffic = forecast_rows[best_col].tolist()
+            monthly_traffic = []
+            monthly_baseline = None
+            monthly_positional_uplift = None
+            monthly_new_content_uplift = None
+            monthly_decay = None
+            traffic_p10 = None
+            traffic_p90 = None
+            comb_data = None
 
-        if not monthly_traffic:
-            st.warning("The selected forecast source contains no forecast data.")
-        else:
-            n_months = len(monthly_traffic)
+            if source == "Combined Forecast":
+                comb_data = st.session_state[COMB_RESULTS]
+                combined_df = comb_data["combined_df"]
+                forecast_rows = combined_df[combined_df["is_forecast"]].reset_index(drop=True)
+                col = f"combined_{scenario}" if f"combined_{scenario}" in forecast_rows.columns else "combined"
+                monthly_traffic = forecast_rows[col].tolist()
 
-            # Per-month CVR/AOV: prefer dynamic metrics from Combined Forecast
-            monthly_cvr_list = None
-            monthly_aov_list = None
-            revenue_p10 = None
-            revenue_p90 = None
+                # Stream breakdown columns
+                monthly_baseline = forecast_rows["baseline"].tolist()
+                pos_col = "positional_uplift_p50" if "positional_uplift_p50" in forecast_rows.columns else "positional_uplift"
+                if pos_col in forecast_rows.columns:
+                    monthly_positional_uplift = forecast_rows[pos_col].tolist()
+                if "new_content_uplift" in forecast_rows.columns:
+                    monthly_new_content_uplift = forecast_rows["new_content_uplift"].tolist()
+                if "decay" in forecast_rows.columns:
+                    monthly_decay = forecast_rows["decay"].tolist()
 
-            if source == "Combined Forecast" and comb_data is not None:
-                metrics_df = comb_data.get("metrics_df")
-                if metrics_df is not None and not metrics_df.empty and len(metrics_df) == n_months:
-                    monthly_cvr_list = metrics_df["cvr"].tolist()
-                    monthly_aov_list = metrics_df["aov"].tolist()
-                    monthly_transactions = metrics_df["transactions"].tolist()
-                    monthly_revenue = metrics_df["revenue"].tolist()
-                    # Revenue bands from traffic bands × CVR × AOV
-                    if traffic_p10 is not None:
-                        revenue_p10 = [
-                            round(traffic_p10[i] * monthly_cvr_list[i] / 100.0 * monthly_aov_list[i], 2)
-                            for i in range(n_months)
-                        ]
-                    if traffic_p90 is not None:
-                        revenue_p90 = [
-                            round(traffic_p90[i] * monthly_cvr_list[i] / 100.0 * monthly_aov_list[i], 2)
-                            for i in range(n_months)
-                        ]
+                # Traffic bands
+                if has_bands:
+                    traffic_p10 = forecast_rows.get("combined_p10", pd.Series()).tolist()
+                    traffic_p90 = forecast_rows.get("combined_p90", pd.Series()).tolist()
+
+            elif source == "Positional Forecast":
+                pos = st.session_state[POS_RESULT]
+                pos_monthly = pos["monthly"]
+                col = f"traffic_{scenario}" if f"traffic_{scenario}" in pos_monthly.columns else "traffic"
+                monthly_traffic = pos_monthly[col].tolist()
+            elif source == "Historical Forecast":
+                hist = st.session_state[HIST_RESULTS]
+                result = hist["result"]
+                forecast_rows = result[result["is_forecast"]]
+                best_col = "linear" if "linear" in result.columns else (
+                    "exponential_smoothing" if "exponential_smoothing" in result.columns else "sma"
+                )
+                monthly_traffic = forecast_rows[best_col].tolist()
+
+            if not monthly_traffic:
+                st.warning("The selected forecast source contains no forecast data.")
+            else:
+                n_months = len(monthly_traffic)
+
+                # Per-month CVR/AOV: prefer dynamic metrics from Combined Forecast
+                monthly_cvr_list = None
+                monthly_aov_list = None
+                revenue_p10 = None
+                revenue_p90 = None
+
+                if source == "Combined Forecast" and comb_data is not None:
+                    metrics_df = comb_data.get("metrics_df")
+                    if metrics_df is not None and not metrics_df.empty and len(metrics_df) == n_months:
+                        monthly_cvr_list = metrics_df["cvr"].tolist()
+                        monthly_aov_list = metrics_df["aov"].tolist()
+                        monthly_transactions = metrics_df["transactions"].tolist()
+                        monthly_revenue = metrics_df["revenue"].tolist()
+                        # Revenue bands from traffic bands × CVR × AOV
+                        if traffic_p10 is not None:
+                            revenue_p10 = [
+                                round(traffic_p10[i] * monthly_cvr_list[i] / 100.0 * monthly_aov_list[i], 2)
+                                for i in range(n_months)
+                            ]
+                        if traffic_p90 is not None:
+                            revenue_p90 = [
+                                round(traffic_p90[i] * monthly_cvr_list[i] / 100.0 * monthly_aov_list[i], 2)
+                                for i in range(n_months)
+                            ]
+                    else:
+                        cvr_decimal = cvr / 100.0
+                        monthly_transactions = [round(t * cvr_decimal) for t in monthly_traffic]
+                        monthly_revenue = [round(t * aov, 2) for t in monthly_transactions]
                 else:
                     cvr_decimal = cvr / 100.0
                     monthly_transactions = [round(t * cvr_decimal) for t in monthly_traffic]
                     monthly_revenue = [round(t * aov, 2) for t in monthly_transactions]
-            else:
-                cvr_decimal = cvr / 100.0
-                monthly_transactions = [round(t * cvr_decimal) for t in monthly_traffic]
-                monthly_revenue = [round(t * aov, 2) for t in monthly_transactions]
 
-            total_traffic = sum(monthly_traffic)
-            total_transactions = sum(monthly_transactions)
-            total_revenue = sum(monthly_revenue)
+                total_traffic = sum(monthly_traffic)
+                total_transactions = sum(monthly_transactions)
+                total_revenue = sum(monthly_revenue)
 
-            c1, c2, c3 = st.columns(3)
-            c1.metric("Year 1 Traffic", f"{total_traffic:,.0f}")
-            c2.metric("Year 1 Transactions", f"{total_transactions:,.0f}")
-            c3.metric("Year 1 Revenue", f"{sym}{total_revenue:,.2f}")
+                c1, c2, c3 = st.columns(3)
+                c1.metric("Year 1 Traffic", f"{total_traffic:,.0f}")
+                c2.metric("Year 1 Transactions", f"{total_transactions:,.0f}")
+                c3.metric("Year 1 Revenue", f"{sym}{total_revenue:,.2f}")
 
-            st.subheader("Monthly Preview")
-            month_labels = [
-                calendar.month_abbr[(start_month - 1 + i) % 12 + 1]
-                for i in range(n_months)
-            ]
-            preview_data: dict = {"Month": month_labels}
-            preview_data["Traffic"] = [f"{t:,.0f}" for t in monthly_traffic]
-            if monthly_cvr_list is not None:
-                preview_data["CVR %"] = [f"{c:.2f}%" for c in monthly_cvr_list]
-            if monthly_aov_list is not None:
-                preview_data["AOV"] = [f"{sym}{a:,.2f}" for a in monthly_aov_list]
-            preview_data["Transactions"] = [f"{t:,}" for t in monthly_transactions]
-            preview_data["Revenue"] = [f"{sym}{r:,.2f}" for r in monthly_revenue]
-            preview_df = pd.DataFrame(preview_data)
-            st.dataframe(preview_df, use_container_width=True, hide_index=True)
+                st.subheader("Monthly Preview")
+                month_labels = [
+                    calendar.month_abbr[(start_month - 1 + i) % 12 + 1]
+                    for i in range(n_months)
+                ]
+                preview_data: dict = {"Month": month_labels}
+                preview_data["Traffic"] = [f"{t:,.0f}" for t in monthly_traffic]
+                if monthly_cvr_list is not None:
+                    preview_data["CVR %"] = [f"{c:.2f}%" for c in monthly_cvr_list]
+                if monthly_aov_list is not None:
+                    preview_data["AOV"] = [f"{sym}{a:,.2f}" for a in monthly_aov_list]
+                preview_data["Transactions"] = [f"{t:,}" for t in monthly_transactions]
+                preview_data["Revenue"] = [f"{sym}{r:,.2f}" for r in monthly_revenue]
+                preview_df = pd.DataFrame(preview_data)
+                st.dataframe(preview_df, use_container_width=True, hide_index=True)
 
-            st.divider()
+                st.divider()
 
-            # Build assumptions summary for Assumptions sheet
-            assump_rows = _assumptions_summary(store)
+                # Build assumptions summary for Assumptions sheet
+                assump_rows = _assumptions_summary(store)
 
-            xlsx_buf = build_seo_forecast_grid(
-                monthly_traffic=[float(t) for t in monthly_traffic],
-                monthly_transactions=[float(t) for t in monthly_transactions],
-                monthly_revenue=[float(r) for r in monthly_revenue],
-                monthly_cvr=monthly_cvr_list,
-                monthly_aov=monthly_aov_list,
-                months=n_months,
-                client_name=grid_client,
-                fy_label=fy_label,
-                start_month=start_month,
-                traffic_p10=[float(v) for v in traffic_p10] if traffic_p10 else None,
-                traffic_p90=[float(v) for v in traffic_p90] if traffic_p90 else None,
-                revenue_p10=revenue_p10,
-                revenue_p90=revenue_p90,
-                monthly_baseline=[float(v) for v in monthly_baseline] if monthly_baseline else None,
-                monthly_positional_uplift=[float(v) for v in monthly_positional_uplift] if monthly_positional_uplift else None,
-                monthly_new_content_uplift=[float(v) for v in monthly_new_content_uplift] if monthly_new_content_uplift else None,
-                monthly_decay=[float(v) for v in monthly_decay] if monthly_decay else None,
-                assumptions_summary=assump_rows,
-            )
-
-            sheet_count = 1
-            if any(x is not None for x in [monthly_baseline, monthly_positional_uplift]):
-                sheet_count += 1
-            sheet_count += 1  # Assumptions always included
-
-            dl_col, snap_col = st.columns(2)
-            with dl_col:
-                st.download_button(
-                    "Download Forecast Grid XLSX",
-                    xlsx_buf,
-                    "seo-forecast-grid.xlsx",
-                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    key="grid_xlsx_dl",
-                )
-                st.caption(
-                    f"Includes {sheet_count} sheets: Forecast (GAZMAN row)"
-                    + (", Stream Breakdown" if sheet_count > 2 else "")
-                    + ", Assumptions trail."
+                xlsx_buf = build_seo_forecast_grid(
+                    monthly_traffic=[float(t) for t in monthly_traffic],
+                    monthly_transactions=[float(t) for t in monthly_transactions],
+                    monthly_revenue=[float(r) for r in monthly_revenue],
+                    monthly_cvr=monthly_cvr_list,
+                    monthly_aov=monthly_aov_list,
+                    months=n_months,
+                    client_name=grid_client,
+                    fy_label=fy_label,
+                    start_month=start_month,
+                    traffic_p10=[float(v) for v in traffic_p10] if traffic_p10 else None,
+                    traffic_p90=[float(v) for v in traffic_p90] if traffic_p90 else None,
+                    revenue_p10=revenue_p10,
+                    revenue_p90=revenue_p90,
+                    monthly_baseline=[float(v) for v in monthly_baseline] if monthly_baseline else None,
+                    monthly_positional_uplift=[float(v) for v in monthly_positional_uplift] if monthly_positional_uplift else None,
+                    monthly_new_content_uplift=[float(v) for v in monthly_new_content_uplift] if monthly_new_content_uplift else None,
+                    monthly_decay=[float(v) for v in monthly_decay] if monthly_decay else None,
+                    assumptions_summary=assump_rows,
                 )
 
-            # Snapshot download (Combined Forecast only)
-            if source == "Combined Forecast" and comb_data is not None:
-                with snap_col:
-                    snap_params = {
-                        "cvr": cvr,
-                        "aov": aov,
-                        "currency": currency,
-                        "months": n_months,
-                        "scenario": scenario,
-                    }
-                    metrics_df_for_snap = comb_data.get("metrics_df")
-                    snap = build_snapshot(
-                        client_name=grid_client or "Unknown",
-                        combined_df=comb_data["combined_df"],
-                        parameters=snap_params,
-                        metrics_df=metrics_df_for_snap,
-                        assumptions_snapshot=assump_rows,
-                    )
+                sheet_count = 1
+                if any(x is not None for x in [monthly_baseline, monthly_positional_uplift]):
+                    sheet_count += 1
+                sheet_count += 1  # Assumptions always included
+
+                dl_col, snap_col = st.columns(2)
+                with dl_col:
                     st.download_button(
-                        "Download Forecast Snapshot JSON",
-                        snapshot_to_bytes(snap),
-                        "forecast-snapshot.json",
-                        "application/json",
-                        key="grid_snap_dl",
+                        "Download Forecast Grid XLSX",
+                        xlsx_buf,
+                        "seo-forecast-grid.xlsx",
+                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        key="grid_xlsx_dl",
                     )
                     st.caption(
-                        "Re-upload to Variance Analysis tab months later "
-                        "to grade forecast accuracy."
+                        f"Includes {sheet_count} sheets: Forecast (GAZMAN row)"
+                        + (", Stream Breakdown" if sheet_count > 2 else "")
+                        + ", Assumptions trail."
                     )
+
+                # Snapshot download (Combined Forecast only)
+                if source == "Combined Forecast" and comb_data is not None:
+                    with snap_col:
+                        snap_params = {
+                            "cvr": cvr,
+                            "aov": aov,
+                            "currency": currency,
+                            "months": n_months,
+                            "scenario": scenario,
+                        }
+                        metrics_df_for_snap = comb_data.get("metrics_df")
+                        snap = build_snapshot(
+                            client_name=grid_client or "Unknown",
+                            combined_df=comb_data["combined_df"],
+                            parameters=snap_params,
+                            metrics_df=metrics_df_for_snap,
+                            assumptions_snapshot=assump_rows,
+                        )
+                        st.download_button(
+                            "Download Forecast Snapshot JSON",
+                            snapshot_to_bytes(snap),
+                            "forecast-snapshot.json",
+                            "application/json",
+                            key="grid_snap_dl",
+                        )
+                        st.caption(
+                            "Re-upload to Variance Analysis tab months later "
+                            "to grade forecast accuracy."
+                        )
 
 # ── Tab: Variance Analysis ────────────────────────────────────────────────────
 with tab_variance:

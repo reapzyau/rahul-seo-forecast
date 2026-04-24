@@ -5,15 +5,17 @@ A Streamlit web application for SEO traffic and revenue forecasting. Supports na
 ## Quick Start
 
 1. Go to **Data Upload** and either upload your GA4 organic export + SEMrush organic positions export, or tick "Use sample (Cable)" on both tabs
-2. Go to **Positional Forecast** — click Generate Forecast. This is the core output: uplift from moving existing keywords up the SERP.
-3. (Optional) Go to **Historical Forecast** for a do-nothing baseline, or **New Content Forecast** for a gap-analysis-driven projection.
-4. Go to **Combined Forecast** to see baseline + positional + new content layered.
-5. Go to **Forecast Grid Export** to download the xlsx that drops straight into the multi-channel plan.
+2. Go to **Strategy** — review the portfolio diagnosis, accept or tweak the three scenario presets, and click Run All Forecasts. This is the fastest path from upload to client-ready deliverable.
+3. Download the **3-Scenario Forecast Grid XLSX** from the Strategy page or the Deliverables page — four sheets (Conservative / Moderate / Aggressive / Comparison) ready for the client deck.
+4. (Optional) Go to **Positional Forecast** for single-scenario deep-dive, or **Historical Forecast** for a do-nothing baseline, or **New Content Forecast** for gap-analysis-driven projections.
+5. Go to **Combined Forecast** to see baseline + positional + new content layered for any single scenario.
+6. Go to **Deliverables** for full export options including variance grading and methodology.
 
 ## Forecasting Modes
 
 | Mode | Input | What it projects |
 |------|-------|------------------|
+| Strategy | GA4 + SEMrush + (optional) Roadmap | Portfolio diagnosis + 3 coherent scenarios |
 | Positional Forecast | SEMrush + GA4 | Uplift from moving keywords up the SERP |
 | New Content Forecast | Keyword list (gap analysis) | Traffic from publishing new content |
 | Historical Forecast | GA4 organic data | "Do nothing" baseline trajectory |
