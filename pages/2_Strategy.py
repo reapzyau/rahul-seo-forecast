@@ -387,8 +387,9 @@ else:
                     f"Retainer: **${preset.get('retainer_aud_monthly', 0):,.0f}/mo**"
                 )
                 st.caption(
-                    "For deeper analysis, open the individual forecast pages "
-                    "(Historical, Positional, New Content, Combined) from the sidebar."
+                    "For deeper analysis on this scenario's positional, new content, or combined "
+                    "components, head to the individual forecast pages — they'll let you adjust "
+                    "settings beyond what the scenario presets offer."
                 )
 
     st.divider()

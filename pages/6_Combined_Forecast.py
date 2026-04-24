@@ -17,13 +17,29 @@ from utils.page_base import setup_page
 from utils.session import (
     COMB_RESULTS,
     GA4_DF,
+    HIST_RESULTS,
     KW_EXISTING,
     NC_RESULT,
     POS_RESULT,
+    SCENARIO_RESULTS,
     SEASONALITY,
 )
 
 store = setup_page("Combined Forecast", "Layer multiple forecast streams into a single projection with intent-weighted revenue.")
+
+if SCENARIO_RESULTS not in st.session_state:
+    st.info(
+        "💡 **Want to compare three scenarios at once?** "
+        "Use the **Strategy** page to see the Combined view across three scenarios — "
+        "Conservative, Moderate, Aggressive — side-by-side. "
+        "This page is for deep-dive analysis on a single forecast configuration."
+    )
+else:
+    st.success(
+        "✅ Three scenarios already run via Strategy. "
+        "This page lets you drill into a single forecast configuration in detail. "
+        "Download the 3-scenario xlsx from **Deliverables** or the Strategy page."
+    )
 
 # ── Data Availability ──────────────────────────────────────────────────────
 ga4_df = st.session_state.get(GA4_DF)
@@ -208,6 +224,12 @@ if st.button("Generate Combined Forecast", type="primary", key="comb_run"):
                 ga4_df["date"].iloc[-1] + pd.DateOffset(months=1)
             ).month
 
+        # Pass the Historical page's forecast result as the baseline source so the
+        # Combined projection uses the same model (Holt's / Prophet / linear) and
+        # trend that the analyst already reviewed — not the internal YoY shortcut.
+        hist_results = st.session_state.get(HIST_RESULTS)
+        historical_forecast_df = hist_results.get("result") if hist_results else None
+
         combined_df = run_combined_forecast(
             historical_df=historical_df,
             positional_monthly=pos_monthly,
@@ -216,6 +238,7 @@ if st.button("Generate Combined Forecast", type="primary", key="comb_run"):
             decay_df=decay_df,
             seasonality=seasonality,
             forecast_start_month=forecast_start_month,
+            historical_forecast_df=historical_forecast_df,
         )
 
         # Build merged keyword set for intent-weighted revenue
@@ -262,6 +285,9 @@ if st.button("Generate Combined Forecast", type="primary", key="comb_run"):
         st.session_state[COMB_RESULTS] = {
             "combined_df": combined_df,
             "yoy_rate": combined_df.attrs.get("yoy_rate"),
+            "baseline_method": (
+                historical_forecast_df.attrs.get("chosen_method") if historical_forecast_df is not None else None
+            ),
             "include_baseline": include_baseline,
             "include_positional": include_positional,
             "include_new_content": include_new_content,
@@ -317,8 +343,20 @@ if COMB_RESULTS in st.session_state:
         c3.metric("Positional Uplift", f"{pos_total:,}")
         c4.metric("Uplift at End", f"{uplift_end}%")
 
+        _baseline_method = r.get("baseline_method")
+        if _baseline_method:
+            st.caption(
+                f"Baseline projection sourced from Historical Forecast page "
+                f"(**{_baseline_method.replace('_', ' ').title()}** method)."
+            )
+        else:
+            st.caption(
+                "No Historical Forecast result in session — using internal YoY baseline. "
+                "Run the **Historical Forecast** page first for a trend-aware baseline."
+            )
+
         _yoy = r.get("yoy_rate")
-        if _yoy is not None:
+        if _yoy is not None and not _baseline_method:
             st.caption(
                 f"Baseline uses year-over-year growth at **{_yoy:+.1%}/year** "
                 f"(median of same-month comparisons). "
@@ -340,6 +378,21 @@ if COMB_RESULTS in st.session_state:
 
         fig = combined_three_stream_chart(combined_df)
         st.plotly_chart(fig, use_container_width=True)
+
+        if ga4_df is not None and len(ga4_df) >= 12:
+            from engine.historical_engine import calculate_growth_rates
+            _rates = calculate_growth_rates(ga4_df["traffic"])
+            g1, g2 = st.columns(2)
+            g1.metric("Avg MoM Growth (historical)", f"{_rates['avg_mom']:+.1f}%")
+            g2.metric(
+                "Latest YoY Growth (historical)",
+                f"{_rates['latest_yoy']:+.1f}%" if _rates.get("latest_yoy") is not None else "N/A",
+            )
+            st.caption(
+                "These are the historical trends. The baseline projection above should "
+                "broadly continue them. If it doesn't, run the **Historical Forecast** page "
+                "to see what each model projects, then re-run Combined."
+            )
 
         st.divider()
         streams_desc = []
@@ -583,3 +636,11 @@ if COMB_RESULTS in st.session_state:
                 "text/html",
                 key="comb_dl_html",
             )
+
+st.divider()
+st.caption(
+    "**Looking for the three-scenario comparison?** "
+    "The Strategy page runs Conservative / Moderate / Aggressive in one click and "
+    "produces a four-sheet xlsx ready for client presentations. "
+    "This deep-dive page is best for analysts tuning a single forecast configuration."
+)

@@ -419,6 +419,63 @@ class TestCombinedForecast:
         assert (combined["baseline"] == 0).all()
 
 
+class TestCombinedBaselineFromHistorical:
+    def test_combined_baseline_follows_historical_trend(self):
+        """Regression: Combined page was not passing historical_forecast_df to the engine.
+        A 36-month upward-trending GA4 dataset should produce a Combined baseline that grows
+        when historical_forecast_df is provided, confirming the linkage fires correctly.
+        """
+        from engine.combined_engine import run_combined_forecast
+        from engine.historical_engine import run_historical_forecast_v4
+
+        ga4 = pd.DataFrame({
+            "date": pd.date_range("2023-01-01", periods=36, freq="MS"),
+            "traffic": [1000 + i * 100 for i in range(36)],  # 1000→4500 over 36 months
+        })
+        hist = run_historical_forecast_v4(ga4, months=12)
+
+        combined = run_combined_forecast(
+            historical_df=ga4,
+            positional_monthly=None,
+            new_content_monthly=None,
+            months=12,
+            historical_forecast_df=hist,
+        )
+        fc = combined[combined["is_forecast"]]
+        baseline_growth_pct = (fc["baseline"].iloc[-1] / fc["baseline"].iloc[0] - 1) * 100
+        assert baseline_growth_pct >= 5.0, (
+            f"Expected baseline to grow ≥5% over 12 months given strong trend; "
+            f"got {baseline_growth_pct:.1f}%"
+        )
+
+    def test_combined_baseline_differs_with_and_without_historical_forecast(self):
+        """Passing historical_forecast_df should change the baseline from the default YoY calc."""
+        from engine.combined_engine import run_combined_forecast
+        from engine.historical_engine import run_historical_forecast_v4
+
+        ga4 = pd.DataFrame({
+            "date": pd.date_range("2022-07-01", periods=45, freq="MS"),
+            "traffic": [700 + i * 94 for i in range(45)],  # 700→4930 over 45 months
+        })
+        hist = run_historical_forecast_v4(ga4, months=12)
+
+        combined_default = run_combined_forecast(
+            historical_df=ga4, positional_monthly=None, new_content_monthly=None, months=12
+        )
+        combined_hf = run_combined_forecast(
+            historical_df=ga4, positional_monthly=None, new_content_monthly=None, months=12,
+            historical_forecast_df=hist,
+        )
+
+        default_end = combined_default[combined_default["is_forecast"]]["baseline"].iloc[-1]
+        hf_end = combined_hf[combined_hf["is_forecast"]]["baseline"].iloc[-1]
+        # The two baselines should differ — confirming the parameter is being used
+        assert default_end != hf_end, (
+            "historical_forecast_df had no effect on Combined baseline — "
+            "the linkage is not firing."
+        )
+
+
 class TestCombinedHub:
     def test_layered_math_with_bands(self):
         """v4 math: combined = baseline + positional + new_content - decay (no AIO deduction)."""
@@ -1586,6 +1643,61 @@ class TestMovementLearning:
             historical_movement_stats=big_gain_stats,
         )
         assert monthly_learned.iloc[-1]["uplift_p50"] != monthly_default.iloc[-1]["uplift_p50"]
+
+    def test_target_position_actually_changes_for_easy_keywords(self):
+        # Regression: near-zero learned gain (stable site) used to round to 0,
+        # collapsing target_position == current_position for every keyword.
+        from engine.positional_engine import estimate_target_position
+        # Simulate a flat site: previous_position=6, position=5 → mean_gain=1.0 < min_learned_gain=2.0
+        flat_stats = {"Easy": {"mean_gain": 1.0, "std_gain": 0.5, "sample_size": 20}}
+        targets = [
+            estimate_target_position(5, 15, "moderate", flat_stats)
+            for _ in range(20)
+        ]
+        mean_target = sum(targets) / len(targets)
+        assert mean_target < 4.0, (
+            f"Expected target < 4.0 (positions should improve), got {mean_target}. "
+            "Near-zero learned gain should blend toward tier default, not collapse to current position."
+        )
+
+    def test_uplift_meaningful_for_realistic_portfolio(self):
+        # Regression: near-zero learned gain (flat/declining site) collapsed
+        # target_position == current_position → 0% uplift before the blending fix.
+        # Attention curve is disabled here to isolate the target-position bug from
+        # the separate concern of attention weighting.
+        from engine.positional_engine import run_positional_forecast_mc
+        rng = np.random.default_rng(99)
+        n = 50
+        positions = rng.integers(4, 19, size=n).tolist()          # 4–18
+        kds = rng.integers(15, 61, size=n).tolist()               # 15–60
+        df = pd.DataFrame({
+            "keyword": [f"kw_{i}" for i in range(n)],
+            "position": positions,
+            "volume": [500] * n,
+            "kd": kds,
+            "intent": ["commercial"] * n,
+            "has_aio": [False] * n,
+        })
+        # near-zero learned gain across all tiers (simulates a flat/declining site)
+        flat_stats = {
+            tier: {"mean_gain": 0.0, "std_gain": 0.5, "sample_size": 20}
+            for tier in ("Easy", "Moderate", "Hard", "Very Hard", "Extreme")
+        }
+        _, monthly = run_positional_forecast_mc(
+            df, months=12, n_trials=300, seed=7,
+            historical_movement_stats=flat_stats,
+            use_attention_curve=False,
+        )
+        # Use the engine's own CTR-derived baseline (not current_traffic which the
+        # engine ignores when ga4_baseline is None).
+        engine_baseline = monthly.iloc[-1]["baseline"]
+        uplift_month12 = monthly.iloc[-1]["uplift_p50"]
+        uplift_pct = uplift_month12 / engine_baseline * 100
+        assert uplift_pct >= 8.0, (
+            f"Expected ≥8% uplift at month 12, got {uplift_pct:.1f}% "
+            f"(uplift={uplift_month12}, baseline={engine_baseline}). "
+            "Blending with tier defaults should produce meaningful uplift even for flat-history sites."
+        )
 
 
 # ── Maturation Curve (Task 4) ─────────────────────────────────────────────

@@ -112,6 +112,25 @@ Traffic begins in the month the keyword ranks (publish month + time to rank).
 
 The month-by-month projection sums all keywords whose traffic has started by that month. Keywords are published according to the cadence (e.g., 4 per month) in efficiency-score order.
 
+### Roadmap as keyword source
+
+When a Pattern-native roadmap is uploaded with target keywords specified per
+content piece, the New Content Forecast page can use the roadmap's content
+plan as its keyword source instead of requiring a manual CSV upload.
+
+The conversion (`utils.roadmap_to_keywords.build_keyword_df_from_roadmap`):
+- Explodes each content_plan entry into one row per target keyword
+- Joins against the SEMrush portfolio for volume/KD enrichment
+- Falls back to defaults (200 volume, 35 KD) for keywords not in SEMrush
+- Deduplicates so each keyword appears once with its first content URL
+- Carries `_content_url`, `_content_type`, and `_publish_month` metadata
+  through to the forecast engine, which uses them to drive publish-month
+  assignment via direct URL matching (preferred over legacy keyword-in-URL
+  substring matching)
+
+Optimisation-type content uses a faster S-curve maturation (`t_mid=1.5`,
+amplitude=0.3) compared to new_page content's standard tier-based curve.
+
 ---
 
 ## Mode 2: Historical Trend Forecast
@@ -315,6 +334,17 @@ movement = previous_position - position  (positive = improvement)
 **Outlier filter:** movements greater than ±30 positions are discarded as likely SEMrush data glitches (e.g. a keyword jumping from position 80 to position 1 in one crawl).
 
 **Minimum sample threshold:** a tier must have at least 10 valid samples before its learned mean replaces the default gain. Tiers with fewer than 10 samples fall back to `_BASE_GAIN_BY_TIER`. This prevents noisy statistics from a handful of keywords distorting the forecast.
+
+**Handling flat or declining history:** A site with low historical movement (mean gain < 2 positions) or net position losses is treated as a signal of low *past effort*, not a ceiling on what concerted effort can achieve. In these cases the engine blends the learned gain toward the tier default rather than taking the learned value at face value:
+
+```
+confidence = min(1.0, sample_size / 50.0)
+clamped    = max(0.0, learned_gain)          # clamp to avoid backwards projection
+blended    = clamped × confidence + default_gain × (1 − confidence)
+base_gain  = max(blended, default_gain × 0.4)  # floor: never below 40% of default
+```
+
+At n = 50 samples the learned value is trusted fully; below that, weight shifts toward the default. The 40% floor ensures even a high-confidence flat-history site still shows achievable upside (e.g. Easy tier always projects at least 2 positions gained under moderate effort). Negative mean gains are clamped to zero before blending so the engine never projects backwards movement from deliberate effort.
 
 The Positional Forecast page shows an info banner indicating whether learned stats or defaults are active, and reports the total sample count across all tiers.
 
