@@ -135,16 +135,22 @@ st.sidebar.divider()
 st.sidebar.subheader("Revenue Settings")
 enable_revenue = st.sidebar.checkbox("Enable Revenue Projection", value=True, key="comb_rev")
 
-# Pre-populate CVR and AOV from GA4 actuals
+# Pre-populate CVR and AOV — organic channel takes priority over blended GA4 columns
 default_cvr = 2.5
 default_aov = 100.0
 default_cur_idx = 0
 
-if has_ga4:
+if st.session_state.get("cr_organic"):
+    default_cvr = round(float(st.session_state["cr_organic"]) * 100, 2)
+elif has_ga4:
     if "cr" in ga4_df.columns:
         avg_cr = ga4_df["cr"].dropna().mean()
         if avg_cr > 0:
             default_cvr = round(float(avg_cr), 2)
+
+if st.session_state.get("aov_organic"):
+    default_aov = round(float(st.session_state["aov_organic"]), 2)
+elif has_ga4:
     if "aov" in ga4_df.columns:
         avg_aov = ga4_df["aov"].dropna().mean()
         if avg_aov > 0:
@@ -168,8 +174,10 @@ currency = st.sidebar.selectbox(
 )
 
 if enable_revenue:
-    if ga4_has_revenue:
-        st.sidebar.caption("CVR and AOV pre-populated from GA4 actuals.")
+    if st.session_state.get("cr_organic"):
+        st.sidebar.caption("CVR and AOV pre-populated from GA4 Organic Search channel (Data Upload).")
+    elif ga4_has_revenue:
+        st.sidebar.caption("CVR and AOV pre-populated from blended GA4 actuals.")
     st.sidebar.caption(
         "Revenue uses intent-weighted conversion: "
         "commercial/transactional keywords convert higher than informational."

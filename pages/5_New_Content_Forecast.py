@@ -139,8 +139,12 @@ if filter_informational:
 st.sidebar.divider()
 st.sidebar.subheader("Revenue Settings")
 enable_revenue = st.sidebar.checkbox("Enable Revenue Projection", key="kw_rev")
-cvr = st.sidebar.number_input("Conversion Rate (%)", 0.1, 100.0, 2.5, step=0.1, key="kw_cvr", disabled=not enable_revenue)
-aov = st.sidebar.number_input("Average Order Value", 1.0, 100000.0, 100.0, step=10.0, key="kw_aov", disabled=not enable_revenue)
+_cvr_default = round(float(st.session_state.get("cr_organic", 0.025)) * 100, 2)
+_aov_default = float(st.session_state.get("aov_organic") or 100.0)
+cvr = st.sidebar.number_input("Conversion Rate (%)", 0.1, 100.0, _cvr_default, step=0.1, key="kw_cvr", disabled=not enable_revenue)
+aov = st.sidebar.number_input("Average Order Value", 1.0, 100000.0, _aov_default, step=10.0, key="kw_aov", disabled=not enable_revenue)
+if st.session_state.get("cr_organic") and enable_revenue:
+    st.sidebar.caption("CVR and AOV pre-set from GA4 Organic Search channel (Data Upload).")
 currency = st.sidebar.selectbox("Currency", list(CURRENCY_SYMBOLS.keys()), key="kw_cur", disabled=not enable_revenue)
 
 st.sidebar.divider()
