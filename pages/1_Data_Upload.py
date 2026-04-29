@@ -1,3 +1,4 @@
+import io
 import json
 import os
 
@@ -29,6 +30,7 @@ from engine.seasonality_engine import (
     seasonality_for_portfolio,
 )
 from engine.v5.da_estimator import compare_da_estimate_to_supplied, estimate_da_from_rankings
+from engine.v5.ga4_extractor import extract_organic_metrics, summarize_for_methodology
 from utils.assumptions_panel import render_assumptions_banner, render_assumptions_panel
 from utils.chart_builder import _apply_layout
 from utils.ga4_loader import load_ga4_organic
@@ -77,13 +79,17 @@ with tab_ga4:
     use_ga4_sample = st.checkbox("Use sample data (Cable Melbourne)", key="ga4_sample")
 
     ga4_df = None
+    ga4_metrics = None
     if uploaded_ga4 is not None:
-        ga4_df = load_ga4_organic(uploaded_ga4)
+        raw_bytes = uploaded_ga4.read()
+        ga4_df = load_ga4_organic(io.BytesIO(raw_bytes))
+        ga4_metrics = extract_organic_metrics(io.BytesIO(raw_bytes))
     elif use_ga4_sample:
         sample_path = os.path.join(
             os.path.dirname(os.path.dirname(__file__)), "assets", "sample-ga4-organic.xlsx"
         )
         ga4_df = load_ga4_organic(sample_path)
+        ga4_metrics = extract_organic_metrics(sample_path)
 
     if ga4_df is not None:
         st.session_state[GA4_DF] = ga4_df
@@ -148,6 +154,73 @@ with tab_ga4:
         )
         fig = _apply_layout(fig, "Monthly Organic Traffic", "Date", "Sessions")
         st.plotly_chart(fig, use_container_width=True)
+
+        # ── Channel-level CR / AOV from v5 extractor ─────────────────
+        st.divider()
+        st.subheader("Organic Search Metrics")
+
+        if ga4_metrics is not None and not ga4_metrics.get("warnings"):
+            cr_organic = ga4_metrics["cr_organic"]
+            cr_blended = ga4_metrics["cr_blended"]
+            aov_organic = ga4_metrics["aov_organic"]
+            aov_blended = ga4_metrics["aov_blended"]
+            cr_ratio = ga4_metrics.get("cr_ratio")
+
+            m1, m2, m3 = st.columns(3)
+            m1.metric(
+                "Organic Search CR",
+                f"{cr_organic * 100:.2f}%",
+                delta=f"{(cr_organic - cr_blended) * 100:+.2f}% vs blended",
+            )
+            m2.metric(
+                "Organic AOV",
+                f"${aov_organic:,.2f}",
+                delta=f"${aov_organic - aov_blended:+,.2f} vs blended",
+            )
+            m3.metric(
+                "CR Ratio (organic / blended)",
+                f"{cr_ratio:.2f}x" if cr_ratio is not None else "—",
+                help="< 1 means organic converts below blended average; > 1 means above.",
+            )
+
+            st.session_state["cr_organic"] = cr_organic
+            st.session_state["cr_blended"] = cr_blended
+            st.session_state["aov_organic"] = aov_organic
+            st.session_state["aov_blended"] = aov_blended
+            st.session_state["ga4_metrics_summary"] = summarize_for_methodology(ga4_metrics)
+
+            with st.expander("Monthly CR breakdown"):
+                cbm = ga4_metrics.get("cr_by_month")
+                if cbm is not None and not cbm.empty:
+                    display_cbm = cbm.copy()
+                    for col in ["cr_organic", "cr_blended"]:
+                        if col in display_cbm.columns:
+                            display_cbm[col] = (display_cbm[col] * 100).round(3).astype(str) + "%"
+                    st.dataframe(display_cbm, use_container_width=True)
+
+        else:
+            if ga4_metrics is not None and ga4_metrics.get("warnings"):
+                st.warning(
+                    "Channel breakdown not found in this GA4 export — "
+                    "the 'Session default channel group' column is missing. "
+                    "Enter Organic CR and AOV manually below."
+                )
+            else:
+                st.info("Upload a GA4 export to auto-detect Organic Search CR and AOV.")
+
+            col_a, col_b = st.columns(2)
+            manual_cr = col_a.number_input(
+                "Organic Conversion Rate (%)", min_value=0.01, max_value=100.0,
+                value=float(st.session_state.get("cr_organic", 0.0) * 100 or 1.5),
+                step=0.01, key="ga4_manual_cr",
+            )
+            manual_aov = col_b.number_input(
+                "Organic AOV ($)", min_value=1.0, max_value=1_000_000.0,
+                value=float(st.session_state.get("aov_organic") or 100.0),
+                step=1.0, key="ga4_manual_aov",
+            )
+            st.session_state["cr_organic"] = manual_cr / 100.0
+            st.session_state["aov_organic"] = manual_aov
 
     elif uploaded_ga4 is not None:
         st.error("Could not parse the uploaded GA4 file. Please check the format.")
