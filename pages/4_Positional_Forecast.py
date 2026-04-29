@@ -1,3 +1,4 @@
+import pandas as pd
 import streamlit as st
 
 from engine.aio_risk_engine import INTENT_AIO_CTR_PENALTY
@@ -5,11 +6,16 @@ from engine.assumptions import get_assumption, get_provenance
 from engine.constants import CTR_MODELS, FORECAST_SCENARIOS, TIER_COLORS
 from engine.maturation_curve import tier_maturation_params
 from engine.positional_engine import (
-    learn_movement_from_history,
     quick_wins,
     run_positional_forecast_mc,
 )
 from engine.revenue_engine import CURRENCY_SYMBOLS, add_revenue
+from engine.v5.movement_stats import (
+    ENGINE_DEFAULTS,
+    TIER_ORDER,
+    learn_movement_from_history_v2,
+    resolve_movement_stats,
+)
 from utils.chart_builder import positional_uplift_chart, revenue_projection_chart
 from utils.export import to_csv, to_html_report
 from utils.page_base import setup_page
@@ -157,6 +163,72 @@ currency = st.sidebar.selectbox(
     key="pos_cur", disabled=not enable_revenue,
 )
 
+# ── Movement Stats ───────────────────────────────────────────────────────────
+st.subheader("Position movement assumptions")
+
+_mv_mode = st.radio(
+    "Movement stats mode",
+    options=["auto", "force_engine", "force_learned"],
+    index=0,
+    horizontal=True,
+    key="pos_mv_mode",
+    help=(
+        "**auto**: confidence-weighted blend of learned and engine defaults (recommended)\n\n"
+        "**force_engine**: ignore learned data, always use engine defaults\n\n"
+        "**force_learned**: always use the learned percentile, even when negative or undersampled"
+    ),
+)
+st.session_state["movement_stats_mode"] = _mv_mode
+
+_mv_primary = "p75_gain"
+if _mv_mode == "force_learned":
+    _mv_primary = st.selectbox(
+        "Primary statistic",
+        options=["p75_gain", "median_gain", "mean_gain"],
+        index=0,
+        key="pos_mv_primary",
+        help="p75 = robust upper-half (recommended). median = central tendency. mean = legacy.",
+    )
+st.session_state["movement_stats_primary_statistic"] = _mv_primary
+
+# Learn and resolve so the expander below can show decisions before the run
+_learned_stats = learn_movement_from_history_v2(kw_for_forecast) if kw_for_forecast is not None else {}
+_resolved_gains, _decisions = resolve_movement_stats(
+    _learned_stats or None, mode=_mv_mode, primary_statistic=_mv_primary,
+)
+
+with st.expander("Per-tier movement decisions"):
+    if _learned_stats:
+        _rows = []
+        for _tier in TIER_ORDER:
+            if _tier not in _learned_stats:
+                continue
+            _s = _learned_stats[_tier]
+            _rows.append({
+                "Tier": _tier,
+                "Sample": _s["sample_size"],
+                "Mean": f"{_s['mean_gain']:+.2f}",
+                "Median": f"{_s['median_gain']:+.2f}",
+                "p75": f"{_s['p75_gain']:+.2f}",
+                "Positive %": f"{_s['positive_share'] * 100:.1f}%",
+                "Resolved gain": round(_resolved_gains.get(_tier, ENGINE_DEFAULTS[_tier]), 2),
+            })
+        if _rows:
+            st.dataframe(pd.DataFrame(_rows), use_container_width=True)
+        else:
+            st.caption("No tiers with sufficient data (< 10 keywords per tier).")
+    else:
+        st.caption("No previous_position data in the SEMrush export — using engine defaults.")
+    for _d in _decisions:
+        st.text(_d)
+
+if _mv_mode == "force_learned" and any(g <= 0 for g in _resolved_gains.values()):
+    st.warning(
+        "force_learned is on but some tiers have learned gain ≤ 0. "
+        "This will produce negative or zero positional movement for those tiers. "
+        "Consider switching to 'auto' if this isn't intentional."
+    )
+
 # ── Run Forecast ────────────────────────────────────────────────────────────
 if st.button("Generate Forecast", type="primary", key="pos_run"):
     with st.spinner("Running positional forecast..."):
@@ -164,7 +236,23 @@ if st.button("Generate Forecast", type="primary", key="pos_run"):
         if anchor_to_ga4 and ga4_df is not None:
             ga4_baseline = int(ga4_df["traffic"].iloc[-1])
 
-        movement_stats = learn_movement_from_history(kw_existing)
+        learned_stats = learn_movement_from_history_v2(kw_for_forecast)
+        resolved_gains, decisions = resolve_movement_stats(
+            learned_stats, mode=_mv_mode, primary_statistic=_mv_primary,
+        )
+
+        # Adapt v5 resolved_gains into v4 engine shape.
+        # sample_size=100 clears the v4 ≥10 guard; the v5 resolver already
+        # made the auto/force decision, so use_learned_movement_stats=True
+        # prevents v4 from re-running its own decision logic.
+        adapted_stats = {
+            tier: {"mean_gain": float(gain), "std_gain": 1.0, "sample_size": 100}
+            for tier, gain in resolved_gains.items()
+        }
+        use_learned = _mv_mode != "force_engine"
+
+        st.session_state["movement_stats_resolved"] = resolved_gains
+        st.session_state["movement_stats_decisions"] = decisions
 
         kw_df, monthly = run_positional_forecast_mc(
             kw_for_forecast,
@@ -174,19 +262,19 @@ if st.button("Generate Forecast", type="primary", key="pos_run"):
             ctr_model=ctr_model,
             traffic_multiplier=traffic_multiplier,
             use_attention_curve=use_attention_curve,
-            historical_movement_stats=movement_stats or None,
-            use_learned_movement_stats="auto",
+            historical_movement_stats=adapted_stats if use_learned else None,
+            use_learned_movement_stats=True if use_learned else False,
             aio_intent_penalties=aio_intent_penalties,
             position_filter=position_filter,
             seed=42,
         )
 
-        movement_reason = monthly.attrs.get("movement_stats_reason", "")
         kw_in_pool = monthly.attrs.get("keyword_count", 0)
+        movement_summary = decisions[0] if decisions else monthly.attrs.get("movement_stats_reason", "")
         st.info(
             f"**Positional pool:** {kw_in_pool} keywords "
             f"({'positions ' + str(pos_filter_min) + '–' + str(pos_filter_max) if use_pos_filter else 'no filter'}) | "
-            f"**Movement stats:** {movement_reason}"
+            f"**Movement stats:** {movement_summary}"
         )
 
         # Revenue
