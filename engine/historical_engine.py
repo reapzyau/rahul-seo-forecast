@@ -5,6 +5,107 @@ import pandas as pd
 _PROPHET_MIN_MONTHS = 24
 _HOLTS_MIN_MONTHS = 12
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Section 1: YoY (same-calendar-month) baseline
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+def _row_to_baseline(row: pd.Series, source: str) -> dict:
+    """Convert a GA4 data row to the baseline dict schema."""
+    return {
+        "traffic": int(row["traffic"]),
+        "transactions": float(row["transactions"]) if "transactions" in row.index and pd.notna(row["transactions"]) else None,
+        "revenue": float(row["revenue"]) if "revenue" in row.index and pd.notna(row["revenue"]) else None,
+        "aov_actual": float(row["aov"]) if "aov" in row.index and pd.notna(row["aov"]) else None,
+        "source": source,
+    }
+
+
+def yoy_baseline(
+    ga4_df: pd.DataFrame,
+    forecast_dates: pd.DatetimeIndex,
+) -> dict:
+    """Build month-by-month baseline using prior-year same-calendar-month actuals.
+
+    Each forecast month's baseline equals the same calendar month from the prior
+    fiscal year. When the prior-year actual doesn't exist (e.g. forecasting Jun-27
+    when GA4 only goes to Mar-26), falls back to the most-recent same-calendar-month
+    actual rather than averaging across years — avoids startup-period drag.
+
+    Args:
+        ga4_df: DataFrame with 'date' and 'traffic' (and optionally 'transactions',
+                'revenue', 'aov') columns, monthly granularity.
+        forecast_dates: pd.DatetimeIndex of forecast months (first-of-month).
+
+    Returns:
+        Dict[pd.Timestamp, dict] keyed by forecast date. Each value contains:
+            {traffic, transactions, revenue, aov_actual, source}
+        where source is a human-readable string describing the data origin.
+    """
+    df = ga4_df.copy()
+    df["date"] = pd.to_datetime(df["date"]).dt.to_period("M").dt.to_timestamp()
+    ga4_indexed = df.set_index("date")
+
+    out: dict = {}
+    for fdate in forecast_dates:
+        fdate_norm = pd.Timestamp(year=fdate.year, month=fdate.month, day=1)
+        prior = pd.Timestamp(year=fdate.year - 1, month=fdate.month, day=1)
+
+        if prior in ga4_indexed.index:
+            out[fdate_norm] = _row_to_baseline(
+                ga4_indexed.loc[prior],
+                source=f"GA4 {prior.strftime('%b-%y')} actual",
+            )
+        else:
+            # Fallback: most-recent same-calendar-month (avoids startup-period drag)
+            same_month = df[df["date"].dt.month == fdate.month].sort_values("date")
+            if len(same_month):
+                row = same_month.iloc[-1]
+                out[fdate_norm] = _row_to_baseline(
+                    row,
+                    source=(
+                        f"GA4 {row['date'].strftime('%b-%y')} actual "
+                        f"(most recent {fdate.strftime('%b')}, no prior-FY data)"
+                    ),
+                )
+            else:
+                trailing_avg = int(df["traffic"].tail(6).mean())
+                out[fdate_norm] = {
+                    "traffic": trailing_avg,
+                    "transactions": None,
+                    "revenue": None,
+                    "aov_actual": None,
+                    "source": "6-mo trailing avg (no historical match)",
+                }
+    return out
+
+
+def detect_startup_period(
+    traffic_series: pd.Series,
+    threshold_ratio: float = 0.5,
+) -> bool:
+    """Return True when the series shows startup/ramp rather than normal variance.
+
+    Compares the first-6-month mean to the last-6-month mean. When the early
+    period is less than threshold_ratio × recent, it signals startup-phase growth
+    — in which case Holt's avg_mom would be inflated by the ramp, not seasonality.
+
+    Args:
+        traffic_series: Historical monthly traffic values.
+        threshold_ratio: Early/recent ratio below which ramp is declared (default 0.5).
+            0.5 means early average is less than half the recent average.
+
+    Returns:
+        True if startup period is detected, False otherwise.
+    """
+    if len(traffic_series) < 12:
+        return False
+    early = traffic_series.head(6).mean()
+    recent = traffic_series.tail(6).mean()
+    if recent == 0:
+        return False
+    return bool(early < threshold_ratio * recent)
+
 
 def linear_forecast(
     dates: pd.Series,
