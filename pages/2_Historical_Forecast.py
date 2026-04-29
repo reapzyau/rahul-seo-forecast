@@ -5,10 +5,13 @@ import streamlit as st
 
 from engine.historical_engine import (
     calculate_growth_rates,
+    detect_startup_period,
     run_historical_forecast,
     run_historical_forecast_v4,
+    yoy_baseline,
 )
 from engine.revenue_engine import CURRENCY_SYMBOLS, add_revenue, build_full_metrics_table
+from engine.seasonality_engine import derive_seasonality_from_baseline
 from utils.chart_builder import historical_comparison_chart, revenue_projection_chart
 from utils.data_loader import load_traffic
 from utils.export import to_csv, to_html_report, traffic_template_csv
@@ -25,6 +28,28 @@ setup_page(
 st.sidebar.header("Historical Forecast Settings")
 
 months = st.sidebar.slider("Forecast Horizon (months)", 3, 36, 12)
+
+# ── Smart defaults (collapsible) ──────────────────────────────────────────────
+_n_hist_for_default = st.session_state.get(HIST_N_MONTHS, 0)
+_yoy_default = _n_hist_for_default >= 12
+
+with st.sidebar.expander("Smart defaults", expanded=False):
+    st.caption("These are automatically chosen based on your data. Override if needed.")
+    baseline_mode = st.radio(
+        "Baseline mode",
+        ["YoY replay (recommended)", "Linear trend (Holt's)"],
+        index=0 if _yoy_default else 1,
+        help=(
+            "YoY replay: each forecast month's baseline equals the same calendar month "
+            "from the prior year. Recommended when ≥12 months of history is available — "
+            "avoids compounding startup-ramp artefacts into the forecast. "
+            "Linear trend (Holt's): double exponential smoothing on the full series."
+        ),
+        key="hist_baseline_mode",
+    )
+    use_yoy = baseline_mode.startswith("YoY")
+    if use_yoy and not _yoy_default:
+        st.warning("YoY mode needs ≥12 months of GA4 history. Upload more data or switch to Linear trend.")
 
 st.sidebar.divider()
 st.sidebar.subheader("Advanced")
@@ -118,12 +143,72 @@ if df is not None:
         else:
             st.warning(f"**Model selection:** Linear regression only ({n_hist_months} months < 12 — seasonality cannot be detected). Upload more historical data for better forecasts.")
 
+    # Startup-period warning
+    if detect_startup_period(df["traffic"]):
+        st.warning(
+            "**Startup ramp detected** — the first 6 months of your GA4 data are substantially "
+            "lower than the recent 6 months. Holt's smoothing will pick up this ramp as a growth "
+            "trend, inflating the forecast. **YoY replay mode is strongly recommended.**"
+        )
+
     can_run = use_v4 or bool(methods)
     if not can_run:
         st.warning("Please select at least one forecasting method or enable v4 auto-gating.")
     elif st.button("Generate Forecast", type="primary", key="hist_run"):
+        use_yoy_mode = st.session_state.get("hist_baseline_mode", "YoY replay (recommended)").startswith("YoY")
         with st.spinner("Running historical forecast..."):
-            if use_v4:
+            if use_yoy_mode and n_hist_months >= 12:
+                # YoY replay baseline
+                last_date = df["date"].max()
+                forecast_dates = pd.date_range(
+                    start=last_date + pd.DateOffset(months=1),
+                    periods=months, freq="MS",
+                )
+                baseline_lookup = yoy_baseline(df, forecast_dates)
+                # Store derived seasonality in session for downstream engines
+                derived_season = derive_seasonality_from_baseline(baseline_lookup)
+                st.session_state[SEASONALITY] = derived_season
+                st.session_state["yoy_baseline_lookup"] = baseline_lookup
+                # Build a result df from the baseline lookup for display
+                result_rows = []
+                for _i, row in df.iterrows():
+                    result_rows.append({
+                        "date": row["date"],
+                        "actual": int(row["traffic"]),
+                        "linear": int(row["traffic"]),
+                        "linear_upper": int(row["traffic"]),
+                        "linear_lower": int(row["traffic"]),
+                        "is_forecast": False,
+                        "primary_method": "yoy_replay",
+                    })
+                for fdate, bdata in sorted(baseline_lookup.items()):
+                    result_rows.append({
+                        "date": fdate,
+                        "actual": None,
+                        "linear": bdata["traffic"],
+                        "linear_upper": int(bdata["traffic"] * 1.10),
+                        "linear_lower": int(bdata["traffic"] * 0.90),
+                        "is_forecast": True,
+                        "primary_method": "yoy_replay",
+                    })
+                result = pd.DataFrame(result_rows)
+                result.attrs["chosen_method"] = "yoy_replay"
+                result.attrs["method_reason"] = f"YoY replay — each forecast month mirrors the same calendar month one year prior ({n_hist_months} months of history available)"
+                result.attrs["prophet_available"] = False
+                result.attrs["growth_rates"] = calculate_growth_rates(df["traffic"])
+                active_methods = ["Linear Regression"]
+                st.info(f"**Baseline mode:** YoY replay — {result.attrs['method_reason']}")
+                st.session_state[HIST_RESULTS] = {
+                    "result": result,
+                    "growth": result.attrs["growth_rates"],
+                    "methods": active_methods,
+                    "enable_revenue": enable_revenue,
+                    "currency": currency,
+                    "cvr": cvr,
+                    "aov": aov,
+                    "raw_df": df,
+                }
+            elif use_v4:
                 seasonality = st.session_state.get(SEASONALITY)
                 result = run_historical_forecast_v4(
                     df, months,
@@ -146,18 +231,20 @@ if df is not None:
             else:
                 result = run_historical_forecast(df, months, methods, sma_window, alpha, confidence)
                 active_methods = methods
-            growth = calculate_growth_rates(df["traffic"])
 
-            st.session_state[HIST_RESULTS] = {
-                "result": result,
-                "growth": growth,
-                "methods": active_methods,
-                "enable_revenue": enable_revenue,
-                "currency": currency,
-                "cvr": cvr,
-                "aov": aov,
-                "raw_df": df,
-            }
+            # Save results (YoY mode saves inside its own branch above)
+            if not (use_yoy_mode and n_hist_months >= 12):
+                growth = calculate_growth_rates(df["traffic"])
+                st.session_state[HIST_RESULTS] = {
+                    "result": result,
+                    "growth": growth,
+                    "methods": active_methods,
+                    "enable_revenue": enable_revenue,
+                    "currency": currency,
+                    "cvr": cvr,
+                    "aov": aov,
+                    "raw_df": df,
+                }
 
 # ── Results ──────────────────────────────────────────────────────────────────
 if HIST_RESULTS in st.session_state:

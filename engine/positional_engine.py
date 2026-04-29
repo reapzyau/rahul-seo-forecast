@@ -181,6 +181,45 @@ def _improvement_probability(effort_score: float, kd: int) -> float:
     return 1.0 / (1.0 + np.exp(-x * 2.0))
 
 
+def _resolve_movement_stats(
+    learned: dict | None,
+    mode: bool | str,
+) -> tuple[dict | None, str]:
+    """Decide whether to use learned movement stats based on mode.
+
+    Args:
+        learned: Output of learn_movement_from_history() — dict by tier.
+        mode: True | False | "auto"
+            True  — always use learned stats.
+            False — always use engine tier-defaults.
+            "auto" — use learned only when mean_gain is positive across all tiers;
+                     fall back to engine defaults otherwise (e.g. when the portfolio
+                     has been declining — the forecast is conditional on a retainer
+                     reversing that decline, so defaulting to engine gains is correct).
+
+    Returns:
+        (stats_to_use, decision_reason): tuple of dict-or-None and str.
+    """
+    if mode is False:
+        return None, "explicit override → using engine tier-defaults"
+    if mode is True:
+        return learned, "explicit use of learned movement stats"
+    # "auto" mode
+    if not learned:
+        return None, "no learned stats available → engine defaults"
+    mean_gains = [v["mean_gain"] for v in learned.values()]
+    if all(g > 0 for g in mean_gains):
+        return learned, (
+            f"learned stats positive across all tiers "
+            f"(range: {min(mean_gains):.2f}–{max(mean_gains):.2f}) → using learned"
+        )
+    return None, (
+        f"learned stats show decline (mean_gain range: "
+        f"{min(mean_gains):.2f} to {max(mean_gains):.2f}) → "
+        f"using engine defaults assuming retainer reverses decline"
+    )
+
+
 def run_positional_forecast_mc(
     df: pd.DataFrame,
     months: int = 12,
@@ -191,10 +230,12 @@ def run_positional_forecast_mc(
     ga4_baseline: int | None = None,
     use_attention_curve: bool = True,
     historical_movement_stats: dict | None = None,
+    use_learned_movement_stats: bool | str = "auto",
     seasonality: dict | None = None,
     forecast_start_month: int | None = None,
     aio_intent_penalties: dict | None = None,
     seed: int = 42,
+    position_filter: tuple[int, int] | None = (4, 30),
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Monte Carlo positional forecast with P10/P50/P90 bands.
 
@@ -203,6 +244,15 @@ def run_positional_forecast_mc(
     AIO CTR penalties are applied per-keyword at the target-CTR step based on intent.
 
     Args:
+        use_learned_movement_stats: True | False | "auto" (default "auto").
+            In "auto" mode, learned stats are only used when all tiers show
+            positive mean_gain; otherwise engine tier-defaults are used. This
+            prevents declining portfolios from producing zero-uplift forecasts
+            when a paid retainer is meant to reverse the decline.
+        position_filter: (lo, hi) tuple — only keywords in this position range are
+            included in the positional pool. Default (4, 30) excludes P1-3 (small
+            uplift ceiling) and P31-100 (near-zero CTR improvement). Pass None to
+            include the full ranking portfolio (backward-compatible).
         seasonality: Dict {month_num: {traffic_mod: float}} — applied to uplift.
         forecast_start_month: Calendar month (1-12) of horizon month 1 (for seasonality).
         aio_intent_penalties: Dict {intent: penalty_pct} e.g. {"informational": 45.0}.
@@ -210,11 +260,23 @@ def run_positional_forecast_mc(
     Returns:
         keyword_df: Per-keyword with uplift_p10/p50/p90.
         monthly_df: Monthly bands — baseline, uplift_p10/p50/p90, traffic_p10/p50/p90.
+            monthly_df.attrs["movement_stats_reason"] records the auto-decision reason.
     """
     df = df.copy()
     df = df[df["position"].between(1, 100)].reset_index(drop=True)
+
+    # Section 3: positional pool filter
+    if position_filter is not None:
+        lo, hi = position_filter
+        df = df[df["position"].between(lo, hi)].reset_index(drop=True)
+
     df["kd"] = df["kd"].fillna(0)
     df["volume"] = df["volume"].fillna(0)
+
+    # Section 4: resolve movement stats (after fill so df.empty is accurate)
+    stats_to_use, movement_reason = _resolve_movement_stats(
+        historical_movement_stats, use_learned_movement_stats
+    )
 
     if df.empty:
         empty_monthly = pd.DataFrame({
@@ -227,6 +289,9 @@ def run_positional_forecast_mc(
             "traffic_p50": [0] * months,
             "traffic_p90": [0] * months,
         })
+        empty_monthly.attrs["movement_stats_reason"] = movement_reason
+        empty_monthly.attrs["position_filter"] = position_filter
+        empty_monthly.attrs["keyword_count"] = 0
         return pd.DataFrame(), empty_monthly
 
     rng = np.random.default_rng(seed)
@@ -240,7 +305,7 @@ def run_positional_forecast_mc(
     tiers = np.array([classify_difficulty(int(k)) for k in kds])
 
     det_targets = np.array([
-        estimate_target_position(int(p), int(k), effort, historical_movement_stats)
+        estimate_target_position(int(p), int(k), effort, stats_to_use)
         for p, k in zip(positions, kds, strict=False)
     ])
 
@@ -378,5 +443,10 @@ def run_positional_forecast_mc(
     # Backward-compat aliases
     monthly_df["uplift"] = monthly_df["uplift_p50"]
     monthly_df["traffic"] = monthly_df["traffic_p50"]
+
+    # Audit trail: movement stats decision reason
+    monthly_df.attrs["movement_stats_reason"] = movement_reason
+    monthly_df.attrs["position_filter"] = position_filter
+    monthly_df.attrs["keyword_count"] = len(df)
 
     return keyword_df, monthly_df
