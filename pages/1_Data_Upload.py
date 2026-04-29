@@ -12,8 +12,10 @@ from engine.assumptions import (
     run_detection,
 )
 from engine.brand_classifier import (
-    brand_match_preview,
-    classify_keywords_with_two_stage,
+    BrandConfig,
+    build_classifier,
+    detect_collisions,
+    suggest_branded_candidates,
 )
 from engine.roadmap_ai_engine import (
     ROADMAP_BUNDLE_SCHEMA,
@@ -224,6 +226,62 @@ with tab_semrush:
         st.divider()
         st.subheader("Brand Classification")
 
+        # Seed text-area session-state defaults once (preserves edits across reruns)
+        if "brand_terms_area" not in st.session_state:
+            st.session_state["brand_terms_area"] = "\n".join(
+                get_assumption(store, "brand_terms") or []
+            )
+        if "brand_wb_terms" not in st.session_state:
+            st.session_state["brand_wb_terms"] = ""
+        if "brand_excl_terms" not in st.session_state:
+            st.session_state["brand_excl_terms"] = ""
+
+        # ── Stage 1: auto-suggest ─────────────────────────────────────
+        with st.expander("Stage 1 — Brand candidate auto-detection", expanded=True):
+            st.caption(
+                "Keywords scored by 4 brand-pattern signals: position 1 + low KD, "
+                "short keyword, URL match, high CTR proxy. "
+                "Check the rows you want to include, then click **Apply to text areas**."
+            )
+            candidates = suggest_branded_candidates(kw_df, top_n_by_volume=100, min_volume=100)
+            if not candidates.empty:
+                candidates_display = candidates.copy()
+                candidates_display.insert(0, "include", candidates_display["brand_score"] >= 0.6)
+                edited_candidates = st.data_editor(
+                    candidates_display,
+                    key="brand_candidates_editor",
+                    hide_index=True,
+                    column_config={
+                        "include": st.column_config.CheckboxColumn("Include", default=False),
+                        "brand_score": st.column_config.NumberColumn("Score", format="%.2f"),
+                    },
+                    use_container_width=True,
+                )
+                if st.button("Apply selected to text areas below", key="apply_brand_suggestions"):
+                    included = edited_candidates[edited_candidates["include"]]
+                    new_sub, new_wb = [], []
+                    for _, row in included.iterrows():
+                        kw = str(row["keyword"])
+                        if row.get("suggested_classification") == "word_boundary":
+                            new_wb.append(kw)
+                        else:
+                            new_sub.append(kw)
+                    existing_sub = [
+                        t.strip() for t in st.session_state["brand_terms_area"].split("\n") if t.strip()
+                    ]
+                    existing_wb = [
+                        t.strip() for t in st.session_state["brand_wb_terms"].split("\n") if t.strip()
+                    ]
+                    st.session_state["brand_terms_area"] = "\n".join(
+                        list(dict.fromkeys(existing_sub + new_sub))
+                    )
+                    st.session_state["brand_wb_terms"] = "\n".join(
+                        list(dict.fromkeys(existing_wb + new_wb))
+                    )
+                    st.rerun()
+            else:
+                st.info("No brand candidates found — fill in the text areas below manually.")
+
         # Detect domain from URL column if present
         detected_domain = ""
         url_cols = [c for c in kw_df.columns if "url" in c.lower() or "page" in c.lower()]
@@ -241,10 +299,9 @@ with tab_semrush:
             help="Used to give the AI context for brand detection.",
         )
 
-        current_terms = get_assumption(store, "brand_terms") or []
+        # Text areas read from / write to session state; no value= so edits persist
         terms_text = st.text_area(
             "Brand substrings — always match (one per line)",
-            value="\n".join(current_terms),
             key="brand_terms_area",
             height=100,
             help=(
@@ -260,18 +317,62 @@ with tab_semrush:
             )
             wb_terms_text = st.text_area(
                 "Brand whole-words (matched as whole words only, one per line)",
-                value="",
                 key="brand_wb_terms",
                 height=60,
                 help="e.g. 'cable' — matches 'cable' but not 'cable knit' if 'knit' is in exclusions.",
             )
             excl_terms_text = st.text_area(
                 "Excluded followers (one per line) — prevent whole-word false positives",
-                value="",
                 key="brand_excl_terms",
                 height=60,
                 help="e.g. 'knit', 'car', 'tie' — if any of these appear adjacent to the brand word, keyword is NOT branded.",
             )
+
+        # ── Stage 2: collision detection ──────────────────────────────
+        wb_list_current = [t.strip() for t in st.session_state.get("brand_wb_terms", "").split("\n") if t.strip()]
+        if wb_list_current:
+            with st.expander(
+                f"Stage 2 — Collision detection for {len(wb_list_current)} whole-word term(s)",
+                expanded=False,
+            ):
+                st.caption(
+                    "Tokens that frequently appear adjacent to your whole-word brand terms. "
+                    "Check the ones that indicate a non-brand category — they become **excluded followers**."
+                )
+                all_new_exclusions: list[str] = []
+                for wb_term in wb_list_current:
+                    st.markdown(f"**`{wb_term}`** — adjacent tokens:")
+                    collisions = detect_collisions(
+                        kw_df, wb_term, min_follower_count=3, min_volume_share=0.01
+                    )
+                    if not collisions.empty:
+                        collisions_display = collisions.copy()
+                        collisions_display.insert(
+                            0, "exclude", collisions_display["collision_score"] >= 5
+                        )
+                        edited_coll = st.data_editor(
+                            collisions_display,
+                            key=f"collisions_{wb_term}",
+                            hide_index=True,
+                            column_config={
+                                "exclude": st.column_config.CheckboxColumn("Exclude", default=False),
+                                "collision_score": st.column_config.NumberColumn("Score", format="%.2f"),
+                                "volume_share": st.column_config.NumberColumn("Vol share", format="%.1%"),
+                            },
+                            use_container_width=True,
+                        )
+                        selected = edited_coll[edited_coll["exclude"]]["follower"].tolist()
+                        all_new_exclusions.extend(selected)
+                    else:
+                        st.caption(f"No significant collisions found for '{wb_term}'.")
+
+                if st.button("Apply selected exclusions to text area", key="apply_exclusions"):
+                    existing_excl = [
+                        t.strip() for t in st.session_state.get("brand_excl_terms", "").split("\n") if t.strip()
+                    ]
+                    merged_excl = list(dict.fromkeys(existing_excl + all_new_exclusions))
+                    st.session_state["brand_excl_terms"] = "\n".join(merged_excl)
+                    st.rerun()
 
         ai_key = st.session_state.get(BIFROST_API_KEY)
         ai_model = st.session_state.get(BIFROST_MODEL, get_default_model())
@@ -298,7 +399,7 @@ with tab_semrush:
             elif not ai_key:
                 st.caption("Add your Bi Frost API key in the AI Settings panel to enable auto-detection.")
 
-        # Merge auto-detected with manual
+        # Merge AI-detected terms into substring text before saving
         if DETECTED_BRAND_TERMS in st.session_state:
             existing_manual = [t.strip() for t in terms_text.split("\n") if t.strip()]
             merged = list(dict.fromkeys(existing_manual + st.session_state[DETECTED_BRAND_TERMS]))
@@ -311,37 +412,42 @@ with tab_semrush:
                 saved_excl = [t.strip() for t in st.session_state.get("brand_excl_terms", "").split("\n") if t.strip()]
                 prov = "AI-detected" if DETECTED_BRAND_TERMS in st.session_state else "user-overridden"
                 override_assumption(store, "brand_terms", saved_terms, prov)
-                # Two-stage classification
-                updated_kw = classify_keywords_with_two_stage(
-                    st.session_state[KW_DF],
+
+                # Build v5 BrandConfig and store for downstream pages
+                brand_config = BrandConfig(
                     substring_terms=saved_terms,
-                    word_boundary_terms=saved_wb or None,
-                    excluded_followers=saved_excl or None,
+                    word_boundary_terms=saved_wb,
+                    excluded_followers=saved_excl,
                 )
+                st.session_state["brand_config"] = brand_config
+                classifier = build_classifier(brand_config)
+
+                # Apply to kw_df and kw_existing
+                updated_kw = st.session_state[KW_DF].copy()
+                updated_kw["is_branded"] = updated_kw["keyword"].map(classifier)
                 st.session_state[KW_DF] = updated_kw
                 if KW_EXISTING in st.session_state:
-                    st.session_state[KW_EXISTING] = classify_keywords_with_two_stage(
-                        st.session_state[KW_EXISTING],
-                        substring_terms=saved_terms,
-                        word_boundary_terms=saved_wb or None,
-                        excluded_followers=saved_excl or None,
-                    )
-                n_branded = updated_kw["is_branded"].sum()
+                    upd_ex = st.session_state[KW_EXISTING].copy()
+                    upd_ex["is_branded"] = upd_ex["keyword"].map(classifier)
+                    st.session_state[KW_EXISTING] = upd_ex
+
+                n_branded = int(updated_kw["is_branded"].sum())
                 n_total = len(updated_kw)
                 st.success(
                     f"Saved. {n_branded} branded / {n_total} total keywords "
-                    f"({n_branded / n_total * 100:.1f}%)."
+                    f"({n_branded / n_total * 100:.1f}%). "
+                    f"Config stored in session for downstream pages."
                 )
-                # Brand match preview
+
+                # Stage 3: final preview
                 if n_branded > 0:
-                    preview_df = brand_match_preview(
-                        updated_kw,
-                        substring_terms=saved_terms,
-                        word_boundary_terms=saved_wb or None,
-                        excluded_followers=saved_excl or None,
-                    )
-                    with st.expander(f"Brand match preview — top {len(preview_df)} by volume"):
-                        st.dataframe(preview_df[["keyword", "volume", "is_branded"]].head(50), use_container_width=True)
+                    preview_df = updated_kw[updated_kw["is_branded"]].copy()
+                    if "volume" in preview_df.columns:
+                        preview_df = preview_df.sort_values("volume", ascending=False)
+                    preview_cols = [c for c in ["keyword", "volume", "position", "is_branded"] if c in preview_df.columns]
+                    with st.expander(f"Stage 3 — Brand match preview (top {min(20, n_branded)} by volume)"):
+                        st.write(f"Brand classifier will match **{n_branded}** keywords.")
+                        st.dataframe(preview_df[preview_cols].head(20), use_container_width=True, hide_index=True)
 
     elif uploaded_semrush is not None:
         st.error("Could not parse the uploaded SEMrush file. Please check the format.")
