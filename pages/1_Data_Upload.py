@@ -28,6 +28,7 @@ from engine.seasonality_engine import (
     learn_seasonality_from_ga4,
     seasonality_for_portfolio,
 )
+from engine.v5.da_estimator import compare_da_estimate_to_supplied, estimate_da_from_rankings
 from utils.assumptions_panel import render_assumptions_banner, render_assumptions_panel
 from utils.chart_builder import _apply_layout
 from utils.ga4_loader import load_ga4_organic
@@ -448,6 +449,57 @@ with tab_semrush:
                     with st.expander(f"Stage 3 — Brand match preview (top {min(20, n_branded)} by volume)"):
                         st.write(f"Brand classifier will match **{n_branded}** keywords.")
                         st.dataframe(preview_df[preview_cols].head(20), use_container_width=True, hide_index=True)
+
+        # ── Domain Authority Auto-Derivation ─────────────────────────
+        st.divider()
+        st.subheader("Domain Authority")
+
+        _brand_config = st.session_state.get("brand_config")
+        _brand_fn = build_classifier(_brand_config) if _brand_config is not None else None
+        da_auto, da_rationale_auto = estimate_da_from_rankings(kw_df, brand_classifier=_brand_fn)
+
+        if da_auto is not None:
+            st.success(f"Auto-detected: **DA = {da_auto}**")
+            st.caption(da_rationale_auto)
+            use_override = st.checkbox("Override with manual value", value=False, key="da_override_checkbox")
+            if use_override:
+                da_val = st.number_input(
+                    "Manual DA", min_value=1, max_value=100,
+                    value=st.session_state.get("da_override", da_auto),
+                    key="da_manual_input",
+                )
+                st.session_state["da_override"] = int(da_val)
+                comparison = compare_da_estimate_to_supplied(da_auto, int(da_val), tolerance=10)
+                st.info(comparison)
+                da_final = int(da_val)
+                da_rationale_final = f"User-supplied: {da_final} (auto-estimate was {da_auto})"
+            else:
+                st.session_state.pop("da_override", None)
+                da_final = da_auto
+                da_rationale_final = da_rationale_auto
+        else:
+            st.warning(
+                "Auto-estimation needs more non-branded top-10 rankings than this site has. "
+                f"_{da_rationale_auto}_"
+            )
+            da_val = st.number_input(
+                "DA (manual)", min_value=1, max_value=100,
+                value=st.session_state.get("da", 40),
+                key="da_manual_input_fallback",
+            )
+            da_final = int(da_val)
+            da_rationale_final = f"User-supplied: {da_final}"
+
+        st.session_state["da"] = da_final
+        st.session_state["da_rationale"] = da_rationale_final
+
+        with st.expander("Sensitivity: DA at different KD percentiles"):
+            st.caption("Shows how the DA estimate changes across different percentile thresholds.")
+            for pct in [0.50, 0.75, 0.90, 0.95, 0.99]:
+                pct_da, _ = estimate_da_from_rankings(kw_df, brand_classifier=_brand_fn, percentile=pct)
+                label = f"p{int(pct * 100):02d}"
+                val_str = str(pct_da) if pct_da is not None else "n/a"
+                st.write(f"  **{label}** → DA = {val_str}")
 
     elif uploaded_semrush is not None:
         st.error("Could not parse the uploaded SEMrush file. Please check the format.")

@@ -65,7 +65,12 @@ preset_name = st.sidebar.selectbox(
 )
 preset = SITE_PRESETS[preset_name]
 
-da = st.sidebar.slider("Domain Authority (DA)", 1, 100, preset["da"], key="kw_da")
+_da_session = st.session_state.get("da")
+_da_default = int(_da_session) if _da_session is not None else preset["da"]
+da = st.sidebar.slider("Domain Authority (DA)", 1, 100, _da_default, key="kw_da")
+if _da_session is not None:
+    _da_rationale = st.session_state.get("da_rationale", "")
+    st.sidebar.caption(f"Pre-set from Data Upload: DA={_da_session}. {_da_rationale[:80] if _da_rationale else ''}")
 
 # Pre-select cadence from roadmap-detected content_cadence when available
 _cadence_prov = get_provenance(_nc_store, "content_cadence")

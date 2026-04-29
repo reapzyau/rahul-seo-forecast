@@ -150,6 +150,7 @@ def run_three_scenarios(
     roadmap_content_plan: list[dict] | None = None,
     historical_forecast_df: pd.DataFrame | None = None,
     seed: int = 42,
+    da: int = 30,
 ) -> dict[str, dict]:
     """Run Conservative / Moderate / Aggressive forecasts end-to-end.
 
@@ -167,6 +168,8 @@ def run_three_scenarios(
         historical_forecast_df: Pre-computed historical forecast; when provided,
                                  overrides the linear baseline in Combined.
         seed: Random seed for MC reproducibility.
+        da: Domain authority estimate (auto-derived or user-supplied). Passed to
+            new-content forecast engine. Defaults to 30 when not supplied.
 
     Returns:
         Dict keyed by scenario name. Each value:
@@ -225,7 +228,7 @@ def run_three_scenarios(
                     nc_input = unranked[nc_cols].copy() if has_unranked else pd.DataFrame(columns=nc_cols)
                     new_content_kw_df, new_content_monthly = run_new_content_forecast(
                         nc_input,
-                        da=30,
+                        da=da,
                         cadence=preset["content_cadence"],
                         months=months,
                         seasonality=seasonality,
