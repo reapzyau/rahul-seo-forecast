@@ -62,6 +62,42 @@ def learn_movement_from_history(kw_df: "pd.DataFrame") -> dict:
     return stats
 
 
+def learn_movement_from_history_v2(kw_df: "pd.DataFrame") -> dict:
+    """Learn per-tier position gain stats using percentile-based metrics (Refinement B).
+
+    Extends learn_movement_from_history() with p75_gain and p90_gain columns,
+    which are more robust than mean for skewed gain distributions (where a few
+    big movers inflate the average while the median barely shifts).
+
+    Args:
+        kw_df: DataFrame with 'previous_position', 'position', and 'kd' columns.
+
+    Returns:
+        Dict of {tier: {"mean_gain", "p75_gain", "p90_gain", "std_gain", "sample_size"}}.
+        Only tiers with ≥10 samples are included.
+    """
+    if "previous_position" not in kw_df.columns or "position" not in kw_df.columns:
+        return {}
+
+    df = kw_df.dropna(subset=["previous_position", "position"]).copy()
+    df["movement"] = df["previous_position"].astype(float) - df["position"].astype(float)
+    df = df[df["movement"].abs() <= 30]
+
+    stats: dict = {}
+    for tier in ["Easy", "Moderate", "Hard", "Very Hard", "Extreme"]:
+        tier_mask = df["kd"].apply(classify_difficulty) == tier
+        gains = df.loc[tier_mask, "movement"]
+        if len(gains) >= 10:
+            stats[tier] = {
+                "mean_gain": float(gains.mean()),
+                "p75_gain": float(np.percentile(gains, 75)),
+                "p90_gain": float(np.percentile(gains, 90)),
+                "std_gain": float(gains.std()),
+                "sample_size": int(len(gains)),
+            }
+    return stats
+
+
 def estimate_target_position(
     current_pos: int,
     kd: int,
@@ -207,6 +243,21 @@ def _resolve_movement_stats(
     # "auto" mode
     if not learned:
         return None, "no learned stats available → engine defaults"
+    # Prefer p75_gain when available (Refinement B: percentile-based decision)
+    # p75 is a more robust signal for skewed distributions than mean
+    if all("p75_gain" in v for v in learned.values()):
+        p75_gains = [v["p75_gain"] for v in learned.values()]
+        if all(g > 0 for g in p75_gains):
+            return learned, (
+                f"learned stats positive at P75 across all tiers "
+                f"(range: {min(p75_gains):.2f}–{max(p75_gains):.2f}) → using learned"
+            )
+        return None, (
+            f"learned P75 gains show decline "
+            f"(range: {min(p75_gains):.2f}–{max(p75_gains):.2f}) → "
+            f"using engine defaults assuming retainer reverses decline"
+        )
+    # Legacy fallback: mean_gain decision
     mean_gains = [v["mean_gain"] for v in learned.values()]
     if all(g > 0 for g in mean_gains):
         return learned, (
@@ -450,3 +501,99 @@ def run_positional_forecast_mc(
     monthly_df.attrs["keyword_count"] = len(df)
 
     return keyword_df, monthly_df
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Refinement C: Auto-derive Domain Authority from SEMrush rankings
+# ──────────────────────────────────────────────────────────────────────
+
+# KD → DA mapping derived from Moz/Ahrefs correlation studies.
+# A site ranking in top-10 for keywords at a given KD ceiling
+# implies an effective DA at least as high as the mapped value.
+_KD_TO_DA = [
+    (10,  20),
+    (20,  25),
+    (30,  32),
+    (40,  40),
+    (50,  47),
+    (60,  55),
+    (70,  63),
+    (80,  72),
+    (90,  82),
+    (100, 92),
+]
+
+
+def estimate_da_from_rankings(
+    semrush_df: "pd.DataFrame",
+    brand_classifier: "callable | None" = None,
+    top_n: int = 10,
+    kd_percentile: float = 90.0,
+) -> dict:
+    """Auto-derive effective Domain Authority from the site's existing rankings.
+
+    Takes the top-N non-branded keywords by position, finds their KD at the
+    specified percentile, then maps that KD ceiling to an estimated DA range
+    using a KD→DA lookup derived from Moz/Ahrefs correlation studies.
+
+    This gives a defensible DA estimate without requiring external API access,
+    useful for seeding the new-content rank-probability model.
+
+    Args:
+        semrush_df: SEMrush keyword DataFrame with 'position', 'kd', and
+            optionally 'keyword' and 'is_branded' columns.
+        brand_classifier: Optional callable(keyword: str) → bool. When
+            provided, keywords returning True are excluded. Falls back to
+            the 'is_branded' column if present, or includes all keywords.
+        top_n: How many top-ranked keywords to use for the estimate (default 10).
+        kd_percentile: Which KD percentile of the top-N pool to use as the
+            difficulty ceiling (default 90th — robustly excludes outliers).
+
+    Returns:
+        Dict with keys:
+            "estimated_da": int — point estimate of DA.
+            "da_range": (int, int) — conservative to optimistic bounds (±10).
+            "kd_ceiling": float — KD percentile value used.
+            "sample_keywords": int — number of non-branded top-N keywords found.
+            "rationale": str — human-readable explanation.
+    """
+    df = semrush_df.copy()
+    df = df[df["position"].between(1, 100)].copy()
+
+    # Exclude branded keywords
+    if brand_classifier is not None and "keyword" in df.columns:
+        df = df[~df["keyword"].apply(brand_classifier)].copy()
+    elif "is_branded" in df.columns:
+        df = df[~df["is_branded"].astype(bool)].copy()
+
+    if df.empty or "kd" not in df.columns:
+        return {
+            "estimated_da": 30,
+            "da_range": (20, 40),
+            "kd_ceiling": 0.0,
+            "sample_keywords": 0,
+            "rationale": "No non-branded ranking keywords found — defaulting to DA 30.",
+        }
+
+    top = df.nsmallest(top_n, "position")
+    kd_ceil = float(np.percentile(top["kd"].fillna(0).values, kd_percentile))
+
+    # Map KD ceiling → estimated DA via lookup table
+    estimated_da = _KD_TO_DA[0][1]
+    for kd_thresh, da_val in _KD_TO_DA:
+        if kd_ceil >= kd_thresh:
+            estimated_da = da_val
+
+    da_lo = max(1, estimated_da - 10)
+    da_hi = min(100, estimated_da + 10)
+
+    return {
+        "estimated_da": estimated_da,
+        "da_range": (da_lo, da_hi),
+        "kd_ceiling": round(kd_ceil, 1),
+        "sample_keywords": len(top),
+        "rationale": (
+            f"Top-{len(top)} non-branded keywords have P{int(kd_percentile)} KD = {kd_ceil:.0f}. "
+            f"Estimated DA ≈ {estimated_da} (range {da_lo}–{da_hi})."
+        ),
+    }
