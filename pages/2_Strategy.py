@@ -268,6 +268,7 @@ else:
                 roadmap_content_plan=content_plan,
                 historical_forecast_df=hist_forecast,
                 seed=42,
+                da=st.session_state.get("da", 30),
             )
             st.session_state[SCENARIO_RESULTS] = results
         st.rerun()
