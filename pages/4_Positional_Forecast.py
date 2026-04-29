@@ -13,9 +13,23 @@ from engine.revenue_engine import CURRENCY_SYMBOLS, add_revenue
 from utils.chart_builder import positional_uplift_chart, revenue_projection_chart
 from utils.export import to_csv, to_html_report
 from utils.page_base import setup_page
-from utils.session import GA4_DF, KW_EXISTING, POS_RESULT
+from utils.session import GA4_DF, KW_EXISTING, POS_RESULT, SCENARIO_RESULTS
 
 store = setup_page("Positional Forecast", "Project uplift from moving existing keywords up the SERP.")
+
+if SCENARIO_RESULTS not in st.session_state:
+    st.info(
+        "💡 **Want to compare three scenarios at once?** "
+        "Use the **Strategy** page to run positional uplift across three effort levels "
+        "(light / moderate / aggressive) in one click. "
+        "This page is for deep-dive analysis on a single forecast configuration."
+    )
+else:
+    st.success(
+        "✅ Three scenarios already run via Strategy. "
+        "This page lets you drill into a single forecast configuration in detail. "
+        "Download the 3-scenario xlsx from **Deliverables** or the Strategy page."
+    )
 
 # ── Data check ──────────────────────────────────────────────────────────────
 kw_existing = st.session_state.get(KW_EXISTING)
@@ -353,3 +367,11 @@ if POS_RESULT in st.session_state:
                 "text/html",
                 key="pos_dl_html",
             )
+
+st.divider()
+st.caption(
+    "**Looking for the three-scenario comparison?** "
+    "The Strategy page runs Conservative / Moderate / Aggressive in one click and "
+    "produces a four-sheet xlsx ready for client presentations. "
+    "This deep-dive page is best for analysts tuning a single forecast configuration."
+)

@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import io
 import re
+from collections import Counter
 from typing import Any
+from urllib.parse import urlparse
 
 import openpyxl
 
@@ -23,6 +25,34 @@ PATTERN_NATIVE_SHEETS_EXPECTED = {
     "4. Content",
     "5. Links",
 }
+
+# ── Tooltip / placeholder detection ──────────────────────────────────────────
+
+_TOOLTIP_FRAGMENTS = (
+    "to be provided",
+    "double click",
+    "seo to add",
+    "tbc:",
+    "tbc ",
+    "need access",
+    "should be the",
+    "to be filled",
+    "click to add",
+    "add link here",
+    "paste link here",
+    "fill in",
+)
+
+
+def _is_tooltip_value(val: Any) -> bool:
+    """True if a cell value looks like template instruction text rather than real data."""
+    if val is None:
+        return True
+    s = str(val).strip().lower()
+    if not s:
+        return True
+    return any(frag in s for frag in _TOOLTIP_FRAGMENTS)
+
 
 # ── Normalisation maps ────────────────────────────────────────────────────────
 
@@ -218,6 +248,8 @@ def _parse_client_detail(ws) -> dict:
             continue
         label = str(label_cell).strip().lower()
         value = value_cell
+        if _is_tooltip_value(value):
+            continue
 
         if "client name" in label and value is not None:
             result["client_name"] = str(value).strip()
@@ -569,6 +601,26 @@ def _parse_content_plan(ws) -> list[dict]:
     return items
 
 
+def _compute_domain_rollups(content_plan: list[dict]) -> tuple[str, list[str]]:
+    """Derive primary domain and localisation domains from content plan URLs.
+
+    Primary domain = most frequent host across all URLs.
+    Localisation domains = all other distinct hosts.
+    """
+    hosts = [
+        urlparse(str(item.get("url", ""))).netloc
+        for item in content_plan
+        if item.get("url")
+    ]
+    hosts = [h for h in hosts if h]
+    if not hosts:
+        return "", []
+    counts = Counter(hosts)
+    primary = counts.most_common(1)[0][0]
+    localisation = sorted(h for h in counts if h != primary)
+    return primary, localisation
+
+
 # ── Task sheet parser ─────────────────────────────────────────────────────────
 
 
@@ -749,6 +801,107 @@ def _finalise_global_rollup(bundle: dict) -> None:
     }
 
 
+# ── Bundle validation ─────────────────────────────────────────────────────────
+
+
+def _validate_bundle(bundle: dict, source_file: str = "roadmap.xlsx") -> None:
+    """Validate bundle structure and content quality.
+
+    Structural issues → raise ValueError (bundle is malformed).
+    Quality issues → append to bundle['validation_warnings'] (bundle works but file is incomplete).
+    """
+    structural_errors: list[str] = []
+    quality_warnings: list[str] = []
+
+    # ── Structural: required top-level keys ───────────────────────────────
+    for key in ("schema_version", "per_focus", "content_plan", "timeline", "client_metadata"):
+        if key not in bundle:
+            structural_errors.append(f"Missing top-level key: {key!r}")
+
+    # ── Structural: per_focus shape ───────────────────────────────────────
+    expected_foci = {"content", "technical", "on_page", "off_page", "local", "analytics", "strategy"}
+    per_focus = bundle.get("per_focus", {})
+    missing_foci = expected_foci - set(per_focus.keys())
+    if missing_foci:
+        structural_errors.append(f"per_focus missing focus areas: {sorted(missing_foci)}")
+    for focus, fd in per_focus.items():
+        if not isinstance(fd, dict):
+            structural_errors.append(f"per_focus.{focus} must be a dict, got {type(fd).__name__}")
+            continue
+        if not isinstance(fd.get("monthly_hours"), (int, float)):
+            structural_errors.append(
+                f"per_focus.{focus}.monthly_hours must be numeric, got {fd.get('monthly_hours')!r}"
+            )
+        if fd.get("effort_level") not in ("light", "moderate", "aggressive"):
+            structural_errors.append(
+                f"per_focus.{focus}.effort_level invalid: {fd.get('effort_level')!r}"
+            )
+
+    # ── Structural: content_plan is a list ────────────────────────────────
+    cp = bundle.get("content_plan", [])
+    if not isinstance(cp, list):
+        structural_errors.append(f"content_plan must be a list, got {type(cp).__name__}")
+
+    # Raise immediately on structural errors — bundle is unusable
+    if structural_errors:
+        raise ValueError(
+            f"Bundle validation failed for {source_file}:\n"
+            + "\n".join(f"  - {e}" for e in structural_errors)
+        )
+
+    # ── Quality: content_plan completeness ────────────────────────────────
+    if isinstance(cp, list) and cp:
+        empty_urls = sum(1 for item in cp if not item.get("url"))
+        zero_words = sum(1 for item in cp if item.get("word_count", 0) == 0)
+        zero_hours = sum(1 for item in cp if item.get("seo_hours", 0) == 0)
+        no_title = sum(1 for item in cp if not item.get("title"))
+
+        total = len(cp)
+        if empty_urls > 0:
+            quality_warnings.append(
+                f"{empty_urls} of {total} content items have no URL"
+            )
+        if zero_words == total and total > 0:
+            quality_warnings.append(
+                f"All {total} content items have word_count=0 — "
+                f"SOW is likely mid-draft (content team hasn't filled in detail)"
+            )
+        elif zero_words > total * 0.5:
+            quality_warnings.append(
+                f"{zero_words} of {total} content items have word_count=0"
+            )
+        if zero_hours == total and total > 0:
+            quality_warnings.append(
+                f"All {total} content items have seo_hours=0 — "
+                f"hours are not mapped to individual pieces"
+            )
+        if no_title == total and total > 0:
+            quality_warnings.append(
+                f"All {total} content items have no title"
+            )
+
+    # ── Quality: hours vs content count mismatch ──────────────────────────
+    content_hours = per_focus.get("content", {}).get("monthly_hours", 0)
+    content_count = len([
+        i for i in cp if isinstance(i, dict) and i.get("content_type") == "new_page"
+    ]) if isinstance(cp, list) else 0
+    if content_count > 20 and content_hours < content_count * 0.5:
+        quality_warnings.append(
+            f"{content_count} content launches planned but only {content_hours:.1f} h/mo "
+            f"allocated to content — allocation looks undersized"
+        )
+
+    # ── Quality: off-page hours with 12-month timeline ────────────────────
+    off_page_hours = per_focus.get("off_page", {}).get("monthly_hours", 0)
+    timeline_months = bundle.get("timeline", {}).get("months_covered", 0)
+    if off_page_hours == 0 and timeline_months >= 6:
+        quality_warnings.append(
+            "Zero hours allocated to off-page — link-building absent from SOW"
+        )
+
+    bundle["validation_warnings"] = quality_warnings
+
+
 # ── Main parser ───────────────────────────────────────────────────────────────
 
 
@@ -771,6 +924,8 @@ def parse_pattern_native(raw_bytes: bytes) -> dict:
         "timeline": {},
         "global_rollup": {},
         "roadmap_summary": {},
+        "primary_domain": "",
+        "localisation_domains": [],
         "recommendations": [],
         "gaps": [],
     }
@@ -826,8 +981,15 @@ def parse_pattern_native(raw_bytes: bytes) -> dict:
 
     if "4. Content" in sheet_names:
         bundle["content_plan"] = _parse_content_plan(wb["4. Content"])
+        bundle["source_summary"]["total_tasks_detected"] = (
+            len(bundle["content_plan"])
+            + sum(len(f.get("tasks", [])) for f in bundle["per_focus"].values())
+        )
         bundle["source_summary"]["content_launches_detected"] = len(bundle["content_plan"])
         bundle["source_summary"]["sheets_parsed"].append("4. Content")
+        primary_domain, loc_domains = _compute_domain_rollups(bundle["content_plan"])
+        bundle["primary_domain"] = primary_domain
+        bundle["localisation_domains"] = loc_domains
 
     if "Roadmap" in sheet_names:
         bundle["roadmap_summary"] = _parse_roadmap_sheet(wb["Roadmap"])
@@ -839,6 +1001,7 @@ def parse_pattern_native(raw_bytes: bytes) -> dict:
 
     _finalise_timeline(bundle)
     _finalise_global_rollup(bundle)
+    _validate_bundle(bundle, source_file="pattern_native.xlsx")
     return bundle
 
 
@@ -889,9 +1052,12 @@ def wrap_legacy_task_table_as_bundle(legacy_result: dict) -> dict:
             "content_cadence": int(cadence),
             "positional_effort_level": effort,
         },
+        "primary_domain": "",
+        "localisation_domains": [],
         "recommendations": [],
         "gaps": [],
     }
+    _validate_bundle(bundle, source_file="task_table.csv")
     return bundle
 
 
@@ -934,7 +1100,10 @@ def wrap_legacy_param_table_as_bundle(legacy_result: dict) -> dict:
             "content_cadence": int(cadence),
             "positional_effort_level": effort,
         },
+        "primary_domain": "",
+        "localisation_domains": [],
         "recommendations": [],
         "gaps": [],
     }
+    _validate_bundle(bundle, source_file="param_table.csv")
     return bundle

@@ -266,6 +266,101 @@ def linear_forecast(
     return pd.DataFrame(rows)
 
 
+def yoy_growth_forecast(
+    dates: pd.Series,
+    traffic: pd.Series,
+    future_months: int,
+    confidence: float = 15.0,
+) -> pd.DataFrame:
+    """Year-over-year growth baseline for the combined engine.
+
+    For each forecast month, anchors to the actual traffic from the same
+    calendar month 12 months prior and compounds the median YoY growth rate.
+    This naturally carries the seasonal shape and the real underlying trend
+    without OLS distortion from outlier periods.
+
+    The historical portion still uses the OLS fitted line so chart display
+    remains consistent with the linear baseline.
+
+    Returns a DataFrame with the same column contract as linear_forecast()
+    plus attrs["yoy_rate"] (annualised decimal) for UI display.
+    """
+    dates = pd.Series(dates) if not isinstance(dates, pd.Series) else dates
+    traffic_vals = traffic.values.astype(float)
+    n = len(traffic_vals)
+
+    # Build a normalised-to-month-start timestamp → traffic lookup
+    date_to_traffic: dict = {
+        pd.Timestamp(d).replace(day=1): float(t)
+        for d, t in zip(dates, traffic_vals, strict=False)
+    }
+
+    # Compute per-month YoY growth rates where prior-year same-month exists
+    yoy_rates: list[float] = []
+    for d, t in zip(dates, traffic_vals, strict=False):
+        prior = (pd.Timestamp(d).replace(day=1) - pd.DateOffset(years=1))
+        prior_ts = pd.Timestamp(prior).replace(day=1)
+        if prior_ts in date_to_traffic and date_to_traffic[prior_ts] > 0:
+            yoy_rates.append(t / date_to_traffic[prior_ts] - 1)
+
+    if yoy_rates:
+        # Median is robust to outlier periods (e.g. early explosive growth)
+        yoy_rate = float(np.median(yoy_rates))
+    elif traffic_vals[0] > 0:
+        # Fallback: annualised slope from first to last
+        yoy_rate = float((traffic_vals[-1] / traffic_vals[0]) ** (12.0 / n) - 1)
+    else:
+        yoy_rate = 0.0
+
+    # Cap to ±50% pa to prevent runaway forecasts
+    yoy_rate = max(-0.5, min(0.5, yoy_rate))
+
+    # Historical portion: OLS fitted line for chart consistency
+    x = np.arange(n)
+    coeffs = np.polyfit(x, traffic_vals, 1)
+    slope, intercept = coeffs
+
+    rows = []
+    last_date = pd.Timestamp(dates.iloc[-1]).replace(day=1)
+
+    for i in range(n):
+        fitted = slope * i + intercept
+        rows.append({
+            "date": dates.iloc[i],
+            "actual": int(traffic_vals[i]),
+            "linear": round(fitted),
+            "linear_upper": round(fitted * (1 + confidence / 100)),
+            "linear_lower": round(max(0, fitted * (1 - confidence / 100))),
+            "is_forecast": False,
+        })
+
+    # Forecast: same calendar month last year × (1 + yoy_rate)^(j/12)
+    for j in range(1, future_months + 1):
+        forecast_date = last_date + pd.DateOffset(months=j)
+        anchor_ts = pd.Timestamp(forecast_date - pd.DateOffset(years=1)).replace(day=1)
+
+        if anchor_ts in date_to_traffic:
+            anchor_val = date_to_traffic[anchor_ts]
+        else:
+            # Nearest available month as fallback
+            closest = min(date_to_traffic, key=lambda d: abs((d - anchor_ts).days))
+            anchor_val = date_to_traffic[closest]
+
+        forecast_val = max(0.0, anchor_val * (1 + yoy_rate) ** (j / 12.0))
+        rows.append({
+            "date": forecast_date,
+            "actual": None,
+            "linear": round(forecast_val),
+            "linear_upper": round(forecast_val * (1 + confidence / 100)),
+            "linear_lower": round(max(0, forecast_val * (1 - confidence / 100))),
+            "is_forecast": True,
+        })
+
+    result = pd.DataFrame(rows)
+    result.attrs["yoy_rate"] = yoy_rate
+    return result
+
+
 def exponential_smoothing_forecast(
     traffic: pd.Series,
     alpha: float,

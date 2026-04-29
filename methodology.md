@@ -112,6 +112,25 @@ Traffic begins in the month the keyword ranks (publish month + time to rank).
 
 The month-by-month projection sums all keywords whose traffic has started by that month. Keywords are published according to the cadence (e.g., 4 per month) in efficiency-score order.
 
+### Roadmap as keyword source
+
+When a Pattern-native roadmap is uploaded with target keywords specified per
+content piece, the New Content Forecast page can use the roadmap's content
+plan as its keyword source instead of requiring a manual CSV upload.
+
+The conversion (`utils.roadmap_to_keywords.build_keyword_df_from_roadmap`):
+- Explodes each content_plan entry into one row per target keyword
+- Joins against the SEMrush portfolio for volume/KD enrichment
+- Falls back to defaults (200 volume, 35 KD) for keywords not in SEMrush
+- Deduplicates so each keyword appears once with its first content URL
+- Carries `_content_url`, `_content_type`, and `_publish_month` metadata
+  through to the forecast engine, which uses them to drive publish-month
+  assignment via direct URL matching (preferred over legacy keyword-in-URL
+  substring matching)
+
+Optimisation-type content uses a faster S-curve maturation (`t_mid=1.5`,
+amplitude=0.3) compared to new_page content's standard tier-based curve.
+
 ---
 
 ## Mode 2: Historical Trend Forecast
@@ -194,6 +213,18 @@ The combined forecast merges the historical baseline with keyword-based incremen
 
 This framing helps build a business case: the gap between baseline and combined represents the ROI of content investment.
 
+### Baseline source
+
+By default the baseline is a linear projection of the historical data. When a
+full historical forecast (Prophet / Holt's / linear, from `run_historical_forecast_v4`)
+is passed via the `historical_forecast_df` parameter, the Combined engine uses
+that projection instead — with column priority `prophet → exponential_smoothing → linear`,
+or the `chosen_method` attribute if available.
+
+This keeps the Combined chart's baseline consistent with whatever the Historical
+Forecast page is showing. Without this, the two pages can silently disagree on
+the "do nothing" trajectory for the same site.
+
 ---
 
 ## Revenue Projection
@@ -258,6 +289,18 @@ Three scenario multipliers adjust overall traffic estimates:
 
 The positional forecast projects traffic uplift from moving keywords you **already rank for** up the SERP. Unlike new content forecasting, it uses real current positions from SEMrush.
 
+### Scoping the forecast
+
+By default the engine runs on all keywords in positions 1–100. An optional
+`position_range` parameter scopes the forecast to a specific window — for
+example `(5, 20)` restricts to keywords already on page 1 (positions 5–10)
+or page 2 (11–20), the zone where moderate effort produces the clearest
+uplift. Keywords outside the window are excluded entirely — no uplift, no
+baseline contribution, no impact on the forecast.
+
+This is used by the Strategy page to present the "realistic quick-wins" view
+alongside the full-portfolio forecast.
+
 ### Step 1: Current position to target position
 
 For each keyword, the engine looks at its current position and chooses a target position based on effort level and keyword difficulty tier. "Moderate" effort at a moderate KD might move a keyword from position 14 to position 8.
@@ -291,6 +334,17 @@ movement = previous_position - position  (positive = improvement)
 **Outlier filter:** movements greater than ±30 positions are discarded as likely SEMrush data glitches (e.g. a keyword jumping from position 80 to position 1 in one crawl).
 
 **Minimum sample threshold:** a tier must have at least 10 valid samples before its learned mean replaces the default gain. Tiers with fewer than 10 samples fall back to `_BASE_GAIN_BY_TIER`. This prevents noisy statistics from a handful of keywords distorting the forecast.
+
+**Handling flat or declining history:** A site with low historical movement (mean gain < 2 positions) or net position losses is treated as a signal of low *past effort*, not a ceiling on what concerted effort can achieve. In these cases the engine blends the learned gain toward the tier default rather than taking the learned value at face value:
+
+```
+confidence = min(1.0, sample_size / 50.0)
+clamped    = max(0.0, learned_gain)          # clamp to avoid backwards projection
+blended    = clamped × confidence + default_gain × (1 − confidence)
+base_gain  = max(blended, default_gain × 0.4)  # floor: never below 40% of default
+```
+
+At n = 50 samples the learned value is trusted fully; below that, weight shifts toward the default. The 40% floor ensures even a high-confidence flat-history site still shows achievable upside (e.g. Easy tier always projects at least 2 positions gained under moderate effort). Negative mean gains are clamped to zero before blending so the engine never projects backwards movement from deliberate effort.
 
 The Positional Forecast page shows an info banner indicating whether learned stats or defaults are active, and reports the total sample count across all tiers.
 
@@ -396,6 +450,30 @@ Monthly retention is calculated as `(1 - annual_rate)^(1/12)`. The **maintenance
 
 The "honest baseline" is the linear projection minus cumulative decay — this is what happens if you stop all SEO work.
 
+### Intent-aware decay multiplier
+
+Non-branded informational keywords decay faster than their position bucket alone
+would suggest. Google's AI Overviews increasingly absorb informational query
+intent, competitors publish fresher Q&A content constantly, and the pages
+themselves age out of relevance more quickly than product or category pages.
+
+When both `is_branded` and `intent` columns are present in the keyword portfolio,
+the decay engine multiplies the annual rate by **1.5×** for keywords where
+`is_branded == False` AND `intent == "informational"`. Branded informational
+content (FAQ pages for a named product, brand glossaries, etc.) is not affected
+— branded informational content is trust and brand-building that doesn't follow
+the same decay curve.
+
+The multiplier is configurable via the `decay_multiplier_informational_non_branded`
+assumption (default 1.5, range 1.0–3.0). The full intent-aware logic can be
+disabled via `decay_intent_aware_enabled = False`.
+
+Note: this multiplier is a separate mechanism from the AIO CTR penalty applied
+in the stream engines. AIO CTR penalty reduces *current* CTR when an AI
+Overview is present. Intent-aware decay reduces *future retention* regardless
+of whether an AIO currently shows. Together they model both the immediate
+and compounding effects of informational content losing ground over time.
+
 ---
 
 ## Mode 7: Monte Carlo Confidence Bands
@@ -458,14 +536,62 @@ The spreading AIO erosion model (`project_aio_erosion` in `engine/aio_risk_engin
 
 ## Mode 10: Forecast Variance & Calibration
 
-Every Combined Forecast can be downloaded as a JSON snapshot. Months later, upload it alongside fresh GA4 data to see how the forecast performed.
+Every Combined Forecast can be downloaded as a JSON snapshot (Deliverables → Forecast Grid → Download Forecast Snapshot JSON). Months later, upload it alongside fresh GA4 data to see how the forecast performed.
+
+Snapshots produced with the dynamic revenue model (v4.10+) include per-month CVR, AOV, transactions, and revenue — not just traffic. The variance analysis tab lets the analyst select which metric to grade:
+
+- **Traffic** — always available (backward compatible with pre-v4.10 snapshots)
+- **Revenue / Transactions / CVR / AOV** — available when snapshot has `dynamic_metrics: true`
+
+Old snapshots (no `dynamic_metrics` flag) remain loadable; the metric selector is disabled and only traffic variance is shown.
+
+Snapshots also carry an `assumptions_snapshot` — the full assumptions provenance captured at forecast time. The Variance Analysis tab surfaces these in an expander so analysts can compare "what we assumed then" vs. "what we know now" — closing the calibration loop properly.
 
 The variance analysis shows:
-- Per-month P50 forecast vs. actual traffic
-- Whether actuals fell within the P10–P90 band
+- Per-month P50 forecast vs. actual metric value
+- Whether actuals fell within the P10–P90 band (traffic only; other metrics have no bands currently)
 - Mean variance %, max overshoot/undershoot
 
 This is the tool's calibration loop. Without it, forecasts are guesses nobody ever grades. With accumulated snapshots, parameters can be tuned to improve accuracy over time.
+
+---
+
+## Forecast grid output formats
+
+Two grid formats are available:
+
+### Single-scenario grid
+
+`utils.forecast_grid.build_seo_forecast_grid` produces the original GAZMAN-style
+xlsx with monthly columns grouped as Forecast / Actual / % Variance, rows for
+Traffic / Transactions / Revenue. Used for analyst–client reconciliation after
+the fact.
+
+### Three-scenario expanded grid
+
+`utils.forecast_grid.build_three_scenario_grid` produces a four-sheet xlsx for
+budget-tier presentations:
+
+- **Conservative** — light effort preset, full monthly metrics
+- **Moderate** — moderate effort preset (or roadmap-detected), full monthly metrics
+- **Aggressive** — aggressive effort preset, full monthly metrics
+- **Comparison** — side-by-side totals: traffic, revenue, hours, retainer, ROI
+
+Each scenario sheet contains, per month: baseline traffic, positional uplift,
+new content uplift, decay, P10/P50/P90 traffic, transactions, revenue, AOV used,
+CVR used, average portfolio position, average portfolio CTR, and the
+seasonality modifier applied.
+
+AOV can optionally follow the `aov_mod` seasonality values — a November AOV
+boost of 20% produces a higher basket value in the forecast for that month.
+Enable via the `apply_seasonal_aov` flag (default True when seasonality is
+detected from GA4 or AU retail defaults).
+
+Cell formats: CVR / CTR as `0.00%` (decimal stored, percentage displayed), AOV /
+Revenue as `$#,##0.00`, traffic / transactions as `#,##0`, position as `0.0`.
+Freeze panes at row 5 (below title, subtitle, blank, and header rows). Scenario
+tabs are colour-coded: Conservative grey (`94A3B8`), Moderate blue (`2563EB`),
+Aggressive green (`22C55E`), Comparison dark (`0F172A`).
 
 ---
 
@@ -591,6 +717,45 @@ Both paths update session state and can be applied to the assumptions store.
 #### Legacy fallback
 
 Without a Bi Frost API key, the page falls back to the legacy `utils/roadmap_loader.py` scalar extraction (Task/Focus/Occurrence/Hours columns → three scalars). The legacy loader is retained for CI tests and no-AI environments.
+
+---
+
+---
+
+## Mode 11: Three-Scenario Forecasting
+
+The Strategy page runs three full forecasts in parallel — Conservative,
+Moderate, and Aggressive — each with its own effort level, content cadence,
+and maintenance coverage. This lets analysts present budget-tier options
+side-by-side rather than picking one and calling it "the forecast."
+
+### Generic presets (no roadmap)
+
+| | Conservative | Moderate | Aggressive |
+|---|---|---|---|
+| Effort | light | moderate | aggressive |
+| Cadence (posts/month) | 2 | 4 | 8 |
+| Maintenance coverage | 30% | 60% | 90% |
+| Total monthly hours | 10 | 25 | 50 |
+| Retainer (AUD) | $2,000 | $5,000 | $10,000 |
+| Position scope | 5–20 | 5–20 | 1–30 |
+
+### Roadmap-sourced presets
+
+When a roadmap has been ingested, the Moderate preset is pre-filled from
+the roadmap's detected effort, cadence, maintenance, hours, and retainer.
+Conservative = 60% of Moderate's hours and retainer (effort tier downgraded
+one level). Aggressive = 160% of Moderate's hours and retainer (effort tier
+upgraded one level, maintenance capped at 95%).
+
+### Shared baseline, independent uplifts
+
+All three scenarios share the same historical baseline — "what happens if
+you do nothing" is a property of the site, not the retainer. What differs
+between scenarios is the uplift from positional improvement, new content
+publishing rate, and decay offset from maintenance coverage. The Combined
+output for each scenario is `baseline + positional + new_content − decay`
+with the scenario's parameters applied to each stream.
 
 ---
 

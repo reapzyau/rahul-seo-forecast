@@ -5,15 +5,17 @@ A Streamlit web application for SEO traffic and revenue forecasting. Supports na
 ## Quick Start
 
 1. Go to **Data Upload** and either upload your GA4 organic export + SEMrush organic positions export, or tick "Use sample (Cable)" on both tabs
-2. Go to **Positional Forecast** — click Generate Forecast. This is the core output: uplift from moving existing keywords up the SERP.
-3. (Optional) Go to **Historical Forecast** for a do-nothing baseline, or **New Content Forecast** for a gap-analysis-driven projection.
-4. Go to **Combined Forecast** to see baseline + positional + new content layered.
-5. Go to **Forecast Grid Export** to download the xlsx that drops straight into the multi-channel plan.
+2. Go to **Strategy** — review the portfolio diagnosis, accept or tweak the three scenario presets, and click Run All Forecasts. This is the fastest path from upload to client-ready deliverable.
+3. Download the **3-Scenario Forecast Grid XLSX** from the Strategy page or the Deliverables page — four sheets (Conservative / Moderate / Aggressive / Comparison) ready for the client deck.
+4. (Optional) Go to **Positional Forecast** for single-scenario deep-dive, or **Historical Forecast** for a do-nothing baseline, or **New Content Forecast** for gap-analysis-driven projections.
+5. Go to **Combined Forecast** to see baseline + positional + new content layered for any single scenario.
+6. Go to **Deliverables** for full export options including variance grading and methodology.
 
 ## Forecasting Modes
 
 | Mode | Input | What it projects |
 |------|-------|------------------|
+| Strategy | GA4 + SEMrush + (optional) Roadmap | Portfolio diagnosis + 3 coherent scenarios |
 | Positional Forecast | SEMrush + GA4 | Uplift from moving keywords up the SERP |
 | New Content Forecast | Keyword list (gap analysis) | Traffic from publishing new content |
 | Historical Forecast | GA4 organic data | "Do nothing" baseline trajectory |
@@ -43,7 +45,8 @@ Keywords CSV (`keyword, volume, kd`) and traffic CSV (`date, traffic`) are still
 
 ```bash
 pip install -r requirements.txt
-streamlit run app.py
+streamlit run streamlit_app.py   # new entry point (Forecast Dashboard + Data Sources + About)
+streamlit run app.py             # legacy Python forecasting engine entry
 ```
 
 Prophet support (optional — enables v4 Historical Forecast with ≥24 months of data, falls back to Holt's exponential smoothing otherwise):
@@ -61,12 +64,13 @@ pytest tests/ -v
 
 ## Deployment
 
-This app is designed for Streamlit Community Cloud:
+This app auto-deploys to Streamlit Community Cloud on every push to `main`.
 
-1. Push to GitHub
-2. Connect at [share.streamlit.io](https://share.streamlit.io)
-3. Set main file path to `app.py`
-4. No secrets or API keys needed
+1. Entry point is `streamlit_app.py` — set this in the Streamlit Cloud app settings.
+2. Push to `main` — Streamlit Cloud picks up the change automatically.
+3. No secrets or environment variables are required for the core forecast pages.
+4. The `assets/` directory is bundled with the repo and served at runtime.
+5. Prophet is optional — install `requirements-prophet.txt` only if you need the v4 historical engine.
 
 ## Methodology
 

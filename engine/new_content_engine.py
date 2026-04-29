@@ -200,10 +200,19 @@ def run_new_content_forecast(
     if roadmap_content_plan:
         plan_months: list[int] = []
         plan_is_optimisation: list[bool] = []
+        has_url_hint = "_content_url" in df.columns
         for _, row in df.iterrows():
             kw_lower = str(row["keyword"]).lower()
+            # Prefer direct URL match when _content_url metadata is present
+            # (populated by build_keyword_df_from_roadmap). Fall back to the
+            # legacy keyword-in-URL substring check for manually uploaded keywords.
+            url_hint = str(row.get("_content_url", "")).lower() if has_url_hint else ""
             matched = next(
-                (item for item in roadmap_content_plan if kw_lower in str(item.get("url", "")).lower()),
+                (
+                    item for item in roadmap_content_plan
+                    if (url_hint and str(item.get("url", "")).lower() == url_hint)
+                    or kw_lower in str(item.get("url", "")).lower()
+                ),
                 None,
             )
             if matched and isinstance(matched.get("month"), (int, float)):
