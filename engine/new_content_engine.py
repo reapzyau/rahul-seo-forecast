@@ -339,3 +339,72 @@ def run_new_content_forecast(
     return df, monthly_df
 
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Section 5: Deterministic per-post new-content stream
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+def run_new_content_forecast_simple(
+    n_posts_total: int,
+    months: int = 12,
+    posts_per_month: int = 2,
+    per_post_longtail_traffic: int = 400,
+    rank_probability: float = 0.55,
+    maturation_tier: str = "Moderate",
+    seasonality: dict | None = None,
+    forecast_start_month: int | None = None,
+    seed: int = 42,
+) -> np.ndarray:
+    """Forecast new-content traffic without keyword-level inputs.
+
+    Suitable when the SOW describes a content cadence but no keyword gap analysis
+    has been done.  Each published post is assumed to capture per_post_longtail_traffic
+    mature monthly sessions with rank_probability probability of doing so meaningfully
+    within the forecast horizon. Traffic accumulates via S-curve maturation.
+
+    This function does NOT accept the client's SEMrush keyword export — that data
+    describes keywords the client already ranks for, not new-content opportunities.
+
+    Args:
+        n_posts_total: Maximum posts published over the forecast horizon.
+        months: Forecast horizon in months.
+        posts_per_month: Posts published each month (cadence).
+        per_post_longtail_traffic: Estimated mature monthly organic sessions per post
+            that successfully ranks. Typical long-tail blog post: 200–800.
+        rank_probability: Probability each post ranks meaningfully (0.1–0.95).
+        maturation_tier: S-curve tier — "Easy", "Moderate", "Hard", etc.
+        seasonality: Dict {month_num: {traffic_mod: float}} applied to monthly totals.
+        forecast_start_month: Calendar month (1-12) of horizon month 1 (for seasonality).
+        seed: Random seed for reproducibility.
+
+    Returns:
+        1-D numpy int array of length `months` — monthly traffic from new content.
+    """
+    from engine.maturation_curve import maturation_schedule
+
+    rng = np.random.default_rng(seed)
+    monthly = np.zeros(months, dtype=float)
+    posts_done = 0
+
+    for m in range(months):
+        n_to_pub = min(posts_per_month, max(0, n_posts_total - posts_done))
+        for _ in range(n_to_pub):
+            if rng.random() < rank_probability:
+                # Publish month is m+1 (1-indexed); maturation_schedule returns a
+                # fraction-of-mature-traffic array of length `months`.
+                schedule = maturation_schedule(maturation_tier, months, m + 1)
+                monthly += per_post_longtail_traffic * schedule
+        posts_done += n_to_pub
+
+    if seasonality and forecast_start_month is not None:
+        season_mults = np.array([
+            1.0 + seasonality.get(
+                ((forecast_start_month - 1 + m) % 12) + 1, {}
+            ).get("traffic_mod", 0.0)
+            for m in range(months)
+        ])
+        monthly *= season_mults
+
+    return monthly.round(0).astype(int)
+
+

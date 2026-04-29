@@ -5,6 +5,210 @@ import pandas as pd
 _PROPHET_MIN_MONTHS = 24
 _HOLTS_MIN_MONTHS = 12
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Section 1: YoY (same-calendar-month) baseline
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+def _row_to_baseline(row: pd.Series, source: str) -> dict:
+    """Convert a GA4 data row to the baseline dict schema."""
+    return {
+        "traffic": int(row["traffic"]),
+        "transactions": float(row["transactions"]) if "transactions" in row.index and pd.notna(row["transactions"]) else None,
+        "revenue": float(row["revenue"]) if "revenue" in row.index and pd.notna(row["revenue"]) else None,
+        "aov_actual": float(row["aov"]) if "aov" in row.index and pd.notna(row["aov"]) else None,
+        "source": source,
+    }
+
+
+def yoy_baseline(
+    ga4_df: pd.DataFrame,
+    forecast_dates: pd.DatetimeIndex,
+) -> dict:
+    """Build month-by-month baseline using prior-year same-calendar-month actuals.
+
+    Each forecast month's baseline equals the same calendar month from the prior
+    fiscal year. When the prior-year actual doesn't exist (e.g. forecasting Jun-27
+    when GA4 only goes to Mar-26), falls back to the most-recent same-calendar-month
+    actual rather than averaging across years — avoids startup-period drag.
+
+    Args:
+        ga4_df: DataFrame with 'date' and 'traffic' (and optionally 'transactions',
+                'revenue', 'aov') columns, monthly granularity.
+        forecast_dates: pd.DatetimeIndex of forecast months (first-of-month).
+
+    Returns:
+        Dict[pd.Timestamp, dict] keyed by forecast date. Each value contains:
+            {traffic, transactions, revenue, aov_actual, source}
+        where source is a human-readable string describing the data origin.
+    """
+    df = ga4_df.copy()
+    df["date"] = pd.to_datetime(df["date"]).dt.to_period("M").dt.to_timestamp()
+    ga4_indexed = df.set_index("date")
+
+    out: dict = {}
+    for fdate in forecast_dates:
+        fdate_norm = pd.Timestamp(year=fdate.year, month=fdate.month, day=1)
+        prior = pd.Timestamp(year=fdate.year - 1, month=fdate.month, day=1)
+
+        if prior in ga4_indexed.index:
+            out[fdate_norm] = _row_to_baseline(
+                ga4_indexed.loc[prior],
+                source=f"GA4 {prior.strftime('%b-%y')} actual",
+            )
+        else:
+            # Fallback: most-recent same-calendar-month (avoids startup-period drag)
+            same_month = df[df["date"].dt.month == fdate.month].sort_values("date")
+            if len(same_month):
+                row = same_month.iloc[-1]
+                out[fdate_norm] = _row_to_baseline(
+                    row,
+                    source=(
+                        f"GA4 {row['date'].strftime('%b-%y')} actual "
+                        f"(most recent {fdate.strftime('%b')}, no prior-FY data)"
+                    ),
+                )
+            else:
+                trailing_avg = int(df["traffic"].tail(6).mean())
+                out[fdate_norm] = {
+                    "traffic": trailing_avg,
+                    "transactions": None,
+                    "revenue": None,
+                    "aov_actual": None,
+                    "source": "6-mo trailing avg (no historical match)",
+                }
+    return out
+
+
+def detect_startup_period(
+    traffic_series: pd.Series,
+    threshold_ratio: float = 0.5,
+) -> bool:
+    """Return True when the series shows startup/ramp rather than normal variance.
+
+    Compares the first-6-month mean to the last-6-month mean. When the early
+    period is less than threshold_ratio × recent, it signals startup-phase growth
+    — in which case Holt's avg_mom would be inflated by the ramp, not seasonality.
+
+    Args:
+        traffic_series: Historical monthly traffic values.
+        threshold_ratio: Early/recent ratio below which ramp is declared (default 0.5).
+            0.5 means early average is less than half the recent average.
+
+    Returns:
+        True if startup period is detected, False otherwise.
+    """
+    if len(traffic_series) < 12:
+        return False
+    early = traffic_series.head(6).mean()
+    recent = traffic_series.tail(6).mean()
+    if recent == 0:
+        return False
+    return bool(early < threshold_ratio * recent)
+
+
+def detect_baseline_anomalies(
+    ga4_df: pd.DataFrame,
+    z_threshold: float = 2.0,
+    surrounding_window: int = 2,
+) -> dict[str, list[str]]:
+    """Identify months where the YoY traffic change looks anomalous.
+
+    Primary signal: T-2 vs T-1 YoY comparison.
+        For each month that has both a T-1 (prior year) and T-2 (two years ago)
+        value, compute the YoY growth rate at T-1 and at T-2. A large deviation
+        between those two rates flags a structural change rather than ordinary
+        seasonal noise.
+
+    Fallback (surrounding-window): Used when only 12-23 months of data are
+        available (no T-2). Flags months whose YoY rate deviates from the
+        surrounding ±window month median by more than z_threshold standard
+        deviations.
+
+    Args:
+        ga4_df: DataFrame with 'date' and 'traffic' columns, monthly granularity.
+        z_threshold: How many SDs away from surrounding-window median to flag.
+        surrounding_window: Months each side for the fallback window median.
+
+    Returns:
+        Dict with keys:
+            "anomalous_months": list of month labels ("Jan-24") flagged.
+            "method": "t2_vs_t1" | "surrounding_window" | "insufficient_data"
+            "details": list of human-readable explanation strings per anomaly.
+    """
+    df = ga4_df.copy()
+    df["date"] = pd.to_datetime(df["date"]).dt.to_period("M").dt.to_timestamp()
+    df = df.sort_values("date").reset_index(drop=True)
+    df["traffic"] = df["traffic"].astype(float)
+
+    anomalous: list[str] = []
+    details: list[str] = []
+
+    # Try T-2 vs T-1 primary method (needs ≥24 months)
+    if len(df) >= 24:
+        df_indexed = df.set_index("date")["traffic"]
+
+        yoy_rates: list[tuple[pd.Timestamp, float]] = []
+        for i in range(len(df)):
+            t0 = df.iloc[i]["date"]
+            t_minus_1 = t0 - pd.DateOffset(years=1)
+            t_minus_2 = t0 - pd.DateOffset(years=2)
+            t_minus_1 = pd.Timestamp(year=t_minus_1.year, month=t_minus_1.month, day=1)
+            t_minus_2 = pd.Timestamp(year=t_minus_2.year, month=t_minus_2.month, day=1)
+
+            if t_minus_1 in df_indexed.index and t_minus_2 in df_indexed.index:
+                v0 = df_indexed[t_minus_1]
+                vm1 = df_indexed[t_minus_2]
+                if vm1 > 0:
+                    yoy_rates.append((t0, (v0 - vm1) / vm1))
+
+        if len(yoy_rates) >= 6:
+            rate_vals = np.array([r for _, r in yoy_rates])
+            mean_rate = np.mean(rate_vals)
+            std_rate = np.std(rate_vals)
+            for date, rate in yoy_rates:
+                if std_rate > 0 and abs(rate - mean_rate) > z_threshold * std_rate:
+                    label = date.strftime("%b-%y")
+                    anomalous.append(label)
+                    direction = "spike" if rate > mean_rate else "drop"
+                    details.append(
+                        f"{label}: YoY rate {rate:+.0%} vs portfolio mean {mean_rate:+.0%} "
+                        f"({direction}, {abs(rate - mean_rate) / std_rate:.1f}σ)"
+                    )
+            return {"anomalous_months": anomalous, "method": "t2_vs_t1", "details": details}
+
+    # Fallback: surrounding-window method (12-23 months)
+    if len(df) < 13:
+        return {"anomalous_months": [], "method": "insufficient_data", "details": []}
+
+    # Compute raw YoY growth rates where T-1 exists
+    df_indexed = df.set_index("date")["traffic"]
+    yoy_vals: list[tuple[pd.Timestamp, float]] = []
+    for i in range(len(df)):
+        t0 = df.iloc[i]["date"]
+        t_minus_1 = pd.Timestamp(year=t0.year - 1, month=t0.month, day=1)
+        if t_minus_1 in df_indexed.index and df_indexed[t_minus_1] > 0:
+            rate = (df_indexed[t0] - df_indexed[t_minus_1]) / df_indexed[t_minus_1]
+            yoy_vals.append((t0, rate))
+
+    for idx, (date, rate) in enumerate(yoy_vals):
+        lo = max(0, idx - surrounding_window)
+        hi = min(len(yoy_vals), idx + surrounding_window + 1)
+        window_rates = [r for _, r in yoy_vals[lo:hi]]
+        if len(window_rates) < 3:
+            continue
+        med = np.median(window_rates)
+        std = np.std(window_rates)
+        if std > 0 and abs(rate - med) > z_threshold * std:
+            label = date.strftime("%b-%y")
+            anomalous.append(label)
+            direction = "spike" if rate > med else "drop"
+            details.append(
+                f"{label}: YoY rate {rate:+.0%} vs window median {med:+.0%} ({direction})"
+            )
+
+    return {"anomalous_months": anomalous, "method": "surrounding_window", "details": details}
+
 
 def linear_forecast(
     dates: pd.Series,

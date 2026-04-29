@@ -11,7 +11,10 @@ from engine.assumptions import (
     override_assumption,
     run_detection,
 )
-from engine.brand_engine import classify_keywords_as_branded
+from engine.brand_classifier import (
+    brand_match_preview,
+    classify_keywords_with_two_stage,
+)
 from engine.roadmap_ai_engine import (
     ROADMAP_BUNDLE_SCHEMA,
     compute_cache_key,
@@ -240,12 +243,35 @@ with tab_semrush:
 
         current_terms = get_assumption(store, "brand_terms") or []
         terms_text = st.text_area(
-            "Brand terms (one per line)",
+            "Brand substrings — always match (one per line)",
             value="\n".join(current_terms),
             key="brand_terms_area",
             height=100,
-            help="Add or edit brand terms. The AI can auto-detect them.",
+            help=(
+                "Safe set: full brand name, abbreviations, domain. "
+                "Any keyword containing one of these strings is classified as branded."
+            ),
         )
+
+        with st.expander("If your brand name is also a common word — expand for advanced options"):
+            st.caption(
+                "Use whole-word terms when the brand is ambiguous (e.g. 'Apple', 'Cable'). "
+                "Add exclusion words to prevent category terms from being mislabelled."
+            )
+            wb_terms_text = st.text_area(
+                "Brand whole-words (matched as whole words only, one per line)",
+                value="",
+                key="brand_wb_terms",
+                height=60,
+                help="e.g. 'cable' — matches 'cable' but not 'cable knit' if 'knit' is in exclusions.",
+            )
+            excl_terms_text = st.text_area(
+                "Excluded followers (one per line) — prevent whole-word false positives",
+                value="",
+                key="brand_excl_terms",
+                height=60,
+                help="e.g. 'knit', 'car', 'tie' — if any of these appear adjacent to the brand word, keyword is NOT branded.",
+            )
 
         ai_key = st.session_state.get(BIFROST_API_KEY)
         ai_model = st.session_state.get(BIFROST_MODEL, get_default_model())
@@ -281,16 +307,24 @@ with tab_semrush:
         with col_save:
             if st.button("Save Brand Terms", key="brand_save_btn"):
                 saved_terms = [t.strip() for t in terms_text.split("\n") if t.strip()]
+                saved_wb = [t.strip() for t in st.session_state.get("brand_wb_terms", "").split("\n") if t.strip()]
+                saved_excl = [t.strip() for t in st.session_state.get("brand_excl_terms", "").split("\n") if t.strip()]
                 prov = "AI-detected" if DETECTED_BRAND_TERMS in st.session_state else "user-overridden"
                 override_assumption(store, "brand_terms", saved_terms, prov)
-                # Classify keywords
-                updated_kw = classify_keywords_as_branded(
-                    st.session_state[KW_DF], saved_terms
+                # Two-stage classification
+                updated_kw = classify_keywords_with_two_stage(
+                    st.session_state[KW_DF],
+                    substring_terms=saved_terms,
+                    word_boundary_terms=saved_wb or None,
+                    excluded_followers=saved_excl or None,
                 )
                 st.session_state[KW_DF] = updated_kw
                 if KW_EXISTING in st.session_state:
-                    st.session_state[KW_EXISTING] = classify_keywords_as_branded(
-                        st.session_state[KW_EXISTING], saved_terms
+                    st.session_state[KW_EXISTING] = classify_keywords_with_two_stage(
+                        st.session_state[KW_EXISTING],
+                        substring_terms=saved_terms,
+                        word_boundary_terms=saved_wb or None,
+                        excluded_followers=saved_excl or None,
                     )
                 n_branded = updated_kw["is_branded"].sum()
                 n_total = len(updated_kw)
@@ -298,6 +332,16 @@ with tab_semrush:
                     f"Saved. {n_branded} branded / {n_total} total keywords "
                     f"({n_branded / n_total * 100:.1f}%)."
                 )
+                # Brand match preview
+                if n_branded > 0:
+                    preview_df = brand_match_preview(
+                        updated_kw,
+                        substring_terms=saved_terms,
+                        word_boundary_terms=saved_wb or None,
+                        excluded_followers=saved_excl or None,
+                    )
+                    with st.expander(f"Brand match preview — top {len(preview_df)} by volume"):
+                        st.dataframe(preview_df[["keyword", "volume", "is_branded"]].head(50), use_container_width=True)
 
     elif uploaded_semrush is not None:
         st.error("Could not parse the uploaded SEMrush file. Please check the format.")

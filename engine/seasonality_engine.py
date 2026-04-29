@@ -4,8 +4,12 @@ v4 additions:
 - learn_seasonality_from_ga4: compute monthly indices from real GA4 data
 - blend_learned_and_default_seasonality: weighted blend of learned vs. AU defaults
 - AU_HOLIDAYS: pandas DataFrame for Australian retail holidays (2023-2028)
+
+v5 additions (upgrade guide Sections 1+2):
+- derive_seasonality_from_baseline: convert YoY baseline lookup → per-month multipliers
 """
 
+import numpy as np
 import pandas as pd
 
 # Default retail seasonality patterns (monthly index 1-12)
@@ -422,3 +426,59 @@ def build_campaign_list(campaign_text: str) -> list[dict]:
             except (ValueError, IndexError):
                 continue
     return campaigns
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Section 2: Derive seasonality implicitly from YoY baseline
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+def derive_seasonality_from_baseline(baseline_lookup: dict) -> dict:
+    """Convert a YoY baseline lookup into per-calendar-month multiplier dict.
+
+    When yoy_baseline mode is active the baseline values already encode seasonal
+    shape — this function makes that shape explicit for downstream engines
+    (positional, new-content) that need to apply matching multiplicative
+    seasonality to their uplift streams.
+
+    The multipliers are deviations from the annual mean: positive means above
+    average (seasonal peak), negative means below average (seasonal trough).
+    The 12 values sum approximately to zero.
+
+    Args:
+        baseline_lookup: Output of historical_engine.yoy_baseline() — dict keyed
+            by pd.Timestamp, each value containing at minimum {"traffic": int}.
+
+    Returns:
+        Dict keyed by calendar month number (1-12), each value:
+            {"traffic_mod": float, "cr_mod": float, "aov_mod": float, "label": str}
+        matching the DEFAULT_SEASONALITY schema.
+    """
+    if not baseline_lookup:
+        return dict(DEFAULT_SEASONALITY)
+
+    items = sorted(baseline_lookup.items())
+    traffic_vals = np.array([v["traffic"] for _, v in items])
+
+    mean_traffic = traffic_vals.mean()
+    if mean_traffic == 0:
+        return dict(DEFAULT_SEASONALITY)
+
+    result: dict = {}
+    for (d, _v), t in zip(items, traffic_vals, strict=False):
+        month = d.month
+        traffic_mod = float(t / mean_traffic - 1.0)
+        month_name = _MONTH_NAMES[month] if month <= 12 else f"Month {month}"
+        result[month] = {
+            "label": f"{month_name} (derived from YoY baseline)",
+            "traffic_mod": round(traffic_mod, 4),
+            "cr_mod": 0.0,
+            "aov_mod": 0.0,
+        }
+
+    # Fill any missing months with DEFAULT_SEASONALITY
+    for m in range(1, 13):
+        if m not in result:
+            result[m] = dict(DEFAULT_SEASONALITY.get(m, {"label": f"Month {m}", "traffic_mod": 0.0, "cr_mod": 0.0, "aov_mod": 0.0}))
+
+    return result

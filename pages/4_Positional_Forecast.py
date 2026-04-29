@@ -109,6 +109,21 @@ st.sidebar.subheader("Monte Carlo Settings")
 show_bands = st.sidebar.checkbox("Show P10/P50/P90 bands", value=True, key="pos_bands")
 use_attention_curve = st.sidebar.checkbox("Apply attention curve", value=True, key="pos_attn")
 
+# Smart defaults for positional pool filter
+with st.sidebar.expander("Smart defaults — positional pool", expanded=False):
+    st.caption(
+        "By default only keywords in positions 4–30 are included. "
+        "P1-3 have a small CTR ceiling; P31-100 produce near-zero CTR improvement."
+    )
+    pos_filter_min, pos_filter_max = st.slider(
+        "Position range to include",
+        min_value=1, max_value=100, value=(4, 30),
+        key="pos_filter_range",
+        help="Keywords outside this range are shown as 'needs content/links' — not in uplift calc.",
+    )
+    use_pos_filter = st.checkbox("Apply position filter", value=True, key="pos_use_filter")
+    position_filter = (pos_filter_min, pos_filter_max) if use_pos_filter else None
+
 st.sidebar.divider()
 st.sidebar.subheader("GA4 Anchoring")
 
@@ -150,14 +165,6 @@ if st.button("Generate Forecast", type="primary", key="pos_run"):
             ga4_baseline = int(ga4_df["traffic"].iloc[-1])
 
         movement_stats = learn_movement_from_history(kw_existing)
-        if movement_stats:
-            n_samples = sum(v["sample_size"] for v in movement_stats.values())
-            st.info(
-                f"Using learned movement stats from your SEMrush history "
-                f"(N={n_samples} keyword movements across {len(movement_stats)} tiers)."
-            )
-        else:
-            st.info("Using default tier-based position gains (no previous_position data found).")
 
         kw_df, monthly = run_positional_forecast_mc(
             kw_for_forecast,
@@ -168,8 +175,18 @@ if st.button("Generate Forecast", type="primary", key="pos_run"):
             traffic_multiplier=traffic_multiplier,
             use_attention_curve=use_attention_curve,
             historical_movement_stats=movement_stats or None,
+            use_learned_movement_stats="auto",
             aio_intent_penalties=aio_intent_penalties,
+            position_filter=position_filter,
             seed=42,
+        )
+
+        movement_reason = monthly.attrs.get("movement_stats_reason", "")
+        kw_in_pool = monthly.attrs.get("keyword_count", 0)
+        st.info(
+            f"**Positional pool:** {kw_in_pool} keywords "
+            f"({'positions ' + str(pos_filter_min) + '–' + str(pos_filter_max) if use_pos_filter else 'no filter'}) | "
+            f"**Movement stats:** {movement_reason}"
         )
 
         # Revenue

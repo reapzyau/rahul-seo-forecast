@@ -12,7 +12,7 @@ from engine.ai_engine import (
 )
 from engine.assumptions import get_assumption, get_provenance
 from engine.constants import CTR_MODELS, FORECAST_SCENARIOS, SITE_PRESETS, TIER_COLORS
-from engine.new_content_engine import run_new_content_forecast
+from engine.new_content_engine import run_new_content_forecast, run_new_content_forecast_simple
 from engine.revenue_engine import CURRENCY_SYMBOLS, add_revenue, keyword_revenue_table
 from utils.chart_builder import (
     keyword_schedule_chart,
@@ -149,9 +149,66 @@ cadence_options = st.sidebar.multiselect(
     disabled=not enable_scenarios,
 )
 
-# ── Keyword Source ────────────────────────────────────────────────────────────
+# ── Content source ──────────────────────────────────────────────────────────
 content_plan = st.session_state.get(ROADMAP_CONTENT_PLAN)
 semrush_kw_df = st.session_state.get(KW_DF)
+
+st.subheader("New Content Forecast Source")
+
+content_source = st.radio(
+    "What data should drive the forecast?",
+    [
+        "Deterministic per-post stream (recommended — no gap analysis needed)",
+        "Keyword gap analysis (upload a CSV of target keywords not yet ranking)",
+    ],
+    index=0,
+    key="nc_source",
+    help=(
+        "The Deterministic stream is recommended when you have a content cadence "
+        "defined in the SOW but no keyword gap analysis. It avoids double-counting "
+        "your SEMrush keywords (which are already in the Positional Forecast). "
+        "Upload a gap-analysis CSV if you have Ahrefs Content Gap or a strategist-curated list."
+    ),
+)
+
+use_deterministic = content_source.startswith("Deterministic")
+
+if use_deterministic:
+    st.info(
+        "Each post is assumed to capture a target volume of long-tail organic sessions "
+        "with a set probability of ranking, following an S-curve maturation schedule. "
+        "No keyword data is required."
+    )
+    det_col1, det_col2, det_col3 = st.columns(3)
+    with det_col1:
+        det_n_posts = st.number_input("Total posts published over horizon", 1, 200, 25, key="nc_det_posts")
+        det_ppm = st.number_input("Posts per month", 1, 12, 2, key="nc_det_ppm")
+    with det_col2:
+        det_per_post = st.number_input(
+            "Mature sessions per post", 50, 5000, 400, step=50, key="nc_det_per_post",
+            help="Estimated mature monthly organic sessions for a well-ranking long-tail post. "
+                 "Typical range: 200–800 for apparel/lifestyle brands at DA 40-60.",
+        )
+        det_rank_prob = st.slider(
+            "Probability each post ranks meaningfully", 0.1, 0.95, 0.55, key="nc_det_prob",
+            help="Fraction of posts that achieve meaningful organic traffic within the horizon.",
+        )
+    with det_col3:
+        det_maturation_tier = st.selectbox(
+            "Maturation tier", ["Easy", "Moderate", "Hard", "Very Hard", "Extreme"],
+            index=1, key="nc_det_tier",
+            help="Controls the S-curve ramp speed (Easy = fast, Extreme = slow).",
+        )
+
+st.divider()
+
+# ── Upload ───────────────────────────────────────────────────────────────────
+if use_deterministic:
+    st.subheader("Optional: Override with keyword data")
+    st.caption("If you have a gap analysis, upload it here to use keyword-level inputs instead.")
+else:
+    st.subheader("Upload Gap-Analysis Keywords CSV")
+    st.caption("Required columns: keyword, volume, kd — this should be keywords you do NOT currently rank for")
 
 source_options = ["Manual upload (CSV / Excel)"]
 if content_plan:
@@ -160,7 +217,7 @@ if content_plan:
 source = st.radio(
     "Keyword source",
     source_options,
-    key="nc_source",
+    key="nc_kw_source",
     horizontal=True,
     help="When a roadmap is uploaded, its content plan can drive the forecast directly.",
 )
@@ -229,31 +286,56 @@ else:
         st.dataframe(df.head(10), use_container_width=True, hide_index=True)
 
 # ── Run Forecast ─────────────────────────────────────────────────────────────
-if df is not None:
-    if st.button("Generate Forecast", type="primary", key="kw_run"):
-        roadmap_plan_for_engine = content_plan if source.startswith("Roadmap") else None
-        with st.spinner("Running keyword forecast..."):
-            keyword_df, monthly_df = run_new_content_forecast(
-                df, da, cadence, months, seed,
-                ctr_model=ctr_model,
-                traffic_multiplier=traffic_multiplier,
-                include_informational=not exclude_informational,
-                ai_overview_ctr_penalty=informational_ctr_penalty,
-                roadmap_content_plan=roadmap_plan_for_engine,
-            )
+can_run_kw = df is not None
+can_run_det = use_deterministic
 
-            # Run scenarios if enabled
-            scenarios = {}
-            if enable_scenarios and cadence_options:
-                for c in cadence_options:
-                    _, s_monthly = run_new_content_forecast(
-                        df, da, c, months, seed,
-                        ctr_model=ctr_model,
-                        traffic_multiplier=traffic_multiplier,
-                        include_informational=not exclude_informational,
-                        ai_overview_ctr_penalty=informational_ctr_penalty,
-                    )
-                    scenarios[c] = s_monthly
+if can_run_det or can_run_kw:
+    _roadmap_plan = content_plan if (not use_deterministic and source.startswith("Roadmap")) else None
+    if _roadmap_plan:
+        st.info(f"Roadmap content plan active: {len(_roadmap_plan)} URL(s) will drive publish-month assignment.")
+
+    if st.button("Generate Forecast", type="primary", key="kw_run"):
+        with st.spinner("Running new content forecast..."):
+            if use_deterministic and df is None:
+                # Pure deterministic stream — no keyword data needed
+                _seasonality = st.session_state.get("seasonality")
+                _fsm = st.session_state.get("forecast_start_month")
+                monthly_arr = run_new_content_forecast_simple(
+                    n_posts_total=det_n_posts,
+                    months=months,
+                    posts_per_month=det_ppm,
+                    per_post_longtail_traffic=det_per_post,
+                    rank_probability=det_rank_prob,
+                    maturation_tier=det_maturation_tier,
+                    seasonality=_seasonality,
+                    forecast_start_month=_fsm,
+                    seed=int(seed),
+                )
+                monthly_df = pd.DataFrame({"month": range(1, months + 1), "traffic": monthly_arr})
+                keyword_df = pd.DataFrame()
+                scenarios = {}
+            else:
+                keyword_df, monthly_df = run_new_content_forecast(
+                    df, da, cadence, months, seed,
+                    ctr_model=ctr_model,
+                    traffic_multiplier=traffic_multiplier,
+                    include_informational=not exclude_informational,
+                    ai_overview_ctr_penalty=informational_ctr_penalty,
+                    roadmap_content_plan=_roadmap_plan,
+                )
+
+                # Run scenarios if enabled
+                scenarios = {}
+                if enable_scenarios and cadence_options:
+                    for c in cadence_options:
+                        _, s_monthly = run_new_content_forecast(
+                            df, da, c, months, seed,
+                            ctr_model=ctr_model,
+                            traffic_multiplier=traffic_multiplier,
+                            include_informational=not exclude_informational,
+                            ai_overview_ctr_penalty=informational_ctr_penalty,
+                        )
+                        scenarios[c] = s_monthly
 
             # Revenue
             if enable_revenue:
