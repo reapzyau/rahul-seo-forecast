@@ -11,7 +11,10 @@ nobody ever grades.
 from __future__ import annotations
 
 import json
+import os
+import re
 from datetime import UTC, datetime
+from pathlib import Path
 
 import pandas as pd
 
@@ -226,6 +229,58 @@ def summarise_variance(comparison_df: pd.DataFrame) -> dict:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# v5 helpers: serialisation of Timestamps and file output
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+def _serialise_flags(flags: list[dict]) -> list[dict]:
+    """Convert Timestamp values in anomaly flag dicts to ISO strings."""
+    out = []
+    for flag in flags:
+        row = {}
+        for k, v in flag.items():
+            if isinstance(v, (pd.Timestamp,)):
+                row[k] = v.isoformat()
+            else:
+                row[k] = v
+        out.append(row)
+    return out
+
+
+def _serialise_overrides(overrides: dict) -> dict:
+    """Convert Timestamp keys in anomaly override dicts to ISO strings."""
+    return {
+        (k.isoformat() if isinstance(k, pd.Timestamp) else str(k)): v
+        for k, v in overrides.items()
+    }
+
+
+def _client_slug(client_name: str) -> str:
+    """Convert client name to a filesystem-safe slug."""
+    slug = re.sub(r"[^\w\s-]", "", client_name.lower())
+    return re.sub(r"[\s_-]+", "_", slug).strip("_") or "client"
+
+
+def write_methodology_snapshot(
+    snapshot: dict,
+    client_name: str,
+    run_dir: str = "outputs",
+) -> str:
+    """Serialise snapshot to ``{run_dir}/{client_slug}_methodology_{date}.json``.
+
+    Creates ``run_dir`` if it does not exist. Returns the file path written.
+    """
+    Path(run_dir).mkdir(parents=True, exist_ok=True)
+    date_str = datetime.now(UTC).strftime("%Y%m%d")
+    slug = _client_slug(client_name)
+    filename = f"{slug}_methodology_{date_str}.json"
+    path = os.path.join(run_dir, filename)
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(snapshot, fh, indent=2, default=str)
+    return path
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Section 10: Per-run methodology snapshot
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -250,6 +305,19 @@ def build_methodology_snapshot(
     weighted_aov: float,
     tier_outputs: list[dict],
     seed: int = 42,
+    # ── v5 extensions ─────────────────────────────────────────────────────────
+    version: str = "5.0",
+    fixes_applied: list[str] | None = None,
+    da_derived: float | None = None,
+    da_rationale: str | None = None,
+    cr_organic: float | None = None,
+    cr_blended: float | None = None,
+    aov_organic: float | None = None,
+    aov_blended: float | None = None,
+    n_branded_keywords: int | None = None,
+    anomaly_flags: list[dict] | None = None,
+    anomaly_overrides: dict | None = None,
+    movement_stats_decisions: dict | None = None,
 ) -> dict:
     """Build a per-run methodology snapshot capturing all key model decisions.
 
@@ -282,11 +350,25 @@ def build_methodology_snapshot(
              uplift_pct, annual_revenue_baseline, annual_revenue_combined,
              revenue_uplift, roi}
         seed: Monte Carlo seed used.
+        version: v5 schema version string (default "5.0").
+        fixes_applied: List of v5 fix identifiers that were active for this run.
+        da_derived: Domain Authority score derived from SEMrush data.
+        da_rationale: Human-readable explanation of how DA was derived.
+        cr_organic: Organic Search conversion rate extracted from GA4.
+        cr_blended: Blended (all-channel) conversion rate from GA4.
+        aov_organic: Organic Search average order value from GA4.
+        aov_blended: Blended average order value from GA4.
+        n_branded_keywords: Count of keywords excluded as branded.
+        anomaly_flags: Flags from detect_baseline_anomalies() — Timestamps
+            serialised to ISO strings by _serialise_flags().
+        anomaly_overrides: User override decisions keyed by forecast date —
+            Timestamp keys serialised to ISO strings by _serialise_overrides().
+        movement_stats_decisions: Per-tier decision dict from resolve_movement_stats().
 
     Returns:
         JSON-serialisable dict — the methodology snapshot.
     """
-    return {
+    snap = {
         "snapshot_version": SNAPSHOT_VERSION,
         "snapshot_type": "methodology",
         "generated_at": datetime.now(UTC).isoformat(),
@@ -328,7 +410,22 @@ def build_methodology_snapshot(
         },
         "monte_carlo_seed": seed,
         "tier_outputs": tier_outputs,
+        "v5_extensions": {
+            "version": version,
+            "fixes_applied": fixes_applied or [],
+            "da_derived": da_derived,
+            "da_rationale": da_rationale,
+            "cr_organic": cr_organic,
+            "cr_blended": cr_blended,
+            "aov_organic": aov_organic,
+            "aov_blended": aov_blended,
+            "n_branded_keywords": n_branded_keywords,
+            "anomaly_flags": _serialise_flags(anomaly_flags) if anomaly_flags else [],
+            "anomaly_overrides": _serialise_overrides(anomaly_overrides) if anomaly_overrides else {},
+            "movement_stats_decisions": movement_stats_decisions or {},
+        },
     }
+    return snap
 
 
 def methodology_snapshot_to_human_readable(snapshot: dict) -> str:
