@@ -12,6 +12,7 @@ from engine.historical_engine import (
 )
 from engine.revenue_engine import CURRENCY_SYMBOLS, add_revenue, build_full_metrics_table
 from engine.seasonality_engine import derive_seasonality_from_baseline
+from engine.v5.anomaly_detector import apply_overrides, detect_baseline_anomalies
 from utils.chart_builder import historical_comparison_chart, revenue_projection_chart
 from utils.data_loader import load_traffic
 from utils.export import to_csv, to_html_report, traffic_template_csv
@@ -179,20 +180,113 @@ if df is not None:
             "trend, inflating the forecast. **YoY replay mode is strongly recommended.**"
         )
 
+    # ── Pre-compute baseline lookup + anomaly detection (YoY mode only) ──────
+    # Done BEFORE the button so the quality-check panel can block the run.
+    _anomaly_flags: list = []
+    _baseline_lookup_raw: dict = {}
+    _forecast_dates_yoy = None
+
+    if use_yoy and n_hist_months >= 12:
+        _last_date = df["date"].max()
+        _forecast_dates_yoy = pd.date_range(
+            start=_last_date + pd.DateOffset(months=1),
+            periods=months, freq="MS",
+        )
+        _baseline_lookup_raw = yoy_baseline(df, _forecast_dates_yoy)
+        _anomaly_flags = detect_baseline_anomalies(df, _baseline_lookup_raw)
+
+        # Invalidate resolved state when flags change (e.g. new file uploaded)
+        _flags_fingerprint = str([
+            (f["source_month"], f["flag_type"]) for f in _anomaly_flags
+        ])
+        if st.session_state.get("_anomaly_flags_key") != _flags_fingerprint:
+            st.session_state["anomaly_flags_resolved"] = False
+            st.session_state["anomaly_overrides"] = {}
+            st.session_state["_anomaly_flags_key"] = _flags_fingerprint
+
+        st.session_state["anomaly_flags"] = _anomaly_flags
+        st.session_state["baseline_lookup_raw"] = _baseline_lookup_raw
+
+        # ── Baseline Quality Check panel ──────────────────────────────────────
+        st.subheader("Baseline Quality Check")
+        st.caption(
+            "Each forecast month inherits traffic from the same calendar month one year prior. "
+            "Anomalous source months silently propagate into the forecast — review any flags below. "
+            "YoY-confirmed flags (two years of data) are high-confidence. "
+            "Surrounding-window flags (no T-2 data, or T-2 looked like a startup period) "
+            "are lower-confidence and should be reviewed in context."
+        )
+
+        if not _anomaly_flags:
+            st.success("✓ No anomalies detected in YoY-source months. Baseline is clean.")
+            st.session_state["anomaly_flags_resolved"] = True
+        else:
+            st.session_state.setdefault("anomaly_overrides", {})
+            _overrides_ui: dict = {}
+
+            for _flag in _anomaly_flags:
+                _is_yoy = _flag["comparison_basis"] == "yoy"
+                _flag_label = _flag["flag_type"].replace("_", " ").title()
+                _src_key = str(_flag["source_month"])
+
+                if _is_yoy:
+                    st.error(
+                        f"**{_flag_label}** — {_flag['source_month'].strftime('%b %Y')} "
+                        f"(YoY-confirmed: two years of data available)"
+                    )
+                else:
+                    st.warning(
+                        f"**{_flag_label}** — {_flag['source_month'].strftime('%b %Y')} "
+                        f"(local context only — lower confidence)"
+                    )
+
+                _col1, _col2 = st.columns([3, 2])
+                with _col1:
+                    st.write(_flag["rationale"])
+                with _col2:
+                    _choice = st.radio(
+                        f"Action for {_flag['source_month'].strftime('%b %Y')}",
+                        options=["Accept original", "Replace with suggested", "Custom value"],
+                        key=f"flag_action_{_src_key}",
+                        horizontal=False,
+                    )
+                    if _choice == "Accept original":
+                        _overrides_ui[_flag["forecast_month"]] = "accept"
+                    elif _choice == "Replace with suggested":
+                        _overrides_ui[_flag["forecast_month"]] = _flag["suggested_replacement"]
+                        st.caption(f"→ {_flag['suggested_replacement']:,} sessions")
+                    else:
+                        _custom = st.number_input(
+                            "Custom value (sessions)",
+                            min_value=0,
+                            value=int(_flag["suggested_replacement"]),
+                            key=f"flag_custom_{_src_key}",
+                        )
+                        _overrides_ui[_flag["forecast_month"]] = int(_custom)
+
+                st.divider()
+
+            if st.button("Confirm baseline decisions", type="primary", key="anomaly_confirm"):
+                st.session_state["anomaly_overrides"] = _overrides_ui
+                st.session_state["anomaly_flags_resolved"] = True
+                st.rerun()
+
     can_run = use_v4 or bool(methods)
     if not can_run:
         st.warning("Please select at least one forecasting method or enable v4 auto-gating.")
+    elif _anomaly_flags and not st.session_state.get("anomaly_flags_resolved"):
+        st.error(
+            f"⚠ {len(_anomaly_flags)} baseline anomaly flag(s) need review before running forecast. "
+            "Confirm your decisions above to proceed."
+        )
     elif st.button("Generate Forecast", type="primary", key="hist_run"):
         use_yoy_mode = st.session_state.get("hist_baseline_mode", "YoY replay (recommended)").startswith("YoY")
         with st.spinner("Running historical forecast..."):
             if use_yoy_mode and n_hist_months >= 12:
-                # YoY replay baseline
-                last_date = df["date"].max()
-                forecast_dates = pd.date_range(
-                    start=last_date + pd.DateOffset(months=1),
-                    periods=months, freq="MS",
-                )
-                baseline_lookup = yoy_baseline(df, forecast_dates)
+                # Apply user overrides to the pre-computed baseline lookup
+                _overrides = st.session_state.get("anomaly_overrides", {})
+                baseline_lookup = apply_overrides(_baseline_lookup_raw, _overrides)
+                forecast_dates = _forecast_dates_yoy
                 # Store derived seasonality in session for downstream engines
                 derived_season = derive_seasonality_from_baseline(baseline_lookup)
                 st.session_state[SEASONALITY] = derived_season
