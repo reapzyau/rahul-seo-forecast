@@ -14,6 +14,11 @@ from engine.assumptions import get_assumption, get_provenance
 from engine.constants import CTR_MODELS, FORECAST_SCENARIOS, SITE_PRESETS, TIER_COLORS
 from engine.new_content_engine import run_new_content_forecast, run_new_content_forecast_simple
 from engine.revenue_engine import CURRENCY_SYMBOLS, add_revenue, keyword_revenue_table
+from engine.v5.content_clusters import (
+    cluster_content_opportunities,
+    fallback_per_post_traffic,
+    forecast_cluster_traffic_over_horizon,
+)
 from utils.chart_builder import (
     keyword_schedule_chart,
     revenue_projection_chart,
@@ -164,25 +169,46 @@ semrush_kw_df = st.session_state.get(KW_DF)
 
 st.subheader("New Content Forecast Source")
 
+_semrush_available = st.session_state.get(KW_DF) is not None
 content_source = st.radio(
     "What data should drive the forecast?",
     [
-        "Deterministic per-post stream (recommended — no gap analysis needed)",
+        "Auto-cluster from SEMrush (recommended)" if _semrush_available
+        else "Auto-cluster from SEMrush (upload SEMrush data first)",
+        "Deterministic per-post stream (no keyword data needed)",
         "Keyword gap analysis (upload a CSV of target keywords not yet ranking)",
     ],
-    index=0,
+    index=0 if _semrush_available else 1,
     key="nc_source",
     help=(
-        "The Deterministic stream is recommended when you have a content cadence "
-        "defined in the SOW but no keyword gap analysis. It avoids double-counting "
-        "your SEMrush keywords (which are already in the Positional Forecast). "
-        "Upload a gap-analysis CSV if you have Ahrefs Content Gap or a strategist-curated list."
+        "**Auto-cluster**: clusters your SEMrush portfolio into topical groups and "
+        "sizes per-post capture from median keyword volume × ranking probability. "
+        "Requires SEMrush data uploaded on Data Upload page.\n\n"
+        "**Deterministic**: flat per-post estimate with S-curve maturation. "
+        "Use when you have a content cadence but no keyword gap analysis.\n\n"
+        "**Gap analysis**: upload a CSV of target keywords you don't yet rank for."
     ),
 )
 
+use_cluster = content_source.startswith("Auto-cluster") and _semrush_available
 use_deterministic = content_source.startswith("Deterministic")
 
-if use_deterministic:
+if use_cluster:
+    st.info(
+        "SEMrush keywords are clustered into topical groups. "
+        "Per-post capture = median keyword volume × 3 adjacent variants × ranking probability (DA vs KD), "
+        "capped 50–600 sessions. Posts are allocated greedily to highest-capture clusters."
+    )
+    with st.expander("How capture is calculated"):
+        st.markdown(
+            "Per-post capture = `median keyword volume × 3 (adjacent variants) × ranking probability`. "
+            "Floor at 50, ceiling at 600 sessions/post. "
+            "Ranking probability = `(DA - mean KD + 50) / 100`, clipped to [0.05, 0.95]. "
+            "Posts allocated greedily to highest capture-per-post clusters, capped at "
+            "4 posts per cluster (diminishing returns)."
+        )
+
+elif use_deterministic:
     st.info(
         "Each post is assumed to capture a target volume of long-tail organic sessions "
         "with a set probability of ranking, following an S-curve maturation schedule. "
@@ -211,8 +237,12 @@ if use_deterministic:
 
 st.divider()
 
-# ── Upload ───────────────────────────────────────────────────────────────────
-if use_deterministic:
+# ── Upload (gap-analysis / deterministic override) ────────────────────────────
+if use_cluster:
+    # Cluster path uses SEMrush from session state — no upload needed
+    _semrush_kw_count = len(semrush_kw_df) if semrush_kw_df is not None else 0
+    st.info(f"Using SEMrush portfolio from Data Upload ({_semrush_kw_count:,} keywords).")
+elif use_deterministic:
     st.subheader("Optional: Override with keyword data")
     st.caption("If you have a gap analysis, upload it here to use keyword-level inputs instead.")
 else:
@@ -223,17 +253,19 @@ source_options = ["Manual upload (CSV / Excel)"]
 if content_plan:
     source_options.insert(0, f"Roadmap content plan ({len(content_plan)} pieces)")
 
-source = st.radio(
-    "Keyword source",
-    source_options,
-    key="nc_kw_source",
-    horizontal=True,
-    help="When a roadmap is uploaded, its content plan can drive the forecast directly.",
-)
-
 df = None
+source = None
 
-if source.startswith("Roadmap"):
+if not use_cluster:
+    source = st.radio(
+        "Keyword source",
+        source_options,
+        key="nc_kw_source",
+        horizontal=True,
+        help="When a roadmap is uploaded, its content plan can drive the forecast directly.",
+    )
+
+if not use_cluster and source is not None and source.startswith("Roadmap"):
     df = build_keyword_df_from_roadmap(content_plan, semrush_kw_df=semrush_kw_df)
     if df.empty:
         st.warning(
@@ -260,7 +292,7 @@ if source.startswith("Roadmap"):
             available = [c for c in display_cols if c in df.columns]
             st.dataframe(df[available].head(50), use_container_width=True, hide_index=True)
 
-else:
+elif not use_cluster:
     # ── Upload ────────────────────────────────────────────────────────────────
     st.subheader("Upload Keywords CSV")
     st.caption("Required columns: keyword, volume, kd — supports CSV, TSV, Excel")
@@ -297,16 +329,74 @@ else:
 # ── Run Forecast ─────────────────────────────────────────────────────────────
 can_run_kw = df is not None
 can_run_det = use_deterministic
+can_run_cluster = use_cluster and semrush_kw_df is not None
 
-if can_run_det or can_run_kw:
-    _roadmap_plan = content_plan if (not use_deterministic and source.startswith("Roadmap")) else None
+if can_run_det or can_run_kw or can_run_cluster:
+    _roadmap_plan = (
+        content_plan
+        if (not use_deterministic and not use_cluster and source is not None and source.startswith("Roadmap"))
+        else None
+    )
     if _roadmap_plan:
         st.info(f"Roadmap content plan active: {len(_roadmap_plan)} URL(s) will drive publish-month assignment.")
 
     if st.button("Generate Forecast", type="primary", key="kw_run"):
         with st.spinner("Running new content forecast..."):
-            if use_deterministic and df is None:
-                # Pure deterministic stream — no keyword data needed
+            if use_cluster:
+                # ── Auto-cluster path ─────────────────────────────────────
+                _brand_config = st.session_state.get("brand_config")
+                _brand_fn = _brand_config.classifier if _brand_config is not None else None
+                _seasonality = st.session_state.get("seasonality")
+                _fsm = st.session_state.get("forecast_start_month")
+
+                clusters = cluster_content_opportunities(
+                    semrush_kw_df,
+                    brand_classifier=_brand_fn,
+                )
+
+                if clusters.empty:
+                    _industry = st.session_state.get("industry_key", "default")
+                    _lo, _hi, _rationale = fallback_per_post_traffic(_industry)
+                    st.warning(
+                        f"Clustering produced no results (too few informational keywords in "
+                        f"positions 21-100, or scikit-learn not installed). {_rationale}"
+                    )
+                    _avg_per_post = (_lo + _hi) // 2
+                    monthly_arr = run_new_content_forecast_simple(
+                        n_posts_total=cadence * months,
+                        months=months,
+                        posts_per_month=cadence,
+                        per_post_longtail_traffic=_avg_per_post,
+                        rank_probability=0.55,
+                        seasonality=_seasonality,
+                        forecast_start_month=_fsm,
+                        seed=int(seed),
+                    )
+                    keyword_df = pd.DataFrame()
+                    monthly_df = pd.DataFrame({"month": range(1, months + 1), "traffic": monthly_arr})
+                    cluster_forecast = None
+                else:
+                    cluster_forecast = forecast_cluster_traffic_over_horizon(
+                        clusters,
+                        da=da,
+                        months=months,
+                        posts_per_month=cadence,
+                        seasonality=_seasonality,
+                        forecast_start_month=_fsm,
+                        seed=int(seed),
+                    )
+                    monthly_arr = cluster_forecast["monthly_total"]
+                    monthly_df = pd.DataFrame({
+                        "month": range(1, months + 1),
+                        "traffic": monthly_arr,
+                    })
+                    keyword_df = pd.DataFrame()
+                    st.session_state["content_clusters"] = cluster_forecast["per_cluster"]
+
+                scenarios = {}
+
+            elif use_deterministic and df is None:
+                # ── Pure deterministic stream ─────────────────────────────
                 _seasonality = st.session_state.get("seasonality")
                 _fsm = st.session_state.get("forecast_start_month")
                 monthly_arr = run_new_content_forecast_simple(
@@ -324,6 +414,7 @@ if can_run_det or can_run_kw:
                 keyword_df = pd.DataFrame()
                 scenarios = {}
             else:
+                # ── Gap-analysis keyword path ─────────────────────────────
                 keyword_df, monthly_df = run_new_content_forecast(
                     df, da, cadence, months, seed,
                     ctr_model=ctr_model,
@@ -368,6 +459,7 @@ if can_run_det or can_run_kw:
                 "scenario_name": scenario_name,
                 "exclude_informational": exclude_informational,
                 "informational_ctr_penalty": informational_ctr_penalty,
+                "use_cluster": use_cluster,
             }
 
 # ── Results ──────────────────────────────────────────────────────────────────
@@ -376,12 +468,18 @@ if NC_RESULT in st.session_state:
     keyword_df = r["keyword_df"]
     monthly_df = r["monthly_df"]
 
-    tab_names = ["\U0001f4ca Traffic Projection", "\U0001f4cb Keyword Schedule"]
+    _has_clusters = r.get("use_cluster") and st.session_state.get("content_clusters") is not None
+    tab_names = ["\U0001f4ca Traffic Projection"]
+    if _has_clusters:
+        tab_names.append("\U0001f9e9 Content Clusters")
+    else:
+        tab_names.append("\U0001f4cb Keyword Schedule")
     if r["enable_revenue"]:
         tab_names.append("\U0001f4b0 Revenue Analysis")
     if r["enable_scenarios"] and r["scenarios"]:
         tab_names.append("\U0001f504 Scenario Comparison")
-    tab_names.append("\U0001f916 AI Insights")
+    if not _has_clusters:
+        tab_names.append("\U0001f916 AI Insights")
     tab_names.append("\U0001f4e5 Export")
 
     tabs = st.tabs(tab_names)
@@ -402,53 +500,101 @@ if NC_RESULT in st.session_state:
         c1.metric("Total Projected Visits", f"{total_visits:,}")
         c2.metric("Peak Monthly Traffic", f"{peak_traffic:,}")
         c3.metric("Month of Peak", f"Month {peak_month}")
-        c4.metric("Keywords Ranking", f"{n_ranking} / {n_total}")
+        if _has_clusters:
+            c4.metric("Cadence", f"{r.get('months', 12)} mo horizon")
+        else:
+            c4.metric("Keywords Ranking", f"{n_ranking} / {n_total}")
 
         fig = traffic_projection_chart(monthly_df)
         st.plotly_chart(fig, use_container_width=True)
         st.caption("Projected monthly organic traffic based on keyword targeting, DA, and content cadence.")
 
-    # ── Tab: Keyword Schedule ────────────────────────────────────────────
+    # ── Tab: Content Clusters OR Keyword Schedule ────────────────────────
     with tabs[tab_idx]:
         tab_idx += 1
 
-        # Show informational exclusion callout
-        n_excluded = keyword_df.attrs.get("n_excluded_informational", 0)
-        if n_excluded > 0:
-            st.info(f"**{n_excluded} informational keywords** were excluded from this forecast.")
+        if _has_clusters:
+            # ── Clusters table ───────────────────────────────────────────
+            _per_cluster = st.session_state["content_clusters"]
+            st.subheader("Content opportunity clusters")
+            st.caption(
+                "Auto-clustered from SEMrush non-branded informational keywords "
+                "in positions 21-100. Posts allocated to highest-capture clusters first."
+            )
 
-        display_cols = [
-            "rank", "keyword", "volume", "kd", "tier", "intent", "efficiency_score",
-            "publish_month", "expected_position", "ctr", "estimated_monthly_traffic",
-            "time_to_rank", "traffic_starts_month",
-        ]
-        display_df = keyword_df[display_cols].copy()
-        display_df["efficiency_score"] = display_df["efficiency_score"].round(1)
+            _display_cols = [
+                c for c in [
+                    "cluster_label", "keyword_count", "total_volume",
+                    "median_keyword_volume", "mean_kd", "rank_probability",
+                    "capture_per_post", "posts_assigned", "m12_traffic",
+                ]
+                if c in _per_cluster.columns
+            ]
+            _display_df = _per_cluster[_display_cols].copy()
+            _display_df.columns = [
+                {"cluster_label": "Cluster", "keyword_count": "Keywords",
+                 "total_volume": "Total volume", "median_keyword_volume": "Median vol",
+                 "mean_kd": "Mean KD", "rank_probability": "Rank prob",
+                 "capture_per_post": "Capture/post", "posts_assigned": "Posts",
+                 "m12_traffic": "M12 traffic"}.get(c, c)
+                for c in _display_cols
+            ]
+            st.dataframe(_display_df, use_container_width=True, hide_index=True)
 
-        st.dataframe(
-            display_df.style.apply(
-                lambda row: [
-                    f"background-color: {TIER_COLORS.get(row['tier'], '')}20"
-                    if col == "tier" else ""
-                    for col in row.index
-                ],
-                axis=1,
-            ),
-            use_container_width=True,
-            hide_index=True,
-            height=500,
-        )
+            # Per-cluster drill-down
+            _cluster_labels = _per_cluster["cluster_label"].tolist()
+            _selected = st.selectbox("Cluster details", options=_cluster_labels, key="nc_cluster_sel")
+            if _selected:
+                _sel = _per_cluster[_per_cluster["cluster_label"] == _selected].iloc[0]
+                st.write(
+                    f"**{int(_sel['keyword_count'])} keywords**, "
+                    f"total volume {int(_sel['total_volume']):,}/mo"
+                )
+                if "top_volume_keyword" in _sel:
+                    st.write(f"Top keyword by volume: **{_sel['top_volume_keyword']}**")
+                if "member_keywords" in _sel:
+                    st.dataframe(
+                        pd.DataFrame({"keyword": _sel["member_keywords"][:50]}),
+                        use_container_width=True, hide_index=True,
+                    )
 
-        fig_kw = keyword_schedule_chart(keyword_df)
-        st.plotly_chart(fig_kw, use_container_width=True)
-        st.caption("Top keywords by estimated monthly traffic, coloured by difficulty tier.")
+        else:
+            # ── Keyword Schedule ─────────────────────────────────────────
+            n_excluded = keyword_df.attrs.get("n_excluded_informational", 0)
+            if n_excluded > 0:
+                st.info(f"**{n_excluded} informational keywords** were excluded from this forecast.")
 
-        # Wasted slots callout
-        unlikely = keyword_df[~keyword_df["will_rank"]].head(5)
-        if not unlikely.empty:
-            st.info("💡 **Keywords unlikely to rank at this DA** — consider deferring these or raising DA:")
-            for _, row in unlikely.iterrows():
-                st.markdown(f"- **{row['keyword']}** (KD: {row['kd']}, Volume: {row['volume']:,})")
+            display_cols = [
+                "rank", "keyword", "volume", "kd", "tier", "intent", "efficiency_score",
+                "publish_month", "expected_position", "ctr", "estimated_monthly_traffic",
+                "time_to_rank", "traffic_starts_month",
+            ]
+            display_df = keyword_df[display_cols].copy()
+            display_df["efficiency_score"] = display_df["efficiency_score"].round(1)
+
+            st.dataframe(
+                display_df.style.apply(
+                    lambda row: [
+                        f"background-color: {TIER_COLORS.get(row['tier'], '')}20"
+                        if col == "tier" else ""
+                        for col in row.index
+                    ],
+                    axis=1,
+                ),
+                use_container_width=True,
+                hide_index=True,
+                height=500,
+            )
+
+            fig_kw = keyword_schedule_chart(keyword_df)
+            st.plotly_chart(fig_kw, use_container_width=True)
+            st.caption("Top keywords by estimated monthly traffic, coloured by difficulty tier.")
+
+            unlikely = keyword_df[~keyword_df["will_rank"]].head(5)
+            if not unlikely.empty:
+                st.info("💡 **Keywords unlikely to rank at this DA** — consider deferring these or raising DA:")
+                for _, row in unlikely.iterrows():
+                    st.markdown(f"- **{row['keyword']}** (KD: {row['kd']}, Volume: {row['volume']:,})")
 
     # ── Tab: Revenue Analysis ────────────────────────────────────────────
     if r["enable_revenue"]:
