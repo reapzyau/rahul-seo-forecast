@@ -107,6 +107,109 @@ def detect_startup_period(
     return bool(early < threshold_ratio * recent)
 
 
+def detect_baseline_anomalies(
+    ga4_df: pd.DataFrame,
+    z_threshold: float = 2.0,
+    surrounding_window: int = 2,
+) -> dict[str, list[str]]:
+    """Identify months where the YoY traffic change looks anomalous.
+
+    Primary signal: T-2 vs T-1 YoY comparison.
+        For each month that has both a T-1 (prior year) and T-2 (two years ago)
+        value, compute the YoY growth rate at T-1 and at T-2. A large deviation
+        between those two rates flags a structural change rather than ordinary
+        seasonal noise.
+
+    Fallback (surrounding-window): Used when only 12-23 months of data are
+        available (no T-2). Flags months whose YoY rate deviates from the
+        surrounding ±window month median by more than z_threshold standard
+        deviations.
+
+    Args:
+        ga4_df: DataFrame with 'date' and 'traffic' columns, monthly granularity.
+        z_threshold: How many SDs away from surrounding-window median to flag.
+        surrounding_window: Months each side for the fallback window median.
+
+    Returns:
+        Dict with keys:
+            "anomalous_months": list of month labels ("Jan-24") flagged.
+            "method": "t2_vs_t1" | "surrounding_window" | "insufficient_data"
+            "details": list of human-readable explanation strings per anomaly.
+    """
+    df = ga4_df.copy()
+    df["date"] = pd.to_datetime(df["date"]).dt.to_period("M").dt.to_timestamp()
+    df = df.sort_values("date").reset_index(drop=True)
+    df["traffic"] = df["traffic"].astype(float)
+
+    anomalous: list[str] = []
+    details: list[str] = []
+
+    # Try T-2 vs T-1 primary method (needs ≥24 months)
+    if len(df) >= 24:
+        df_indexed = df.set_index("date")["traffic"]
+
+        yoy_rates: list[tuple[pd.Timestamp, float]] = []
+        for i in range(len(df)):
+            t0 = df.iloc[i]["date"]
+            t_minus_1 = t0 - pd.DateOffset(years=1)
+            t_minus_2 = t0 - pd.DateOffset(years=2)
+            t_minus_1 = pd.Timestamp(year=t_minus_1.year, month=t_minus_1.month, day=1)
+            t_minus_2 = pd.Timestamp(year=t_minus_2.year, month=t_minus_2.month, day=1)
+
+            if t_minus_1 in df_indexed.index and t_minus_2 in df_indexed.index:
+                v0 = df_indexed[t_minus_1]
+                vm1 = df_indexed[t_minus_2]
+                if vm1 > 0:
+                    yoy_rates.append((t0, (v0 - vm1) / vm1))
+
+        if len(yoy_rates) >= 6:
+            rate_vals = np.array([r for _, r in yoy_rates])
+            mean_rate = np.mean(rate_vals)
+            std_rate = np.std(rate_vals)
+            for date, rate in yoy_rates:
+                if std_rate > 0 and abs(rate - mean_rate) > z_threshold * std_rate:
+                    label = date.strftime("%b-%y")
+                    anomalous.append(label)
+                    direction = "spike" if rate > mean_rate else "drop"
+                    details.append(
+                        f"{label}: YoY rate {rate:+.0%} vs portfolio mean {mean_rate:+.0%} "
+                        f"({direction}, {abs(rate - mean_rate) / std_rate:.1f}σ)"
+                    )
+            return {"anomalous_months": anomalous, "method": "t2_vs_t1", "details": details}
+
+    # Fallback: surrounding-window method (12-23 months)
+    if len(df) < 13:
+        return {"anomalous_months": [], "method": "insufficient_data", "details": []}
+
+    # Compute raw YoY growth rates where T-1 exists
+    df_indexed = df.set_index("date")["traffic"]
+    yoy_vals: list[tuple[pd.Timestamp, float]] = []
+    for i in range(len(df)):
+        t0 = df.iloc[i]["date"]
+        t_minus_1 = pd.Timestamp(year=t0.year - 1, month=t0.month, day=1)
+        if t_minus_1 in df_indexed.index and df_indexed[t_minus_1] > 0:
+            rate = (df_indexed[t0] - df_indexed[t_minus_1]) / df_indexed[t_minus_1]
+            yoy_vals.append((t0, rate))
+
+    for idx, (date, rate) in enumerate(yoy_vals):
+        lo = max(0, idx - surrounding_window)
+        hi = min(len(yoy_vals), idx + surrounding_window + 1)
+        window_rates = [r for _, r in yoy_vals[lo:hi]]
+        if len(window_rates) < 3:
+            continue
+        med = np.median(window_rates)
+        std = np.std(window_rates)
+        if std > 0 and abs(rate - med) > z_threshold * std:
+            label = date.strftime("%b-%y")
+            anomalous.append(label)
+            direction = "spike" if rate > med else "drop"
+            details.append(
+                f"{label}: YoY rate {rate:+.0%} vs window median {med:+.0%} ({direction})"
+            )
+
+    return {"anomalous_months": anomalous, "method": "surrounding_window", "details": details}
+
+
 def linear_forecast(
     dates: pd.Series,
     traffic: pd.Series,
@@ -161,6 +264,101 @@ def linear_forecast(
         })
 
     return pd.DataFrame(rows)
+
+
+def yoy_growth_forecast(
+    dates: pd.Series,
+    traffic: pd.Series,
+    future_months: int,
+    confidence: float = 15.0,
+) -> pd.DataFrame:
+    """Year-over-year growth baseline for the combined engine.
+
+    For each forecast month, anchors to the actual traffic from the same
+    calendar month 12 months prior and compounds the median YoY growth rate.
+    This naturally carries the seasonal shape and the real underlying trend
+    without OLS distortion from outlier periods.
+
+    The historical portion still uses the OLS fitted line so chart display
+    remains consistent with the linear baseline.
+
+    Returns a DataFrame with the same column contract as linear_forecast()
+    plus attrs["yoy_rate"] (annualised decimal) for UI display.
+    """
+    dates = pd.Series(dates) if not isinstance(dates, pd.Series) else dates
+    traffic_vals = traffic.values.astype(float)
+    n = len(traffic_vals)
+
+    # Build a normalised-to-month-start timestamp → traffic lookup
+    date_to_traffic: dict = {
+        pd.Timestamp(d).replace(day=1): float(t)
+        for d, t in zip(dates, traffic_vals, strict=False)
+    }
+
+    # Compute per-month YoY growth rates where prior-year same-month exists
+    yoy_rates: list[float] = []
+    for d, t in zip(dates, traffic_vals, strict=False):
+        prior = (pd.Timestamp(d).replace(day=1) - pd.DateOffset(years=1))
+        prior_ts = pd.Timestamp(prior).replace(day=1)
+        if prior_ts in date_to_traffic and date_to_traffic[prior_ts] > 0:
+            yoy_rates.append(t / date_to_traffic[prior_ts] - 1)
+
+    if yoy_rates:
+        # Median is robust to outlier periods (e.g. early explosive growth)
+        yoy_rate = float(np.median(yoy_rates))
+    elif traffic_vals[0] > 0:
+        # Fallback: annualised slope from first to last
+        yoy_rate = float((traffic_vals[-1] / traffic_vals[0]) ** (12.0 / n) - 1)
+    else:
+        yoy_rate = 0.0
+
+    # Cap to ±50% pa to prevent runaway forecasts
+    yoy_rate = max(-0.5, min(0.5, yoy_rate))
+
+    # Historical portion: OLS fitted line for chart consistency
+    x = np.arange(n)
+    coeffs = np.polyfit(x, traffic_vals, 1)
+    slope, intercept = coeffs
+
+    rows = []
+    last_date = pd.Timestamp(dates.iloc[-1]).replace(day=1)
+
+    for i in range(n):
+        fitted = slope * i + intercept
+        rows.append({
+            "date": dates.iloc[i],
+            "actual": int(traffic_vals[i]),
+            "linear": round(fitted),
+            "linear_upper": round(fitted * (1 + confidence / 100)),
+            "linear_lower": round(max(0, fitted * (1 - confidence / 100))),
+            "is_forecast": False,
+        })
+
+    # Forecast: same calendar month last year × (1 + yoy_rate)^(j/12)
+    for j in range(1, future_months + 1):
+        forecast_date = last_date + pd.DateOffset(months=j)
+        anchor_ts = pd.Timestamp(forecast_date - pd.DateOffset(years=1)).replace(day=1)
+
+        if anchor_ts in date_to_traffic:
+            anchor_val = date_to_traffic[anchor_ts]
+        else:
+            # Nearest available month as fallback
+            closest = min(date_to_traffic, key=lambda d: abs((d - anchor_ts).days))
+            anchor_val = date_to_traffic[closest]
+
+        forecast_val = max(0.0, anchor_val * (1 + yoy_rate) ** (j / 12.0))
+        rows.append({
+            "date": forecast_date,
+            "actual": None,
+            "linear": round(forecast_val),
+            "linear_upper": round(forecast_val * (1 + confidence / 100)),
+            "linear_lower": round(max(0, forecast_val * (1 - confidence / 100))),
+            "is_forecast": True,
+        })
+
+    result = pd.DataFrame(rows)
+    result.attrs["yoy_rate"] = yoy_rate
+    return result
 
 
 def exponential_smoothing_forecast(

@@ -12,11 +12,12 @@ from engine.historical_engine import (
 )
 from engine.revenue_engine import CURRENCY_SYMBOLS, add_revenue, build_full_metrics_table
 from engine.seasonality_engine import derive_seasonality_from_baseline
+from engine.v5.anomaly_detector import apply_overrides, detect_baseline_anomalies
 from utils.chart_builder import historical_comparison_chart, revenue_projection_chart
 from utils.data_loader import load_traffic
 from utils.export import to_csv, to_html_report, traffic_template_csv
 from utils.page_base import setup_page
-from utils.session import HIST_N_MONTHS, HIST_RESULTS, SEASONALITY
+from utils.session import HIST_N_MONTHS, HIST_RESULTS, SCENARIO_RESULTS, SEASONALITY
 
 setup_page(
     "Historical Forecast",
@@ -24,10 +25,23 @@ setup_page(
     show_assumptions_banner=False,
 )
 
+if SCENARIO_RESULTS not in st.session_state:
+    st.info(
+        "💡 **Want to compare three scenarios at once?** "
+        "Use the **Strategy** page to run a Historical baseline plus three scenario uplifts in one click. "
+        "This page is for deep-dive analysis on a single forecast configuration."
+    )
+else:
+    st.success(
+        "✅ Three scenarios already run via Strategy. "
+        "This page lets you drill into a single forecast configuration in detail. "
+        "Download the 3-scenario xlsx from **Deliverables** or the Strategy page."
+    )
+
 # ── Sidebar ──────────────────────────────────────────────────────────────────
 st.sidebar.header("Historical Forecast Settings")
 
-months = st.sidebar.slider("Forecast Horizon (months)", 3, 36, 12)
+months = st.sidebar.slider("Forecast Horizon (months)", 3, 36, 12, key="hist_months")
 
 # ── Smart defaults (collapsible) ──────────────────────────────────────────────
 _n_hist_for_default = st.session_state.get(HIST_N_MONTHS, 0)
@@ -54,9 +68,9 @@ with st.sidebar.expander("Smart defaults", expanded=False):
 st.sidebar.divider()
 st.sidebar.subheader("Advanced")
 use_v4 = st.sidebar.checkbox(
-    "Use v4 auto-gated model selection",
+    "Auto-select model based on data length",
     value=True,
-    help="Automatically selects Prophet/Holt's/Linear based on data length.",
+    help="Uses Prophet for ≥24 months, Holt's for 12–23, linear for <12. Recommended.",
     key="hist_use_v4",
 )
 
@@ -64,34 +78,49 @@ use_v4 = st.sidebar.checkbox(
 _n_hist = st.session_state.get(HIST_N_MONTHS, 0)
 _prophet_active = use_v4 and _n_hist >= 24
 
-# V4-specific controls
-changepoint_prior_scale = st.sidebar.slider(
-    "Trend flexibility (Prophet)",
-    0.001, 0.5, 0.05, step=0.005,
-    key="hist_changepoint",
-    help="Higher = more flexible trend (Prophet only). 0.05 is recommended.",
-    disabled=not _prophet_active,
-)
+# V4-specific: trend flexibility (only meaningful when Prophet is actually active)
+if _prophet_active:
+    changepoint_prior_scale = st.sidebar.slider(
+        "Trend flexibility",
+        0.001, 0.5, 0.05, step=0.005,
+        key="hist_changepoint",
+        help="Higher = more flexible trend (Prophet only). 0.05 is recommended.",
+    )
+else:
+    changepoint_prior_scale = 0.05
 
-# Legacy multi-method controls (shown when v4 is off)
-methods = st.sidebar.multiselect(
-    "Forecasting Method (legacy)",
-    ["Linear Regression", "Exponential Smoothing", "Simple Moving Average"],
-    default=["Linear Regression", "Exponential Smoothing"],
-    key="hist_methods",
-    disabled=use_v4,
-)
-sma_window = st.sidebar.slider("SMA Window (months)", 2, 6, 3, disabled=use_v4)
-alpha = st.sidebar.slider("Smoothing Alpha", 0.1, 0.9, 0.3, step=0.05, disabled=use_v4)
-# Prophet provides its own uncertainty intervals; confidence band only applies to linear/Holt's
-confidence = st.sidebar.slider("Confidence Band (%)", 5, 30, 15, disabled=_prophet_active)
+# Legacy controls — only shown when v4 is off
+if not use_v4:
+    with st.sidebar.expander("Legacy model settings", expanded=False):
+        methods = st.multiselect(
+            "Forecasting Method",
+            ["Linear Regression", "Exponential Smoothing", "Simple Moving Average"],
+            default=["Linear Regression", "Exponential Smoothing"],
+            key="hist_methods",
+        )
+        sma_window = st.slider("SMA Window (months)", 2, 6, 3, key="hist_sma_window")
+        alpha = st.slider("Smoothing Alpha", 0.1, 0.9, 0.3, step=0.05, key="hist_alpha")
+        confidence = st.slider("Confidence Band (%)", 5, 30, 15, key="hist_confidence")
+else:
+    methods = ["Linear Regression"]
+    sma_window = 3
+    alpha = 0.3
+    confidence = 15
 
-st.sidebar.divider()
-st.sidebar.subheader("Revenue Settings")
-enable_revenue = st.sidebar.checkbox("Enable Revenue Projection", key="hist_rev")
-cvr = st.sidebar.number_input("Conversion Rate (%)", 0.1, 100.0, 2.5, step=0.1, key="hist_cvr", disabled=not enable_revenue)
-aov = st.sidebar.number_input("Average Order Value", 1.0, 100000.0, 100.0, step=10.0, key="hist_aov", disabled=not enable_revenue)
-currency = st.sidebar.selectbox("Currency", list(CURRENCY_SYMBOLS.keys()), key="hist_cur", disabled=not enable_revenue)
+with st.sidebar.expander("Revenue projection", expanded=False):
+    enable_revenue = st.checkbox("Enable revenue projection", key="hist_rev")
+    cvr = st.number_input(
+        "Conversion Rate (%)", 0.1, 100.0, 2.5, step=0.1,
+        key="hist_cvr", disabled=not enable_revenue,
+    )
+    aov = st.number_input(
+        "Average Order Value", 1.0, 100000.0, 100.0, step=10.0,
+        key="hist_aov", disabled=not enable_revenue,
+    )
+    currency = st.selectbox(
+        "Currency", list(CURRENCY_SYMBOLS.keys()),
+        key="hist_cur", disabled=not enable_revenue,
+    )
 
 # ── Upload ───────────────────────────────────────────────────────────────────
 st.subheader("Upload Historical Data")
@@ -151,20 +180,113 @@ if df is not None:
             "trend, inflating the forecast. **YoY replay mode is strongly recommended.**"
         )
 
+    # ── Pre-compute baseline lookup + anomaly detection (YoY mode only) ──────
+    # Done BEFORE the button so the quality-check panel can block the run.
+    _anomaly_flags: list = []
+    _baseline_lookup_raw: dict = {}
+    _forecast_dates_yoy = None
+
+    if use_yoy and n_hist_months >= 12:
+        _last_date = df["date"].max()
+        _forecast_dates_yoy = pd.date_range(
+            start=_last_date + pd.DateOffset(months=1),
+            periods=months, freq="MS",
+        )
+        _baseline_lookup_raw = yoy_baseline(df, _forecast_dates_yoy)
+        _anomaly_flags = detect_baseline_anomalies(df, _baseline_lookup_raw)
+
+        # Invalidate resolved state when flags change (e.g. new file uploaded)
+        _flags_fingerprint = str([
+            (f["source_month"], f["flag_type"]) for f in _anomaly_flags
+        ])
+        if st.session_state.get("_anomaly_flags_key") != _flags_fingerprint:
+            st.session_state["anomaly_flags_resolved"] = False
+            st.session_state["anomaly_overrides"] = {}
+            st.session_state["_anomaly_flags_key"] = _flags_fingerprint
+
+        st.session_state["anomaly_flags"] = _anomaly_flags
+        st.session_state["baseline_lookup_raw"] = _baseline_lookup_raw
+
+        # ── Baseline Quality Check panel ──────────────────────────────────────
+        st.subheader("Baseline Quality Check")
+        st.caption(
+            "Each forecast month inherits traffic from the same calendar month one year prior. "
+            "Anomalous source months silently propagate into the forecast — review any flags below. "
+            "YoY-confirmed flags (two years of data) are high-confidence. "
+            "Surrounding-window flags (no T-2 data, or T-2 looked like a startup period) "
+            "are lower-confidence and should be reviewed in context."
+        )
+
+        if not _anomaly_flags:
+            st.success("✓ No anomalies detected in YoY-source months. Baseline is clean.")
+            st.session_state["anomaly_flags_resolved"] = True
+        else:
+            st.session_state.setdefault("anomaly_overrides", {})
+            _overrides_ui: dict = {}
+
+            for _flag in _anomaly_flags:
+                _is_yoy = _flag["comparison_basis"] == "yoy"
+                _flag_label = _flag["flag_type"].replace("_", " ").title()
+                _src_key = str(_flag["source_month"])
+
+                if _is_yoy:
+                    st.error(
+                        f"**{_flag_label}** — {_flag['source_month'].strftime('%b %Y')} "
+                        f"(YoY-confirmed: two years of data available)"
+                    )
+                else:
+                    st.warning(
+                        f"**{_flag_label}** — {_flag['source_month'].strftime('%b %Y')} "
+                        f"(local context only — lower confidence)"
+                    )
+
+                _col1, _col2 = st.columns([3, 2])
+                with _col1:
+                    st.write(_flag["rationale"])
+                with _col2:
+                    _choice = st.radio(
+                        f"Action for {_flag['source_month'].strftime('%b %Y')}",
+                        options=["Accept original", "Replace with suggested", "Custom value"],
+                        key=f"flag_action_{_src_key}",
+                        horizontal=False,
+                    )
+                    if _choice == "Accept original":
+                        _overrides_ui[_flag["forecast_month"]] = "accept"
+                    elif _choice == "Replace with suggested":
+                        _overrides_ui[_flag["forecast_month"]] = _flag["suggested_replacement"]
+                        st.caption(f"→ {_flag['suggested_replacement']:,} sessions")
+                    else:
+                        _custom = st.number_input(
+                            "Custom value (sessions)",
+                            min_value=0,
+                            value=int(_flag["suggested_replacement"]),
+                            key=f"flag_custom_{_src_key}",
+                        )
+                        _overrides_ui[_flag["forecast_month"]] = int(_custom)
+
+                st.divider()
+
+            if st.button("Confirm baseline decisions", type="primary", key="anomaly_confirm"):
+                st.session_state["anomaly_overrides"] = _overrides_ui
+                st.session_state["anomaly_flags_resolved"] = True
+                st.rerun()
+
     can_run = use_v4 or bool(methods)
     if not can_run:
         st.warning("Please select at least one forecasting method or enable v4 auto-gating.")
+    elif _anomaly_flags and not st.session_state.get("anomaly_flags_resolved"):
+        st.error(
+            f"⚠ {len(_anomaly_flags)} baseline anomaly flag(s) need review before running forecast. "
+            "Confirm your decisions above to proceed."
+        )
     elif st.button("Generate Forecast", type="primary", key="hist_run"):
         use_yoy_mode = st.session_state.get("hist_baseline_mode", "YoY replay (recommended)").startswith("YoY")
         with st.spinner("Running historical forecast..."):
             if use_yoy_mode and n_hist_months >= 12:
-                # YoY replay baseline
-                last_date = df["date"].max()
-                forecast_dates = pd.date_range(
-                    start=last_date + pd.DateOffset(months=1),
-                    periods=months, freq="MS",
-                )
-                baseline_lookup = yoy_baseline(df, forecast_dates)
+                # Apply user overrides to the pre-computed baseline lookup
+                _overrides = st.session_state.get("anomaly_overrides", {})
+                baseline_lookup = apply_overrides(_baseline_lookup_raw, _overrides)
+                forecast_dates = _forecast_dates_yoy
                 # Store derived seasonality in session for downstream engines
                 derived_season = derive_seasonality_from_baseline(baseline_lookup)
                 st.session_state[SEASONALITY] = derived_season
@@ -418,3 +540,11 @@ if HIST_RESULTS in st.session_state:
                 "historical-report.html",
                 "text/html",
             )
+
+st.divider()
+st.caption(
+    "**Looking for the three-scenario comparison?** "
+    "The Strategy page runs Conservative / Moderate / Aggressive in one click and "
+    "produces a four-sheet xlsx ready for client presentations. "
+    "This deep-dive page is best for analysts tuning a single forecast configuration."
+)

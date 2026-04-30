@@ -308,6 +308,71 @@ class TestRunHistoricalForecast:
         assert "sma" in result.columns
 
 
+# ── YoY Growth Forecast ──────────────────────────────────────────────────────
+
+
+class TestYoYGrowthForecast:
+    def test_flat_series_stays_flat(self):
+        from engine.historical_engine import yoy_growth_forecast
+        dates = pd.date_range("2022-01-01", periods=24, freq="MS")
+        traffic = pd.Series([5000] * 24)
+        result = yoy_growth_forecast(dates, traffic, future_months=12)
+        forecast = result[result["is_forecast"]]
+        # Flat series → yoy_rate ≈ 0 → forecast ≈ 5000
+        assert all(abs(forecast["linear"] - 5000) < 50)
+
+    def test_growing_series_extrapolates_trend(self):
+        from engine.historical_engine import yoy_growth_forecast
+        dates = pd.date_range("2022-01-01", periods=24, freq="MS")
+        # ~20% YoY growth: month 13 is 1.2x month 1
+        base = 4000
+        traffic = pd.Series([int(base * (1.2 ** (i / 12))) for i in range(24)])
+        result = yoy_growth_forecast(dates, traffic, future_months=6)
+        forecast = result[result["is_forecast"]]
+        # Forecast should be higher than the same months from year 1
+        assert forecast["linear"].iloc[0] > traffic.iloc[12]
+
+    def test_yoy_rate_stored_in_attrs(self):
+        from engine.historical_engine import yoy_growth_forecast
+        dates = pd.date_range("2022-01-01", periods=24, freq="MS")
+        traffic = pd.Series([5000] * 24)
+        result = yoy_growth_forecast(dates, traffic, future_months=6)
+        assert "yoy_rate" in result.attrs
+        assert isinstance(result.attrs["yoy_rate"], float)
+
+    def test_short_history_uses_annualised_fallback(self):
+        from engine.historical_engine import yoy_growth_forecast
+        dates = pd.date_range("2024-01-01", periods=6, freq="MS")
+        traffic = pd.Series([1000, 1100, 1200, 1300, 1400, 1500])
+        result = yoy_growth_forecast(dates, traffic, future_months=6)
+        assert "yoy_rate" in result.attrs
+        # With 6 months and no same-month prior, uses annualised slope
+        assert result.attrs["yoy_rate"] > 0  # growing series
+
+    def test_returns_same_column_contract_as_linear_forecast(self):
+        from engine.historical_engine import linear_forecast, yoy_growth_forecast
+        dates = pd.date_range("2022-01-01", periods=24, freq="MS")
+        traffic = pd.Series([5000] * 24)
+        yoy = yoy_growth_forecast(dates, traffic, future_months=6)
+        lin = linear_forecast(dates, traffic, future_months=6)
+        assert set(yoy.columns) == set(lin.columns)
+
+    def test_combined_engine_uses_yoy_for_long_history(self):
+        from engine.combined_engine import run_combined_forecast
+        dates = pd.date_range("2022-01-01", periods=24, freq="MS")
+        historical = pd.DataFrame({"date": dates, "traffic": [5000] * 24})
+        result = run_combined_forecast(historical, None, None, months=12)
+        assert result.attrs.get("yoy_rate") is not None
+
+    def test_combined_engine_uses_linear_for_short_history(self):
+        from engine.combined_engine import run_combined_forecast
+        dates = pd.date_range("2024-01-01", periods=12, freq="MS")
+        historical = pd.DataFrame({"date": dates, "traffic": [5000] * 12})
+        result = run_combined_forecast(historical, None, None, months=6)
+        # <13 months → linear forecast → no yoy_rate attr
+        assert result.attrs.get("yoy_rate") is None
+
+
 # ── Combined Engine ─────────────────────────────────────────────────────────
 
 
@@ -352,6 +417,63 @@ class TestCombinedForecast:
             months=12,
         )
         assert (combined["baseline"] == 0).all()
+
+
+class TestCombinedBaselineFromHistorical:
+    def test_combined_baseline_follows_historical_trend(self):
+        """Regression: Combined page was not passing historical_forecast_df to the engine.
+        A 36-month upward-trending GA4 dataset should produce a Combined baseline that grows
+        when historical_forecast_df is provided, confirming the linkage fires correctly.
+        """
+        from engine.combined_engine import run_combined_forecast
+        from engine.historical_engine import run_historical_forecast_v4
+
+        ga4 = pd.DataFrame({
+            "date": pd.date_range("2023-01-01", periods=36, freq="MS"),
+            "traffic": [1000 + i * 100 for i in range(36)],  # 1000→4500 over 36 months
+        })
+        hist = run_historical_forecast_v4(ga4, months=12)
+
+        combined = run_combined_forecast(
+            historical_df=ga4,
+            positional_monthly=None,
+            new_content_monthly=None,
+            months=12,
+            historical_forecast_df=hist,
+        )
+        fc = combined[combined["is_forecast"]]
+        baseline_growth_pct = (fc["baseline"].iloc[-1] / fc["baseline"].iloc[0] - 1) * 100
+        assert baseline_growth_pct >= 5.0, (
+            f"Expected baseline to grow ≥5% over 12 months given strong trend; "
+            f"got {baseline_growth_pct:.1f}%"
+        )
+
+    def test_combined_baseline_differs_with_and_without_historical_forecast(self):
+        """Passing historical_forecast_df should change the baseline from the default YoY calc."""
+        from engine.combined_engine import run_combined_forecast
+        from engine.historical_engine import run_historical_forecast_v4
+
+        ga4 = pd.DataFrame({
+            "date": pd.date_range("2022-07-01", periods=45, freq="MS"),
+            "traffic": [700 + i * 94 for i in range(45)],  # 700→4930 over 45 months
+        })
+        hist = run_historical_forecast_v4(ga4, months=12)
+
+        combined_default = run_combined_forecast(
+            historical_df=ga4, positional_monthly=None, new_content_monthly=None, months=12
+        )
+        combined_hf = run_combined_forecast(
+            historical_df=ga4, positional_monthly=None, new_content_monthly=None, months=12,
+            historical_forecast_df=hist,
+        )
+
+        default_end = combined_default[combined_default["is_forecast"]]["baseline"].iloc[-1]
+        hf_end = combined_hf[combined_hf["is_forecast"]]["baseline"].iloc[-1]
+        # The two baselines should differ — confirming the parameter is being used
+        assert default_end != hf_end, (
+            "historical_forecast_df had no effect on Combined baseline — "
+            "the linkage is not firing."
+        )
 
 
 class TestCombinedHub:
@@ -471,6 +593,72 @@ class TestCombinedHub:
         )
         assert "combined" in combined.columns
         assert "positional_uplift" in combined.columns
+
+    def test_combined_uses_historical_forecast_when_provided(self):
+        """When historical_forecast_df is passed, its projection drives the baseline."""
+        from engine.combined_engine import run_combined_forecast
+        from engine.historical_engine import run_historical_forecast_v4
+
+        historical = pd.DataFrame({
+            "date": pd.date_range("2023-01-01", periods=18, freq="MS"),
+            "traffic": [10000 + i * 300 for i in range(18)],
+        })
+        hist_forecast = run_historical_forecast_v4(historical, months=12)
+
+        positional = pd.DataFrame({
+            "month": range(1, 13),
+            "baseline": [10000] * 12,
+            "uplift_p10": [100] * 12,
+            "uplift_p50": [300] * 12,
+            "uplift_p90": [500] * 12,
+        })
+
+        combined_with_hf = run_combined_forecast(
+            historical_df=historical,
+            positional_monthly=positional,
+            new_content_monthly=None,
+            months=12,
+            historical_forecast_df=hist_forecast,
+        )
+
+        # Determine which column the engine picked (mirror _resolve_baseline_projection logic)
+        hf_forecast_rows = hist_forecast[hist_forecast["is_forecast"]]
+        chosen = hist_forecast.attrs.get("chosen_method")
+        candidates = ["prophet", "exponential_smoothing", "linear"]
+        if chosen and chosen in hf_forecast_rows.columns:
+            col = chosen
+        else:
+            col = next((c for c in candidates if c in hf_forecast_rows.columns), "linear")
+
+        expected_m12 = int(hf_forecast_rows[col].iloc[-1])
+        actual_m12 = int(combined_with_hf[combined_with_hf["is_forecast"]]["baseline"].iloc[-1])
+        assert abs(actual_m12 - expected_m12) <= 2
+
+    def test_combined_backward_compat_without_historical_forecast(self):
+        """Without historical_forecast_df, output matches the pre-change behaviour."""
+        from engine.combined_engine import run_combined_forecast
+
+        historical = pd.DataFrame({
+            "date": pd.date_range("2023-01-01", periods=12, freq="MS"),
+            "traffic": [10000 + i * 200 for i in range(12)],
+        })
+        positional = pd.DataFrame({
+            "month": range(1, 13),
+            "baseline": [10000] * 12,
+            "uplift_p10": [200] * 12,
+            "uplift_p50": [500] * 12,
+            "uplift_p90": [800] * 12,
+        })
+        result = run_combined_forecast(
+            historical_df=historical,
+            positional_monthly=positional,
+            new_content_monthly=None,
+            months=12,
+        )
+        assert "combined_p50" in result.columns
+        assert "baseline" in result.columns
+        forecast = result[result["is_forecast"]]
+        assert forecast["baseline"].iloc[-1] > forecast["baseline"].iloc[0]
 
 
 # ── Revenue Engine ──────────────────────────────────────────────────────────
@@ -922,6 +1110,46 @@ class TestPositionalMonteCarlo:
         assert "traffic" in monthly.columns
         assert (monthly["uplift"] == monthly["uplift_p50"]).all()
 
+    def test_position_range_filter_scopes_portfolio(self):
+        """Passing position_range=(5, 20) excludes keywords outside that window."""
+        from engine.positional_engine import run_positional_forecast_mc
+        df = pd.DataFrame({
+            "keyword": [f"kw_{i}" for i in range(20)],
+            "position": [2, 3, 5, 8, 10, 15, 18, 22, 30, 45] * 2,
+            "volume": [1000] * 20,
+            "kd": [30] * 20,
+            "current_traffic": [100] * 20,
+            "intent": ["commercial"] * 20,
+            "has_aio": [False] * 20,
+        })
+        kw_full, _ = run_positional_forecast_mc(df, months=6, n_trials=100, seed=42)
+        kw_scoped, _ = run_positional_forecast_mc(
+            df, months=6, n_trials=100, seed=42,
+            position_range=(5, 20),
+        )
+        assert len(kw_full) > len(kw_scoped)
+        assert kw_scoped["position"].between(5, 20).all()
+
+    def test_position_range_empty_result_returns_empty_frames(self):
+        """When filter removes everything, engine returns empty frames rather than crashing."""
+        from engine.positional_engine import run_positional_forecast_mc
+        df = pd.DataFrame({
+            "keyword": ["kw_a", "kw_b"],
+            "position": [2, 3],
+            "volume": [1000, 1000],
+            "kd": [30, 30],
+            "current_traffic": [100, 100],
+            "intent": ["commercial", "commercial"],
+            "has_aio": [False, False],
+        })
+        kw_df, monthly = run_positional_forecast_mc(
+            df, months=6, n_trials=50, seed=42,
+            position_range=(50, 100),
+        )
+        assert kw_df.empty
+        assert len(monthly) == 6
+        assert (monthly["uplift_p50"] == 0).all()
+
 
 class TestAttentionCurve:
     def test_top_keywords_get_full_weight(self):
@@ -1179,6 +1407,78 @@ class TestDecayRespectsMaintenance:
         # At 0.9 coverage, effective decay should be reduced by at least 50%
         assert cumulative_hi < cumulative_no * 0.5
 
+    def test_non_branded_informational_decays_faster(self):
+        """Non-branded informational keyword decays more than non-branded commercial in same position."""
+        from engine.decay_engine import calculate_portfolio_decay
+        info_df = pd.DataFrame({
+            "keyword": ["info_kw"],
+            "position": [8],
+            "current_traffic": [1000],
+            "intent": ["informational"],
+            "is_branded": [False],
+        })
+        comm_df = pd.DataFrame({
+            "keyword": ["commercial_kw"],
+            "position": [8],
+            "current_traffic": [1000],
+            "intent": ["commercial"],
+            "is_branded": [False],
+        })
+        info_decay = calculate_portfolio_decay(info_df, months=12).iloc[-1]["cumulative_decay"]
+        comm_decay = calculate_portfolio_decay(comm_df, months=12).iloc[-1]["cumulative_decay"]
+        assert info_decay > comm_decay
+
+    def test_branded_informational_does_not_get_multiplier(self):
+        """Branded informational decays same as branded commercial."""
+        from engine.decay_engine import calculate_portfolio_decay
+        info = calculate_portfolio_decay(pd.DataFrame({
+            "keyword": ["brand info"], "position": [5], "current_traffic": [500],
+            "intent": ["informational"], "is_branded": [True],
+        }), months=12).iloc[-1]["cumulative_decay"]
+        comm = calculate_portfolio_decay(pd.DataFrame({
+            "keyword": ["brand comm"], "position": [5], "current_traffic": [500],
+            "intent": ["commercial"], "is_branded": [True],
+        }), months=12).iloc[-1]["cumulative_decay"]
+        assert info == comm
+
+    def test_missing_intent_column_no_crash(self):
+        """If intent column missing, decay still runs with no multiplier applied."""
+        from engine.decay_engine import calculate_portfolio_decay
+        df = pd.DataFrame({
+            "keyword": ["kw"], "position": [10], "current_traffic": [500],
+        })
+        result = calculate_portfolio_decay(df, months=6)
+        assert len(result) == 6
+        assert result["cumulative_decay"].iloc[-1] > 0
+
+    def test_apply_intent_multipliers_false_disables_logic(self):
+        """When apply_intent_multipliers=False, non-branded info decays same as commercial."""
+        from engine.decay_engine import calculate_portfolio_decay
+        df = pd.DataFrame({
+            "keyword": ["info", "comm"],
+            "position": [8, 8],
+            "current_traffic": [1000, 1000],
+            "intent": ["informational", "commercial"],
+            "is_branded": [False, False],
+        })
+        result_on = calculate_portfolio_decay(df, months=12, apply_intent_multipliers=True)
+        result_off = calculate_portfolio_decay(df, months=12, apply_intent_multipliers=False)
+        assert result_on.iloc[-1]["cumulative_decay"] > result_off.iloc[-1]["cumulative_decay"]
+
+    def test_custom_multiplier_overrides_default(self):
+        """Pass a harsher multiplier, confirm decay scales with it."""
+        from engine.decay_engine import calculate_portfolio_decay
+        df = pd.DataFrame({
+            "keyword": ["info"], "position": [10], "current_traffic": [1000],
+            "intent": ["informational"], "is_branded": [False],
+        })
+        default = calculate_portfolio_decay(df, months=12).iloc[-1]["cumulative_decay"]
+        harsh = calculate_portfolio_decay(
+            df, months=12,
+            intent_decay_multipliers={"informational_non_branded": 2.5},
+        ).iloc[-1]["cumulative_decay"]
+        assert harsh > default
+
 
 # ── Intent-Weighted Revenue ───────────────────────────────────────────────
 
@@ -1343,6 +1643,61 @@ class TestMovementLearning:
             historical_movement_stats=big_gain_stats,
         )
         assert monthly_learned.iloc[-1]["uplift_p50"] != monthly_default.iloc[-1]["uplift_p50"]
+
+    def test_target_position_actually_changes_for_easy_keywords(self):
+        # Regression: near-zero learned gain (stable site) used to round to 0,
+        # collapsing target_position == current_position for every keyword.
+        from engine.positional_engine import estimate_target_position
+        # Simulate a flat site: previous_position=6, position=5 → mean_gain=1.0 < min_learned_gain=2.0
+        flat_stats = {"Easy": {"mean_gain": 1.0, "std_gain": 0.5, "sample_size": 20}}
+        targets = [
+            estimate_target_position(5, 15, "moderate", flat_stats)
+            for _ in range(20)
+        ]
+        mean_target = sum(targets) / len(targets)
+        assert mean_target < 4.0, (
+            f"Expected target < 4.0 (positions should improve), got {mean_target}. "
+            "Near-zero learned gain should blend toward tier default, not collapse to current position."
+        )
+
+    def test_uplift_meaningful_for_realistic_portfolio(self):
+        # Regression: near-zero learned gain (flat/declining site) collapsed
+        # target_position == current_position → 0% uplift before the blending fix.
+        # Attention curve is disabled here to isolate the target-position bug from
+        # the separate concern of attention weighting.
+        from engine.positional_engine import run_positional_forecast_mc
+        rng = np.random.default_rng(99)
+        n = 50
+        positions = rng.integers(4, 19, size=n).tolist()          # 4–18
+        kds = rng.integers(15, 61, size=n).tolist()               # 15–60
+        df = pd.DataFrame({
+            "keyword": [f"kw_{i}" for i in range(n)],
+            "position": positions,
+            "volume": [500] * n,
+            "kd": kds,
+            "intent": ["commercial"] * n,
+            "has_aio": [False] * n,
+        })
+        # near-zero learned gain across all tiers (simulates a flat/declining site)
+        flat_stats = {
+            tier: {"mean_gain": 0.0, "std_gain": 0.5, "sample_size": 20}
+            for tier in ("Easy", "Moderate", "Hard", "Very Hard", "Extreme")
+        }
+        _, monthly = run_positional_forecast_mc(
+            df, months=12, n_trials=300, seed=7,
+            historical_movement_stats=flat_stats,
+            use_attention_curve=False,
+        )
+        # Use the engine's own CTR-derived baseline (not current_traffic which the
+        # engine ignores when ga4_baseline is None).
+        engine_baseline = monthly.iloc[-1]["baseline"]
+        uplift_month12 = monthly.iloc[-1]["uplift_p50"]
+        uplift_pct = uplift_month12 / engine_baseline * 100
+        assert uplift_pct >= 8.0, (
+            f"Expected ≥8% uplift at month 12, got {uplift_pct:.1f}% "
+            f"(uplift={uplift_month12}, baseline={engine_baseline}). "
+            "Blending with tier defaults should produce meaningful uplift even for flat-history sites."
+        )
 
 
 # ── Maturation Curve (Task 4) ─────────────────────────────────────────────
@@ -1744,3 +2099,613 @@ class TestPrompt9Integration:
         assert method == "deterministic"
         assert "content_plan" in bundle
         assert isinstance(bundle["content_plan"], list)
+
+
+# ── Deseasonalise helpers ────────────────────────────────────────────────────
+
+
+class TestDeseasonalise:
+    """Tests for engine.seasonality_engine.deseasonalise_series / reseasonalise_values."""
+
+    def _make_dates(self, months: list[int], year: int = 2025) -> pd.Series:
+        return pd.Series([pd.Timestamp(year, m, 1) for m in months])
+
+    def test_deseasonalise_then_reseasonalise_is_identity(self):
+        from engine.seasonality_engine import (
+            DEFAULT_SEASONALITY,
+            deseasonalise_series,
+            reseasonalise_values,
+        )
+        months = list(range(1, 13))
+        dates = self._make_dates(months)
+        values = pd.Series([10_000.0 + m * 500 for m in months])
+
+        deseasoned = deseasonalise_series(dates, values, DEFAULT_SEASONALITY)
+        roundtripped = reseasonalise_values(dates, deseasoned, DEFAULT_SEASONALITY)
+
+        for original, result in zip(values, roundtripped, strict=True):
+            assert abs(original - result) < 1e-6, (
+                f"Round-trip failed: original={original}, result={result}"
+            )
+
+    def test_missing_months_treated_as_neutral(self):
+        from engine.seasonality_engine import deseasonalise_series, reseasonalise_values
+
+        sparse_seasonality = {11: {"traffic_mod": 0.25}}  # only Nov defined
+        dates = self._make_dates([1, 6, 11])
+        values = pd.Series([10_000.0, 10_000.0, 10_000.0])
+
+        deseasoned = deseasonalise_series(dates, values, sparse_seasonality)
+        # Jan and Jun are missing → multiplier 1.0 → unchanged
+        assert deseasoned.iloc[0] == pytest.approx(10_000.0)
+        assert deseasoned.iloc[1] == pytest.approx(10_000.0)
+        # Nov has +25% modifier → deseasonalised = 10_000 / 1.25 = 8_000
+        assert deseasoned.iloc[2] == pytest.approx(8_000.0)
+
+        reseasoned = reseasonalise_values(dates, values, sparse_seasonality)
+        assert reseasoned.iloc[0] == pytest.approx(10_000.0)
+        assert reseasoned.iloc[1] == pytest.approx(10_000.0)
+        assert reseasoned.iloc[2] == pytest.approx(12_500.0)
+
+    def test_deseasonalised_november_is_lower_than_raw(self):
+        from engine.seasonality_engine import DEFAULT_SEASONALITY, deseasonalise_series
+
+        nov_mod = DEFAULT_SEASONALITY[11]["traffic_mod"]  # +0.25
+        assert nov_mod > 0, "Test assumes November has positive traffic_mod"
+
+        dates = self._make_dates([11])
+        raw_value = 12_500.0
+        values = pd.Series([raw_value])
+
+        deseasoned = deseasonalise_series(dates, values, DEFAULT_SEASONALITY)
+        expected = raw_value / (1.0 + nov_mod)
+        assert deseasoned.iloc[0] == pytest.approx(expected, rel=1e-6)
+        assert deseasoned.iloc[0] < raw_value
+
+
+# ── Combined seasonality ─────────────────────────────────────────────────────
+
+
+class TestCombinedSeasonality:
+    """Tests for seasonality-aware baseline in run_combined_forecast."""
+
+    def _make_hist_df(self, n_months: int = 12, base: int = 10_000, start_month: int = 1) -> pd.DataFrame:
+        rows = []
+        for i in range(n_months):
+            month = (start_month - 1 + i) % 12 + 1
+            year = 2024 + (start_month - 1 + i) // 12
+            rows.append({"date": pd.Timestamp(year, month, 1), "traffic": float(base + i * 200)})
+        return pd.DataFrame(rows)
+
+    def test_backward_compat_no_seasonality_matches_linear_forecast(self):
+        from engine.combined_engine import run_combined_forecast
+        from engine.historical_engine import linear_forecast
+
+        hist = self._make_hist_df(n_months=10)
+        dates = hist["date"]
+        traffic = hist["traffic"]
+
+        result_no_season = run_combined_forecast(
+            historical_df=hist,
+            positional_monthly=None,
+            new_content_monthly=None,
+            months=6,
+            seasonality=None,
+        )
+
+        # Without seasonality, baseline should match plain linear_forecast output
+        lf = linear_forecast(dates, traffic, 6, confidence=15.0)
+        lf_forecast = lf[lf["is_forecast"]].reset_index(drop=True)
+        combined_forecast = result_no_season[result_no_season["is_forecast"]].reset_index(drop=True)
+
+        for i in range(6):
+            expected = int(lf_forecast.iloc[i]["linear"])
+            actual = int(combined_forecast.iloc[i]["baseline"])
+            assert abs(actual - expected) <= 1, (
+                f"Month {i+1}: expected baseline={expected}, got {actual}"
+            )
+
+    def test_november_baseline_higher_than_may(self):
+        """With DEFAULT_SEASONALITY on short history, Nov forecast > May forecast."""
+        from engine.combined_engine import run_combined_forecast
+        from engine.seasonality_engine import DEFAULT_SEASONALITY
+
+        # 10 months of history starting May — so Nov and May both appear in forecast
+        hist = self._make_hist_df(n_months=10, base=10_000, start_month=5)
+
+        result = run_combined_forecast(
+            historical_df=hist,
+            positional_monthly=None,
+            new_content_monthly=None,
+            months=12,
+            seasonality=DEFAULT_SEASONALITY,
+        )
+
+        forecast = result[result["is_forecast"]].copy()
+        forecast["month"] = pd.to_datetime(forecast["date"]).dt.month
+
+        nov_rows = forecast[forecast["month"] == 11]
+        may_rows = forecast[forecast["month"] == 5]
+
+        if nov_rows.empty or may_rows.empty:
+            import pytest
+            pytest.skip("Forecast window does not include both Nov and May")
+
+        nov_baseline = nov_rows["baseline"].iloc[0]
+        may_baseline = may_rows["baseline"].iloc[0]
+
+        assert nov_baseline > may_baseline, (
+            f"Expected Nov baseline ({nov_baseline}) > May baseline ({may_baseline})"
+        )
+
+    def test_baseline_lift_matches_seasonality_spec(self):
+        """With perfectly seasonal history, Nov forecast ≈ base × (1 + nov_mod).
+
+        Build history where raw traffic = base × (1 + seasonal_mod) so that
+        deseasonalise_series() returns a perfectly flat series.  OLS on a flat
+        series gives a flat forecast; reseasonalising November multiplies by 1.25.
+        """
+        from engine.combined_engine import run_combined_forecast
+        from engine.seasonality_engine import DEFAULT_SEASONALITY
+
+        BASE = 10_000.0
+        # Raw traffic shaped by seasonality → deseasonalised series is flat at BASE
+        hist = pd.DataFrame([
+            {
+                "date": pd.Timestamp(2024, m, 1),
+                "traffic": BASE * (1.0 + DEFAULT_SEASONALITY[m]["traffic_mod"]),
+            }
+            for m in range(1, 11)  # Jan – Oct
+        ])
+
+        result = run_combined_forecast(
+            historical_df=hist,
+            positional_monthly=None,
+            new_content_monthly=None,
+            months=12,
+            seasonality=DEFAULT_SEASONALITY,
+        )
+
+        forecast = result[result["is_forecast"]].copy()
+        forecast["month"] = pd.to_datetime(forecast["date"]).dt.month
+        nov_rows = forecast[forecast["month"] == 11]
+
+        if nov_rows.empty:
+            import pytest
+            pytest.skip("November not in forecast window")
+
+        nov_baseline = float(nov_rows["baseline"].iloc[0])
+        nov_mod = DEFAULT_SEASONALITY[11]["traffic_mod"]  # +0.25
+        expected = BASE * (1.0 + nov_mod)  # 12 500
+
+        # OLS on flat deseasonalised data is flat ⇒ reseasonalised Nov ≈ BASE × 1.25
+        # Allow ±12% relative tolerance for any linear_forecast confidence-interval drift
+        assert abs(nov_baseline - expected) / expected < 0.12, (
+            f"Nov baseline={nov_baseline:.0f}, expected≈{expected:.0f}"
+        )
+
+    def test_forecast_start_month_derived_from_historical(self):
+        """When historical_df is provided, forecast dates follow from its last date."""
+        from engine.combined_engine import run_combined_forecast
+
+        hist = self._make_hist_df(n_months=8, base=10_000, start_month=1)
+        # Last historical date = August 2024 → first forecast = September 2024
+        last_hist_month = pd.Timestamp(hist["date"].iloc[-1]).month  # August = 8
+
+        result = run_combined_forecast(
+            historical_df=hist,
+            positional_monthly=None,
+            new_content_monthly=None,
+            months=3,
+            seasonality=None,
+            forecast_start_month=99,  # should be overridden
+        )
+
+        forecast = result[result["is_forecast"]].reset_index(drop=True)
+        first_forecast_month = pd.Timestamp(forecast.iloc[0]["date"]).month
+        expected = (last_hist_month % 12) + 1  # September = 9
+        assert first_forecast_month == expected, (
+            f"Expected first forecast month={expected}, got {first_forecast_month}"
+        )
+
+
+# ── Comparison columns ───────────────────────────────────────────────────────
+
+
+class TestComparisonColumns:
+    """Tests for engine.combined_engine._add_comparison_columns."""
+
+    def _make_combined(self, n_hist: int = 14, n_fc: int = 12) -> pd.DataFrame:
+        """Build a minimal combined_df with history + forecast rows."""
+        from engine.combined_engine import run_combined_forecast
+
+        rows_hist = []
+        for i in range(n_hist):
+            date = pd.Timestamp("2024-01-01") + pd.DateOffset(months=i)
+            rows_hist.append({"date": date, "traffic": float(10_000 + i * 200)})
+        hist_df = pd.DataFrame(rows_hist)
+
+        result = run_combined_forecast(
+            historical_df=hist_df,
+            positional_monthly=None,
+            new_content_monthly=None,
+            months=n_fc,
+            seasonality=None,
+        )
+        return result
+
+    def test_mom_diff_uses_prior_row(self):
+        df = self._make_combined()
+        forecast = df[df["is_forecast"]].reset_index(drop=True)
+
+        # MoM diff for row[1] should equal combined[1] - combined[0]
+        col = "combined_p50" if "combined_p50" in forecast.columns else "combined"
+        v0 = float(forecast.iloc[0][col])
+        v1 = float(forecast.iloc[1][col])
+
+        expected = round(v1 - v0, 1)
+        actual = forecast.iloc[1]["mom_diff"]
+        assert actual is not None and abs(float(actual) - expected) < 1.0, (
+            f"mom_diff row 1 expected {expected}, got {actual}"
+        )
+
+    def test_mom_pct_first_forecast_row_is_none_or_nan(self):
+        from engine.combined_engine import run_combined_forecast
+
+        # No historical_df → all rows are forecast; first row has no prior → MoM blank
+        df = run_combined_forecast(
+            historical_df=None,
+            positional_monthly=None,
+            new_content_monthly=None,
+            months=6,
+            seasonality=None,
+        )
+        forecast = df[df["is_forecast"]].reset_index(drop=True)
+        first_mom_pct = forecast.iloc[0]["mom_pct"]
+        assert first_mom_pct is None or (
+            isinstance(first_mom_pct, float) and pd.isna(first_mom_pct)
+        ), f"Expected None/NaN for first row mom_pct, got {first_mom_pct}"
+
+    def test_yoy_diff_when_prior_year_in_history(self):
+        df = self._make_combined(n_hist=14, n_fc=12)
+        forecast = df[df["is_forecast"]].reset_index(drop=True)
+
+        # First forecast month is 15 months after start of history → prior year
+        # is month 3 of history (index 2) — there IS a history row 12 months prior
+        rows_with_yoy = forecast[forecast["yoy_diff"].notna()]
+        assert not rows_with_yoy.empty, "Expected at least one forecast row with yoy_diff"
+
+    def test_yoy_blank_when_no_prior_year_match(self):
+        # Only 6 months of history → first forecast month has no row 12 months prior
+        df = self._make_combined(n_hist=6, n_fc=12)
+        forecast = df[df["is_forecast"]].reset_index(drop=True)
+
+        # First 6 forecast months have no history to compare against
+        early = forecast.iloc[:6]
+        assert early["yoy_diff"].isna().all() or (early["yoy_diff"] == None).all(), (  # noqa: E711
+            "Expected early forecast rows to have no YoY diff when history < 12 months"
+        )
+
+    def test_yoy_uses_actual_for_history_rows_combined_p50_for_forecast(self):
+        from engine.combined_engine import _add_comparison_columns
+
+        # Build a tiny synthetic df with 2 history rows and 1 forecast row
+        rows = [
+            {"date": pd.Timestamp("2024-01-01"), "actual": 10_000.0,
+             "combined_p50": 10_000.0, "is_forecast": False},
+            {"date": pd.Timestamp("2024-02-01"), "actual": 11_000.0,
+             "combined_p50": 11_000.0, "is_forecast": False},
+            {"date": pd.Timestamp("2025-01-01"), "actual": None,
+             "combined_p50": 12_500.0, "is_forecast": True},
+        ]
+        df = pd.DataFrame(rows)
+
+        result = _add_comparison_columns(df)
+
+        # Jan 2024 history row: value = actual = 10,000
+        # Feb 2024 history row: MoM diff should use actual (11,000 - 10,000 = 1,000)
+        assert result.iloc[1]["mom_diff"] == pytest.approx(1_000.0, abs=1.0)
+
+        # Jan 2025 forecast: YoY prior = Jan 2024 actual = 10,000
+        # combined_p50 = 12,500 → yoy_diff = 2,500
+        assert result.iloc[2]["yoy_prior"] == pytest.approx(10_000.0, abs=1.0)
+        assert result.iloc[2]["yoy_diff"] == pytest.approx(2_500.0, abs=1.0)
+        assert result.iloc[2]["yoy_pct"] == pytest.approx(25.0, abs=0.5)
+
+
+# ── Forecast Grid — GAZMAN Header Scaffold ──────────────────────────────────
+
+
+class TestForecastGridHeader:
+    """Tests for the GAZMAN header scaffold in utils.forecast_grid (Session B1a)."""
+
+    def _make_grid(self, months: int = 12, **kwargs) -> "io.BytesIO":
+        import io  # noqa: F401 (used in type hint above)
+
+        from utils.forecast_grid import build_seo_forecast_grid
+
+        traffic = [10_000.0 + i * 100 for i in range(months)]
+        return build_seo_forecast_grid(
+            monthly_traffic=traffic,
+            monthly_transactions=[t * 0.025 for t in traffic],
+            monthly_revenue=[t * 0.025 * 100 for t in traffic],
+            monthly_cvr=[2.5] * months,
+            monthly_aov=[100.0] * months,
+            monthly_budget=[5_000.0] * months,
+            months=months,
+            client_name="GAZMAN",
+            fy_label="FY26",
+            start_month=7,
+            last_updated="2026-04-24",
+            currency_notes="All figures in AUD",
+            **kwargs,
+        )
+
+    def _open(self, buf):
+        from openpyxl import load_workbook
+        buf.seek(0)
+        return load_workbook(buf)
+
+    def test_sheet_title_in_row_2(self):
+        wb = self._open(self._make_grid())
+        ws = wb["SEO Channel Forecast"]
+        title = ws.cell(row=2, column=1).value or ""
+        assert "GAZMAN" in title and "FY26" in title
+
+    def test_last_updated_in_row_4(self):
+        wb = self._open(self._make_grid())
+        ws = wb["SEO Channel Forecast"]
+        label = ws.cell(row=4, column=2).value or ""
+        value = ws.cell(row=4, column=3).value or ""
+        assert "Last Updated" in label and "2026-04-24" in str(value)
+
+    def test_month_names_in_row_7(self):
+        wb = self._open(self._make_grid())
+        ws = wb["SEO Channel Forecast"]
+        row7 = [ws.cell(row=7, column=c).value for c in range(1, 50)]
+        assert "Jul" in row7
+
+    def test_each_month_header_spans_three_columns(self):
+        from utils.forecast_grid import _month_column_ranges
+        ranges = _month_column_ranges(7, 12)
+        # First month July: forecast=col3, actuals=col4, pct=col5
+        assert ranges[0] == ("Jul", 3, 4, 5)
+        # Second month August: forecast=col6, actuals=col7, pct=col8
+        assert ranges[1] == ("Aug", 6, 7, 8)
+
+    def test_totals_column_exists(self):
+        wb = self._open(self._make_grid())
+        ws = wb["SEO Channel Forecast"]
+        row7 = [ws.cell(row=7, column=c).value for c in range(1, 50)]
+        assert "TOTALS" in row7
+
+    def test_row_12_channel_header_strip(self):
+        wb = self._open(self._make_grid())
+        ws = wb["SEO Channel Forecast"]
+        assert ws.cell(row=12, column=1).value == "CHANNEL"
+        row12 = [ws.cell(row=12, column=c).value for c in range(1, 50)]
+        assert "Forecast" in row12
+        assert "Actuals" in row12
+        assert "% Change" in row12
+
+    def test_row_13_col_a_contains_seo(self):
+        wb = self._open(self._make_grid())
+        ws = wb["SEO Channel Forecast"]
+        assert ws.cell(row=13, column=1).value == "SEO"
+
+    def test_rows_14_to_19_col_a_blank(self):
+        wb = self._open(self._make_grid())
+        ws = wb["SEO Channel Forecast"]
+        for row in range(14, 20):
+            val = ws.cell(row=row, column=1).value
+            assert val is None, f"Row {row} col A expected blank, got {val!r}"
+
+    def test_seven_metric_labels_in_col_b_bold(self):
+        wb = self._open(self._make_grid())
+        ws = wb["SEO Channel Forecast"]
+        col_b = [ws.cell(row=r, column=2).value for r in range(13, 20)]
+        assert col_b == ["BUDGET", "REVENUE", "ROAS", "TRANSACTIONS", "AOV", "TRAFFIC", "CVR"]
+
+    def test_freeze_panes_at_b13(self):
+        wb = self._open(self._make_grid())
+        ws = wb["SEO Channel Forecast"]
+        assert ws.freeze_panes == "B13"
+
+
+# ── Forecast Grid — Metric Data Population ───────────────────────────────────
+
+
+class TestForecastGridMetricData:
+    """Tests for the B1b metric data population in utils.forecast_grid."""
+
+    _MONTHS = 3  # small grid so column maths stay readable in tests
+    _TRAFFIC = [10_000.0, 11_000.0, 12_000.0]
+    _CVR = [2.5, 2.6, 2.7]          # percentage form
+    _AOV = [100.0, 101.0, 102.0]
+    _TRANSACTIONS = [t * c / 100 for t, c in zip(_TRAFFIC, _CVR, strict=True)]
+    _REVENUE = [tr * a for tr, a in zip(_TRANSACTIONS, _AOV, strict=True)]
+    _BUDGET = [5_000.0, 5_000.0, 5_000.0]
+
+    def _make(self, **kwargs):
+        from utils.forecast_grid import build_seo_forecast_grid
+        defaults = dict(
+            monthly_traffic=self._TRAFFIC,
+            monthly_transactions=self._TRANSACTIONS,
+            monthly_revenue=self._REVENUE,
+            monthly_cvr=self._CVR,
+            monthly_aov=self._AOV,
+            monthly_budget=self._BUDGET,
+            months=self._MONTHS,
+            start_month=7,
+        )
+        defaults.update(kwargs)
+        return build_seo_forecast_grid(**defaults)
+
+    def _ws(self, buf):
+        from openpyxl import load_workbook
+        buf.seek(0)
+        return load_workbook(buf)["SEO Channel Forecast"]
+
+    # fc(0)=3, ac(0)=4, pc(0)=5; for m=3: ann=12, ytd=13, prior=15, yoy=16
+    _FC0 = 3
+    _AC0 = 4
+    _PC0 = 5
+    _ANN = 12   # _col_annual(3) = 3 + 3*3 = 12
+    _PRIOR = 15  # _col_prior(3) = 12 + 3 = 15
+    _YOY = 16    # _col_yoy(3) = 12 + 4 = 16
+
+    def test_budget_row_populated_from_monthly_budget(self):
+        ws = self._ws(self._make())
+        assert ws.cell(row=13, column=self._FC0).value == pytest.approx(self._BUDGET[0])
+
+    def test_revenue_row_populated_from_monthly_revenue(self):
+        ws = self._ws(self._make())
+        assert ws.cell(row=14, column=self._FC0).value == pytest.approx(self._REVENUE[0], rel=1e-3)
+
+    def test_roas_computed_from_revenue_div_budget_per_month(self):
+        ws = self._ws(self._make())
+        expected = self._REVENUE[0] / self._BUDGET[0]
+        assert ws.cell(row=15, column=self._FC0).value == pytest.approx(expected, rel=1e-3)
+
+    def test_roas_blank_when_budget_zero(self):
+        ws = self._ws(self._make(monthly_budget=[0.0, 0.0, 0.0]))
+        assert ws.cell(row=15, column=self._FC0).value is None
+
+    def test_pct_change_negative_when_actual_below_forecast(self):
+        actuals = [b * 0.8 for b in self._BUDGET]   # 20% below forecast
+        ws = self._ws(self._make(actuals_budget=actuals))
+        pct = ws.cell(row=13, column=self._PC0).value
+        assert pct is not None and pct < 0
+
+    def test_pct_change_neg_one_when_actual_zero_and_forecast_nonzero(self):
+        ws = self._ws(self._make(actuals_budget=[0.0, 0.0, 0.0]))
+        pct = ws.cell(row=13, column=self._PC0).value
+        assert pct == pytest.approx(-1.0)
+
+    def test_pct_change_blank_when_no_actual(self):
+        ws = self._ws(self._make())   # no actuals_* passed
+        assert ws.cell(row=13, column=self._PC0).value is None
+
+    def test_annual_forecast_col_sums_monthly(self):
+        ws = self._ws(self._make())
+        expected = sum(self._BUDGET)
+        assert ws.cell(row=13, column=self._ANN).value == pytest.approx(expected)
+
+    def test_annual_roas_is_sum_revenue_div_sum_budget(self):
+        ws = self._ws(self._make())
+        expected = sum(self._REVENUE) / sum(self._BUDGET)
+        assert ws.cell(row=15, column=self._ANN).value == pytest.approx(expected, rel=1e-3)
+
+    def test_yoy_pct_computed_when_prior_year_provided(self):
+        prior = sum(self._BUDGET) * 0.9  # 10% growth expected
+        ws = self._ws(self._make(prior_year_budget=prior))
+        yoy = ws.cell(row=13, column=self._YOY).value
+        assert yoy is not None
+        expected = (sum(self._BUDGET) - prior) / prior
+        assert yoy == pytest.approx(expected, rel=1e-3)
+
+    def test_yoy_pct_blank_when_prior_year_none(self):
+        ws = self._ws(self._make())  # no prior_year_* passed
+        assert ws.cell(row=13, column=self._YOY).value is None
+
+    def test_cvr_cell_value_divided_by_100_for_percentage_format(self):
+        ws = self._ws(self._make())
+        # CVR row is 19; CVR input is e.g. 2.5 → cell should be 0.025
+        cvr_cell_val = ws.cell(row=19, column=self._FC0).value
+        assert cvr_cell_val is not None
+        assert cvr_cell_val == pytest.approx(self._CVR[0] / 100.0, rel=1e-6)
+
+    def test_negative_pct_change_has_red_font(self):
+        actuals = [b * 0.5 for b in self._BUDGET]
+        ws = self._ws(self._make(actuals_budget=actuals))
+        cell = ws.cell(row=13, column=self._PC0)
+        assert cell.value is not None and cell.value < 0
+        assert "FF0000" in cell.font.color.rgb
+
+# ── Forecast Grid — Assumptions Column + Fee Rows ────────────────────────────
+
+
+class TestForecastGridFees:
+    """Tests for B1c: assumptions text column and management fee rows."""
+
+    _MONTHS = 3
+    _TRAFFIC = [10_000.0, 11_000.0, 12_000.0]
+    _CVR = [2.5, 2.6, 2.7]
+    _AOV = [100.0, 101.0, 102.0]
+    _TRANSACTIONS = [t * c / 100 for t, c in zip(_TRAFFIC, _CVR, strict=True)]
+    _REVENUE = [tr * a for tr, a in zip(_TRANSACTIONS, _AOV, strict=True)]
+    _BUDGET = [5_000.0, 5_000.0, 5_000.0]
+    _ASS_TEXT = "CVR: 2.5%\nAOV: $100\nBudget: $5k/month"
+
+    # For months=3: _col_ass(3) = _col_annual(3) + 2 = (3 + 9) + 2 = 14
+    _ASS_COL = 14
+    _FC0 = 3
+    _AC0 = 4
+    _PC0 = 5
+    _ANN = 12  # _col_annual(3) = 12
+
+    def _make(self, **kwargs):
+        from utils.forecast_grid import build_seo_forecast_grid
+        defaults = dict(
+            monthly_traffic=self._TRAFFIC,
+            monthly_transactions=self._TRANSACTIONS,
+            monthly_revenue=self._REVENUE,
+            monthly_cvr=self._CVR,
+            monthly_aov=self._AOV,
+            monthly_budget=self._BUDGET,
+            months=self._MONTHS,
+            start_month=7,
+            assumptions_text=self._ASS_TEXT,
+        )
+        defaults.update(kwargs)
+        return build_seo_forecast_grid(**defaults)
+
+    def _ws(self, buf):
+        from openpyxl import load_workbook
+        buf.seek(0)
+        return load_workbook(buf)["SEO Channel Forecast"]
+
+    def test_assumptions_text_in_row_13(self):
+        ws = self._ws(self._make())
+        assert ws.cell(row=13, column=self._ASS_COL).value == self._ASS_TEXT
+
+    def test_assumptions_col_merged_across_rows_13_to_19(self):
+        from openpyxl.utils import get_column_letter
+        ws = self._ws(self._make())
+        col_letter = get_column_letter(self._ASS_COL)
+        expected = f"{col_letter}13:{col_letter}19"
+        merged = [str(r) for r in ws.merged_cells.ranges]
+        assert expected in merged, f"Expected {expected!r} in merged ranges {merged}"
+
+    def test_assumptions_col_has_wrap_text(self):
+        ws = self._ws(self._make())
+        cell = ws.cell(row=13, column=self._ASS_COL)
+        assert cell.alignment.wrap_text is True
+
+    def test_row_21_has_seo_management_tech_fee_label(self):
+        ws = self._ws(self._make())
+        assert ws.cell(row=21, column=1).value == "SEO Management + Tech Fee"
+
+    def test_row_22_has_seo_total_label(self):
+        ws = self._ws(self._make())
+        assert ws.cell(row=22, column=1).value == "SEO Total"
+
+    def test_fee_rows_forecast_actuals_populated(self):
+        actuals = [4_800.0, 4_900.0, 5_100.0]
+        ws = self._ws(self._make(actuals_budget=actuals))
+        assert ws.cell(row=21, column=self._FC0).value == pytest.approx(self._BUDGET[0])
+        assert ws.cell(row=21, column=self._AC0).value == pytest.approx(actuals[0])
+        assert ws.cell(row=22, column=self._FC0).value == pytest.approx(self._BUDGET[0])
+        assert ws.cell(row=22, column=self._AC0).value == pytest.approx(actuals[0])
+
+    def test_fee_rows_pct_change_column_is_blank(self):
+        actuals = [4_800.0, 4_900.0, 5_100.0]
+        ws = self._ws(self._make(actuals_budget=actuals))
+        assert ws.cell(row=21, column=self._PC0).value is None
+        assert ws.cell(row=22, column=self._PC0).value is None
+
+    def test_fee_rows_annual_total_populated(self):
+        ws = self._ws(self._make())
+        expected = sum(self._BUDGET)
+        assert ws.cell(row=21, column=self._ANN).value == pytest.approx(expected)
+        assert ws.cell(row=22, column=self._ANN).value == pytest.approx(expected)

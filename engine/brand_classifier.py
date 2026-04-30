@@ -1,26 +1,26 @@
-"""Two-stage brand keyword classifier.
+"""Brand keyword classifier — v4-compatible shim backed by v5 engine.
 
-Stage 1 — substring match: terms that always indicate branded intent
-    (e.g. "cable melbourne", "csblr").
+The v4 flat-parameter API (build_brand_classifier, classify_keywords_with_two_stage,
+brand_match_preview) is preserved for backward compatibility with existing callers
+and tests. All logic is now delegated to engine.v5.brand_classifier.
 
-Stage 2 — whole-word match with exclusions: brand names that are also
-    common words (e.g. "cable" the brand vs "cable knit" the category).
-
-Usage
------
-    is_brand = build_brand_classifier(
-        substring_terms=["cable melbourne", "cable clothing", "csblr"],
-        word_boundary_terms=["cable"],
-        excluded_followers=["knit", "tie", "car", "management"],
-    )
-    df["is_branded"] = df["keyword"].map(is_brand)
+New code should import BrandConfig / build_classifier directly:
+    from engine.brand_classifier import BrandConfig, build_classifier
+or from the v5 module:
+    from engine.v5.brand_classifier import BrandConfig, build_classifier
 """
 
 from __future__ import annotations
 
-import re
-
 import pandas as pd
+
+# v5 public API — re-exported for new callers
+from engine.v5.brand_classifier import (
+    BrandConfig,
+    build_classifier,
+    detect_collisions,
+    suggest_branded_candidates,
+)
 
 
 def build_brand_classifier(
@@ -28,83 +28,23 @@ def build_brand_classifier(
     word_boundary_terms: list[str] | None = None,
     excluded_followers: list[str] | None = None,
 ):
-    """Return a callable that classifies a keyword string as branded or not.
+    """Return a callable(keyword: str) -> bool. v4-compatible wrapper around v5.
 
     Args:
         substring_terms: Terms matched anywhere in the keyword (case-insensitive).
-            Safe set — e.g. full brand name, abbreviations, domain.
-        word_boundary_terms: Terms matched only as whole words. For brand names
-            that are also common words (e.g. the brand "Cable"). Optional.
-        excluded_followers: When a word_boundary_term appears adjacent to one of
-            these words the keyword is NOT treated as branded. Prevents category
-            terms like "cable knit" from being classified as the brand "Cable".
-            Matching is symmetric (before or after). Optional.
+        word_boundary_terms: Terms matched only as whole words. Optional.
+        excluded_followers: Tokens adjacent to a word_boundary_term that cancel
+            the brand match (e.g. "knit" for the brand "cable"). Optional.
 
     Returns:
-        Callable[[str], bool] — True if the keyword is branded.
-
-    Examples:
-        >>> is_brand = build_brand_classifier(
-        ...     substring_terms=["patagonia"],
-        ... )
-        >>> is_brand("patagonia fleece jacket")
-        True
-        >>> is_brand("jacket")
-        False
-
-        >>> is_brand = build_brand_classifier(
-        ...     substring_terms=["cable melbourne", "csblr"],
-        ...     word_boundary_terms=["cable"],
-        ...     excluded_followers=["knit", "tie", "car", "bay"],
-        ... )
-        >>> is_brand("csblr dress")
-        True
-        >>> is_brand("cable clothing")
-        True
-        >>> is_brand("cable knit sweater")
-        False
-        >>> is_brand("cable")
-        True
+        Callable[[str], bool] — True when the keyword is branded.
     """
-    word_boundary_terms = word_boundary_terms or []
-    excluded_followers = excluded_followers or []
-
-    sub_pat: re.Pattern | None = None
-    if substring_terms:
-        sub_pat = re.compile(
-            "|".join(re.escape(t) for t in substring_terms if t.strip()),
-            re.IGNORECASE,
-        )
-
-    # Build per-term exclusion patterns for word-boundary terms
-    wb_patterns: list[tuple[re.Pattern, list[re.Pattern]]] = []
-    for term in word_boundary_terms:
-        term_pat = re.compile(rf"\b{re.escape(term)}\b", re.IGNORECASE)
-        excl_pats = [
-            re.compile(
-                rf"\b{re.escape(term)}\s+{re.escape(f)}\b|"
-                rf"\b{re.escape(f)}\s+{re.escape(term)}\b",
-                re.IGNORECASE,
-            )
-            for f in excluded_followers
-            if f.strip()
-        ]
-        wb_patterns.append((term_pat, excl_pats))
-
-    def is_branded(keyword: str) -> bool:
-        s = str(keyword).lower().strip()
-        # Stage 1: substring match (always branded)
-        if sub_pat and sub_pat.search(s):
-            return True
-        # Stage 2: whole-word match with exclusion check
-        for term_pat, excl_pats in wb_patterns:
-            if term_pat.search(s):
-                if any(ep.search(s) for ep in excl_pats):
-                    return False
-                return True
-        return False
-
-    return is_branded
+    config = BrandConfig(
+        substring_terms=list(substring_terms or []),
+        word_boundary_terms=list(word_boundary_terms or []),
+        excluded_followers=list(excluded_followers or []),
+    )
+    return build_classifier(config)
 
 
 def classify_keywords_with_two_stage(
@@ -113,25 +53,15 @@ def classify_keywords_with_two_stage(
     word_boundary_terms: list[str] | None = None,
     excluded_followers: list[str] | None = None,
 ) -> pd.DataFrame:
-    """Apply two-stage brand classification to a keyword DataFrame.
+    """Apply brand classification and add an 'is_branded' column.
 
-    Adds an 'is_branded' boolean column. Replaces classify_keywords_as_branded
-    in engine/brand_engine.py when advanced classification is needed.
-
-    Args:
-        kw_df: DataFrame with a 'keyword' column.
-        substring_terms: Always-branded substring terms.
-        word_boundary_terms: Whole-word branded terms (optional).
-        excluded_followers: Category words that override whole-word match (optional).
-
-    Returns:
-        Copy of kw_df with 'is_branded' column added or replaced.
+    v4-compatible wrapper. Prefer building a BrandConfig and using
+    build_classifier() directly in new code.
     """
     df = kw_df.copy()
     if "keyword" not in df.columns:
         df["is_branded"] = False
         return df
-
     classifier = build_brand_classifier(
         substring_terms=substring_terms,
         word_boundary_terms=word_boundary_terms,
@@ -150,17 +80,7 @@ def brand_match_preview(
 ) -> pd.DataFrame:
     """Return the top-N branded keywords sorted by volume descending.
 
-    Useful for a UI debug expander so analysts can verify classification.
-
-    Args:
-        kw_df: DataFrame with 'keyword' and 'volume' columns.
-        substring_terms: Substring brand terms.
-        word_boundary_terms: Whole-word brand terms (optional).
-        excluded_followers: Exclusion words (optional).
-        top_n: Maximum rows to return.
-
-    Returns:
-        DataFrame of matched (branded) keywords, volume-sorted.
+    v4-compatible wrapper for the brand preview expander in the UI.
     """
     df = classify_keywords_with_two_stage(
         kw_df,
@@ -172,3 +92,16 @@ def brand_match_preview(
     if "volume" in branded.columns:
         branded = branded.sort_values("volume", ascending=False)
     return branded.head(top_n).reset_index(drop=True)
+
+
+__all__ = [
+    # v5 API
+    "BrandConfig",
+    "build_classifier",
+    "suggest_branded_candidates",
+    "detect_collisions",
+    # v4-compatible wrappers
+    "build_brand_classifier",
+    "classify_keywords_with_two_stage",
+    "brand_match_preview",
+]

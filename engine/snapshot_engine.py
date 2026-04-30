@@ -11,7 +11,10 @@ nobody ever grades.
 from __future__ import annotations
 
 import json
+import os
+import re
 from datetime import UTC, datetime
+from pathlib import Path
 
 import pandas as pd
 
@@ -19,12 +22,50 @@ from engine import __version__ as _ENGINE_VERSION
 
 SNAPSHOT_VERSION = _ENGINE_VERSION
 
+# Columns serialised from combined_df — order is stable; only append.
 _FORECAST_COLS = [
     "baseline", "positional_uplift_p10", "positional_uplift_p50",
     "positional_uplift_p90", "new_content_uplift", "decay",
     "aio_erosion", "combined_p10", "combined_p50", "combined_p90",
     "positional_uplift", "combined",
+    # Revenue / conversion fields (added in v4.10)
+    "cvr", "aov", "transactions", "revenue",
+    "revenue_p10", "revenue_p50", "revenue_p90",
 ]
+
+# Maps metric selector values → snapshot record fields and actuals_df columns
+_METRIC_CONFIG: dict[str, dict] = {
+    "traffic": {
+        "p50_fields": ["combined_p50", "combined"],
+        "p10_field": "combined_p10",
+        "p90_field": "combined_p90",
+        "actuals_col": "traffic",
+    },
+    "revenue": {
+        "p50_fields": ["revenue"],
+        "p10_field": "revenue_p10",
+        "p90_field": "revenue_p90",
+        "actuals_col": "revenue",
+    },
+    "transactions": {
+        "p50_fields": ["transactions"],
+        "p10_field": None,
+        "p90_field": None,
+        "actuals_col": "transactions",
+    },
+    "cvr": {
+        "p50_fields": ["cvr"],
+        "p10_field": None,
+        "p90_field": None,
+        "actuals_col": "cr",
+    },
+    "aov": {
+        "p50_fields": ["aov"],
+        "p10_field": None,
+        "p90_field": None,
+        "actuals_col": "aov",
+    },
+}
 
 
 def build_snapshot(
@@ -32,27 +73,67 @@ def build_snapshot(
     combined_df: pd.DataFrame,
     parameters: dict,
     engine_versions: dict | None = None,
+    metrics_df: pd.DataFrame | None = None,
+    assumptions_snapshot: list[dict] | None = None,
 ) -> dict:
-    """Serialise a forecast to a downloadable JSON snapshot."""
+    """Serialise a forecast to a downloadable JSON snapshot.
+
+    Args:
+        client_name: Client / brand name.
+        combined_df: Output of run_combined_forecast().
+        parameters: Sidebar settings dict (effort_level, cvr, aov, etc.).
+        engine_versions: Optional engine version overrides.
+        metrics_df: Optional per-month CVR/AOV/transactions/revenue DataFrame
+                    from forecast_baseline_metrics(). When provided, per-month
+                    conversion metrics are merged into the forecast records so
+                    variance analysis can grade revenue accuracy.
+        assumptions_snapshot: Output of engine.assumptions.assumptions_summary()
+                              at snapshot time — captures every assumption and
+                              its provenance so later analysis knows what drove
+                              the forecast.
+    """
     versions = engine_versions or {"snapshot": SNAPSHOT_VERSION}
 
-    forecast = combined_df[combined_df["is_forecast"]].copy()
+    forecast = combined_df[combined_df["is_forecast"]].copy().reset_index(drop=True)
+
+    # Build metrics lookup keyed by 1-indexed month position
+    metrics_by_month: dict[int, dict] = {}
+    if metrics_df is not None and not metrics_df.empty:
+        for _, mrow in metrics_df.iterrows():
+            m = int(mrow.get("month", 0))
+            if m > 0:
+                metrics_by_month[m] = mrow.to_dict()
+
     records = []
-    for _, row in forecast.iterrows():
-        record = {"date": row["date"].strftime("%Y-%m-%d")}
+    for idx, row in forecast.iterrows():
+        record: dict = {"date": row["date"].strftime("%Y-%m-%d")}
         for col in _FORECAST_COLS:
             if col in row.index and pd.notna(row[col]):
                 record[col] = float(row[col])
+
+        # Merge per-month conversion metrics when available
+        month_num = idx + 1  # forecast rows are 1-indexed
+        if month_num in metrics_by_month:
+            m = metrics_by_month[month_num]
+            for field in ("cvr", "aov", "transactions", "revenue"):
+                if field in m and pd.notna(m[field]) and field not in record:
+                    record[field] = float(m[field])
+
         records.append(record)
 
-    return {
+    snap: dict = {
         "snapshot_version": SNAPSHOT_VERSION,
         "client_name": client_name,
         "snapshot_date": datetime.now(UTC).isoformat(),
         "engine_versions": versions,
         "parameters": parameters,
         "forecast": records,
+        "dynamic_metrics": metrics_df is not None and not metrics_df.empty,
     }
+    if assumptions_snapshot:
+        snap["assumptions_snapshot"] = assumptions_snapshot
+
+    return snap
 
 
 def snapshot_to_bytes(snapshot: dict) -> bytes:
@@ -68,16 +149,31 @@ def load_snapshot(file_content: bytes | str) -> dict:
 def compare_to_actuals(
     snapshot: dict,
     actuals_df: pd.DataFrame,
+    metric: str = "traffic",
 ) -> pd.DataFrame:
     """Compare a snapshot's forecast to actual GA4 data.
+
+    Args:
+        snapshot: Loaded snapshot dict (from load_snapshot).
+        actuals_df: GA4 monthly data with 'date' and metric-specific columns.
+        metric: One of "traffic", "revenue", "transactions", "cvr", "aov".
+                Defaults to "traffic" for backward compatibility.
 
     Returns:
         DataFrame with date, forecast_p50, forecast_p10, forecast_p90,
         actual, variance, variance_pct, within_band.
     """
+    cfg = _METRIC_CONFIG.get(metric, _METRIC_CONFIG["traffic"])
+    actuals_col = cfg["actuals_col"]
+    p10_field = cfg["p10_field"]
+    p90_field = cfg["p90_field"]
+
+    if actuals_col not in actuals_df.columns:
+        return pd.DataFrame()
+
     actuals_by_date = dict(zip(
         pd.to_datetime(actuals_df["date"]).dt.strftime("%Y-%m-%d"),
-        actuals_df["traffic"],
+        actuals_df[actuals_col],
         strict=False,
     ))
 
@@ -85,24 +181,32 @@ def compare_to_actuals(
     for record in snapshot["forecast"]:
         date_str = record["date"]
         actual = actuals_by_date.get(date_str)
-        if actual is None:
+        if actual is None or pd.isna(actual):
             continue
-        p50 = record.get("combined_p50") or record.get("combined")
-        p10 = record.get("combined_p10")
-        p90 = record.get("combined_p90")
+
+        # Resolve p50 from the priority list of field names
+        p50 = None
+        for field in cfg["p50_fields"]:
+            if field in record and record[field] is not None:
+                p50 = record[field]
+                break
         if p50 is None:
             continue
-        variance = actual - p50
-        variance_pct = (variance / p50 * 100) if p50 > 0 else 0
+
+        p10 = record.get(p10_field) if p10_field else None
+        p90 = record.get(p90_field) if p90_field else None
+
+        variance = float(actual) - p50
+        variance_pct = (variance / p50 * 100) if p50 > 0 else 0.0
         within_band = (
-            p10 is not None and p90 is not None and p10 <= actual <= p90
+            p10 is not None and p90 is not None and p10 <= float(actual) <= p90
         )
         rows.append({
             "date": pd.to_datetime(date_str),
             "forecast_p10": p10,
             "forecast_p50": p50,
             "forecast_p90": p90,
-            "actual": actual,
+            "actual": float(actual),
             "variance": variance,
             "variance_pct": round(variance_pct, 1),
             "within_band": within_band,
@@ -122,6 +226,58 @@ def summarise_variance(comparison_df: pd.DataFrame) -> dict:
         "max_overshoot_pct": round(float(comparison_df["variance_pct"].max()), 1),
         "max_undershoot_pct": round(float(comparison_df["variance_pct"].min()), 1),
     }
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# v5 helpers: serialisation of Timestamps and file output
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+def _serialise_flags(flags: list[dict]) -> list[dict]:
+    """Convert Timestamp values in anomaly flag dicts to ISO strings."""
+    out = []
+    for flag in flags:
+        row = {}
+        for k, v in flag.items():
+            if isinstance(v, (pd.Timestamp,)):
+                row[k] = v.isoformat()
+            else:
+                row[k] = v
+        out.append(row)
+    return out
+
+
+def _serialise_overrides(overrides: dict) -> dict:
+    """Convert Timestamp keys in anomaly override dicts to ISO strings."""
+    return {
+        (k.isoformat() if isinstance(k, pd.Timestamp) else str(k)): v
+        for k, v in overrides.items()
+    }
+
+
+def _client_slug(client_name: str) -> str:
+    """Convert client name to a filesystem-safe slug."""
+    slug = re.sub(r"[^\w\s-]", "", client_name.lower())
+    return re.sub(r"[\s_-]+", "_", slug).strip("_") or "client"
+
+
+def write_methodology_snapshot(
+    snapshot: dict,
+    client_name: str,
+    run_dir: str = "outputs",
+) -> str:
+    """Serialise snapshot to ``{run_dir}/{client_slug}_methodology_{date}.json``.
+
+    Creates ``run_dir`` if it does not exist. Returns the file path written.
+    """
+    Path(run_dir).mkdir(parents=True, exist_ok=True)
+    date_str = datetime.now(UTC).strftime("%Y%m%d")
+    slug = _client_slug(client_name)
+    filename = f"{slug}_methodology_{date_str}.json"
+    path = os.path.join(run_dir, filename)
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(snapshot, fh, indent=2, default=str)
+    return path
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -149,6 +305,19 @@ def build_methodology_snapshot(
     weighted_aov: float,
     tier_outputs: list[dict],
     seed: int = 42,
+    # ── v5 extensions ─────────────────────────────────────────────────────────
+    version: str = "5.0",
+    fixes_applied: list[str] | None = None,
+    da_derived: float | None = None,
+    da_rationale: str | None = None,
+    cr_organic: float | None = None,
+    cr_blended: float | None = None,
+    aov_organic: float | None = None,
+    aov_blended: float | None = None,
+    n_branded_keywords: int | None = None,
+    anomaly_flags: list[dict] | None = None,
+    anomaly_overrides: dict | None = None,
+    movement_stats_decisions: dict | None = None,
 ) -> dict:
     """Build a per-run methodology snapshot capturing all key model decisions.
 
@@ -181,11 +350,25 @@ def build_methodology_snapshot(
              uplift_pct, annual_revenue_baseline, annual_revenue_combined,
              revenue_uplift, roi}
         seed: Monte Carlo seed used.
+        version: v5 schema version string (default "5.0").
+        fixes_applied: List of v5 fix identifiers that were active for this run.
+        da_derived: Domain Authority score derived from SEMrush data.
+        da_rationale: Human-readable explanation of how DA was derived.
+        cr_organic: Organic Search conversion rate extracted from GA4.
+        cr_blended: Blended (all-channel) conversion rate from GA4.
+        aov_organic: Organic Search average order value from GA4.
+        aov_blended: Blended average order value from GA4.
+        n_branded_keywords: Count of keywords excluded as branded.
+        anomaly_flags: Flags from detect_baseline_anomalies() — Timestamps
+            serialised to ISO strings by _serialise_flags().
+        anomaly_overrides: User override decisions keyed by forecast date —
+            Timestamp keys serialised to ISO strings by _serialise_overrides().
+        movement_stats_decisions: Per-tier decision dict from resolve_movement_stats().
 
     Returns:
         JSON-serialisable dict — the methodology snapshot.
     """
-    return {
+    snap = {
         "snapshot_version": SNAPSHOT_VERSION,
         "snapshot_type": "methodology",
         "generated_at": datetime.now(UTC).isoformat(),
@@ -227,7 +410,22 @@ def build_methodology_snapshot(
         },
         "monte_carlo_seed": seed,
         "tier_outputs": tier_outputs,
+        "v5_extensions": {
+            "version": version,
+            "fixes_applied": fixes_applied or [],
+            "da_derived": da_derived,
+            "da_rationale": da_rationale,
+            "cr_organic": cr_organic,
+            "cr_blended": cr_blended,
+            "aov_organic": aov_organic,
+            "aov_blended": aov_blended,
+            "n_branded_keywords": n_branded_keywords,
+            "anomaly_flags": _serialise_flags(anomaly_flags) if anomaly_flags else [],
+            "anomaly_overrides": _serialise_overrides(anomaly_overrides) if anomaly_overrides else {},
+            "movement_stats_decisions": movement_stats_decisions or {},
+        },
     }
+    return snap
 
 
 def methodology_snapshot_to_human_readable(snapshot: dict) -> str:

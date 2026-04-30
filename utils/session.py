@@ -40,6 +40,11 @@ ROADMAP_USED_MODEL = "roadmap_used_model"
 # ── Historical forecast ───────────────────────────────────────────────
 HIST_N_MONTHS = "hist_n_months"
 
+# ── Strategy / scenarios ─────────────────────────────────────────────
+SCENARIO_PRESETS = "scenario_presets"
+SCENARIO_RESULTS = "scenario_results"
+SCENARIO_PRESETS_EDITED = "scenario_presets_edited"
+
 # ── Brand ─────────────────────────────────────────────────────────────
 DETECTED_BRAND_TERMS = "detected_brand_terms"
 
@@ -71,6 +76,9 @@ class AppState(TypedDict, total=False):
     roadmap_ai_cache: dict
     roadmap_used_model: str
     hist_n_months: int
+    scenario_presets: dict
+    scenario_results: dict
+    scenario_presets_edited: dict
     detected_brand_terms: list
     bifrost_api_key: str
     bifrost_model: str

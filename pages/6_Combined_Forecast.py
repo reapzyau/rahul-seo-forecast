@@ -1,12 +1,14 @@
 import pandas as pd
 import streamlit as st
 
+from engine.baseline_metrics_engine import forecast_baseline_metrics
 from engine.combined_engine import run_combined_forecast
 from engine.decay_engine import calculate_portfolio_decay
 from engine.revenue_engine import (
     CURRENCY_SYMBOLS,
     INTENT_CVR_MULTIPLIERS,
     compute_intent_weighted_cvr,
+    compute_intent_weighted_cvr_per_month,
     intent_revenue_breakdown,
 )
 from utils.chart_builder import combined_revenue_chart, combined_three_stream_chart
@@ -15,12 +17,29 @@ from utils.page_base import setup_page
 from utils.session import (
     COMB_RESULTS,
     GA4_DF,
+    HIST_RESULTS,
     KW_EXISTING,
     NC_RESULT,
     POS_RESULT,
+    SCENARIO_RESULTS,
+    SEASONALITY,
 )
 
 store = setup_page("Combined Forecast", "Layer multiple forecast streams into a single projection with intent-weighted revenue.")
+
+if SCENARIO_RESULTS not in st.session_state:
+    st.info(
+        "💡 **Want to compare three scenarios at once?** "
+        "Use the **Strategy** page to see the Combined view across three scenarios — "
+        "Conservative, Moderate, Aggressive — side-by-side. "
+        "This page is for deep-dive analysis on a single forecast configuration."
+    )
+else:
+    st.success(
+        "✅ Three scenarios already run via Strategy. "
+        "This page lets you drill into a single forecast configuration in detail. "
+        "Download the 3-scenario xlsx from **Deliverables** or the Strategy page."
+    )
 
 # ── Data Availability ──────────────────────────────────────────────────────
 ga4_df = st.session_state.get(GA4_DF)
@@ -116,16 +135,22 @@ st.sidebar.divider()
 st.sidebar.subheader("Revenue Settings")
 enable_revenue = st.sidebar.checkbox("Enable Revenue Projection", value=True, key="comb_rev")
 
-# Pre-populate CVR and AOV from GA4 actuals
+# Pre-populate CVR and AOV — organic channel takes priority over blended GA4 columns
 default_cvr = 2.5
 default_aov = 100.0
 default_cur_idx = 0
 
-if has_ga4:
+if st.session_state.get("cr_organic"):
+    default_cvr = round(float(st.session_state["cr_organic"]) * 100, 2)
+elif has_ga4:
     if "cr" in ga4_df.columns:
         avg_cr = ga4_df["cr"].dropna().mean()
         if avg_cr > 0:
             default_cvr = round(float(avg_cr), 2)
+
+if st.session_state.get("aov_organic"):
+    default_aov = round(float(st.session_state["aov_organic"]), 2)
+elif has_ga4:
     if "aov" in ga4_df.columns:
         avg_aov = ga4_df["aov"].dropna().mean()
         if avg_aov > 0:
@@ -149,8 +174,10 @@ currency = st.sidebar.selectbox(
 )
 
 if enable_revenue:
-    if ga4_has_revenue:
-        st.sidebar.caption("CVR and AOV pre-populated from GA4 actuals.")
+    if st.session_state.get("cr_organic"):
+        st.sidebar.caption("CVR and AOV pre-populated from GA4 Organic Search channel (Data Upload).")
+    elif ga4_has_revenue:
+        st.sidebar.caption("CVR and AOV pre-populated from blended GA4 actuals.")
     st.sidebar.caption(
         "Revenue uses intent-weighted conversion: "
         "commercial/transactional keywords convert higher than informational."
@@ -198,12 +225,28 @@ if st.button("Generate Combined Forecast", type="primary", key="comb_run"):
                     kw_for_decay, months, maintenance_coverage=maintenance_coverage,
                 )
 
+        seasonality = st.session_state.get(SEASONALITY)
+        forecast_start_month = None
+        if ga4_df is not None and not ga4_df.empty:
+            forecast_start_month = (
+                ga4_df["date"].iloc[-1] + pd.DateOffset(months=1)
+            ).month
+
+        # Pass the Historical page's forecast result as the baseline source so the
+        # Combined projection uses the same model (Holt's / Prophet / linear) and
+        # trend that the analyst already reviewed — not the internal YoY shortcut.
+        hist_results = st.session_state.get(HIST_RESULTS)
+        historical_forecast_df = hist_results.get("result") if hist_results else None
+
         combined_df = run_combined_forecast(
             historical_df=historical_df,
             positional_monthly=pos_monthly,
             new_content_monthly=nc_monthly,
             months=months,
             decay_df=decay_df,
+            seasonality=seasonality,
+            forecast_start_month=forecast_start_month,
+            historical_forecast_df=historical_forecast_df,
         )
 
         # Build merged keyword set for intent-weighted revenue
@@ -220,9 +263,28 @@ if st.button("Generate Combined Forecast", type="primary", key="comb_run"):
             intent_cvr = compute_intent_weighted_cvr(merged_kw, cvr)
             intent_breakdown = intent_revenue_breakdown(merged_kw, cvr, aov)
 
-        # Revenue per session from GA4 for baseline projection
+        # Dynamic per-month CVR/AOV from GA4 trend + seasonality
+        metrics_df = None
+        intent_cvr_series = None
+        if enable_revenue and include_baseline and has_ga4:
+            seasonality = st.session_state.get("seasonality")
+            metrics_df = forecast_baseline_metrics(
+                ga4_df, months,
+                seasonality=seasonality,
+                fallback_cvr=cvr,
+                fallback_aov=aov,
+            )
+            base_cvr_list = metrics_df["cvr"].tolist()
+            if all_kw:
+                intent_cvr_series = compute_intent_weighted_cvr_per_month(
+                    merged_kw, base_cvr_list
+                )
+            else:
+                intent_cvr_series = base_cvr_list
+
+        # Revenue per session from GA4 (legacy fallback when no cr/aov history)
         ga4_rev_per_session = None
-        if ga4_has_revenue and include_baseline:
+        if ga4_has_revenue and include_baseline and metrics_df is None:
             total_rev = ga4_df["revenue"].sum()
             total_traffic = ga4_df["traffic"].sum()
             if total_traffic > 0:
@@ -230,6 +292,10 @@ if st.button("Generate Combined Forecast", type="primary", key="comb_run"):
 
         st.session_state[COMB_RESULTS] = {
             "combined_df": combined_df,
+            "yoy_rate": combined_df.attrs.get("yoy_rate"),
+            "baseline_method": (
+                historical_forecast_df.attrs.get("chosen_method") if historical_forecast_df is not None else None
+            ),
             "include_baseline": include_baseline,
             "include_positional": include_positional,
             "include_new_content": include_new_content,
@@ -242,6 +308,8 @@ if st.button("Generate Combined Forecast", type="primary", key="comb_run"):
             "intent_breakdown": intent_breakdown,
             "ga4_rev_per_session": ga4_rev_per_session,
             "decay_df": decay_df,
+            "metrics_df": metrics_df,
+            "intent_cvr_series": intent_cvr_series,
         }
 
 # ── Results ────────────────────────────────────────────────────────────────
@@ -266,7 +334,7 @@ if COMB_RESULTS in st.session_state:
         if baseline_end > 0 else 0
     )
 
-    tab_names = ["\U0001f4ca Combined Chart", "\U0001f4cb Uplift Table"]
+    tab_names = ["\U0001f4ca Combined Chart", "\U0001f4cb Uplift Table", "\U0001f4c8 YoY / MoM"]
     if r["enable_revenue"]:
         tab_names.append("\U0001f4b0 Revenue Analysis")
     tab_names.append("\U0001f4e5 Export")
@@ -283,8 +351,56 @@ if COMB_RESULTS in st.session_state:
         c3.metric("Positional Uplift", f"{pos_total:,}")
         c4.metric("Uplift at End", f"{uplift_end}%")
 
+        _baseline_method = r.get("baseline_method")
+        if _baseline_method:
+            st.caption(
+                f"Baseline projection sourced from Historical Forecast page "
+                f"(**{_baseline_method.replace('_', ' ').title()}** method)."
+            )
+        else:
+            st.caption(
+                "No Historical Forecast result in session — using internal YoY baseline. "
+                "Run the **Historical Forecast** page first for a trend-aware baseline."
+            )
+
+        _yoy = r.get("yoy_rate")
+        if _yoy is not None and not _baseline_method:
+            st.caption(
+                f"Baseline uses year-over-year growth at **{_yoy:+.1%}/year** "
+                f"(median of same-month comparisons). "
+                f"Each forecast month anchors to the same calendar month 12 months prior."
+            )
+
+        _season_src = st.session_state.get("assumptions", {}).get(
+            "seasonality_source", {}
+        )
+        _src_val = (
+            _season_src.get("value") if isinstance(_season_src, dict) else _season_src
+        ) or "default"
+        _season_captions = {
+            "learned": "Seasonality: learned from GA4 (24+ months of history).",
+            "blended": "Seasonality: 50/50 blend of GA4 actuals + AU retail defaults.",
+            "default": "Seasonality: AU retail defaults (upload ≥12 months of GA4 to learn).",
+        }
+        st.caption(_season_captions.get(str(_src_val), _season_captions["default"]))
+
         fig = combined_three_stream_chart(combined_df)
         st.plotly_chart(fig, use_container_width=True)
+
+        if ga4_df is not None and len(ga4_df) >= 12:
+            from engine.historical_engine import calculate_growth_rates
+            _rates = calculate_growth_rates(ga4_df["traffic"])
+            g1, g2 = st.columns(2)
+            g1.metric("Avg MoM Growth (historical)", f"{_rates['avg_mom']:+.1f}%")
+            g2.metric(
+                "Latest YoY Growth (historical)",
+                f"{_rates['latest_yoy']:+.1f}%" if _rates.get("latest_yoy") is not None else "N/A",
+            )
+            st.caption(
+                "These are the historical trends. The baseline projection above should "
+                "broadly continue them. If it doesn't, run the **Historical Forecast** page "
+                "to see what each model projects, then re-run Combined."
+            )
 
         st.divider()
         streams_desc = []
@@ -336,6 +452,75 @@ if COMB_RESULTS in st.session_state:
         display_df = display_df.rename(columns=rename_map)
         st.dataframe(display_df, use_container_width=True, hide_index=True)
 
+    # ── Tab: YoY / MoM ─────────────────────────────────────────────
+    with tabs[tab_idx]:
+        tab_idx += 1
+
+        fc_rows = forecast_df.copy()
+
+        mom_vals = fc_rows["mom_pct"].dropna() if "mom_pct" in fc_rows.columns else pd.Series(dtype=float)
+        yoy_vals = fc_rows["yoy_pct"].dropna() if "yoy_pct" in fc_rows.columns else pd.Series(dtype=float)
+
+        k1, k2, k3, k4 = st.columns(4)
+        k1.metric("Avg MoM %", f"{mom_vals.mean():+.1f}%" if not mom_vals.empty else "—")
+        if not mom_vals.empty:
+            peak_mom_idx = mom_vals.abs().idxmax()
+            peak_mom_month = fc_rows.loc[peak_mom_idx, "date"].strftime("%b")
+            k2.metric("Peak MoM %", f"{mom_vals[peak_mom_idx]:+.1f}% ({peak_mom_month})")
+        else:
+            k2.metric("Peak MoM %", "—")
+        k3.metric("Avg YoY %", f"{yoy_vals.mean():+.1f}%" if not yoy_vals.empty else "—")
+        if not yoy_vals.empty:
+            peak_yoy_idx = yoy_vals.abs().idxmax()
+            k4.metric("Peak YoY %", f"{yoy_vals[peak_yoy_idx]:+.1f}%")
+        else:
+            k4.metric("Peak YoY %", "—")
+
+        # Build display table
+        yoy_table_rows = []
+        for _, row in fc_rows.iterrows():
+            cv = row.get(combined_col)
+            yoy_table_rows.append({
+                "Month": row["date"].strftime("%b %Y"),
+                "Forecast P50": f"{int(cv):,}" if pd.notna(cv) else "—",
+                "Prior Year Actual": (
+                    f"{int(row['yoy_prior']):,}"
+                    if "yoy_prior" in row.index and pd.notna(row.get("yoy_prior"))
+                    else "—"
+                ),
+                "YoY Diff": (
+                    f"{int(row['yoy_diff']):+,}"
+                    if "yoy_diff" in row.index and pd.notna(row.get("yoy_diff"))
+                    else "—"
+                ),
+                "YoY %": (
+                    f"{row['yoy_pct']:+.1f}%"
+                    if "yoy_pct" in row.index and pd.notna(row.get("yoy_pct"))
+                    else "—"
+                ),
+                "MoM Diff": (
+                    f"{int(row['mom_diff']):+,}"
+                    if "mom_diff" in row.index and pd.notna(row.get("mom_diff"))
+                    else "—"
+                ),
+                "MoM %": (
+                    f"{row['mom_pct']:+.1f}%"
+                    if "mom_pct" in row.index and pd.notna(row.get("mom_pct"))
+                    else "—"
+                ),
+            })
+
+        if yoy_table_rows:
+            st.dataframe(pd.DataFrame(yoy_table_rows), use_container_width=True, hide_index=True)
+        else:
+            st.info("No forecast data available for YoY/MoM comparison.")
+
+        st.caption(
+            "Seasonality is baked into the forecast so these comparisons represent "
+            "genuine growth, not seasonal noise. Prior Year Actual is pulled from "
+            "uploaded GA4 history where the date matches (12 months prior)."
+        )
+
     # ── Tab: Revenue Analysis ───────────────────────────────────────
     if r["enable_revenue"]:
         with tabs[tab_idx]:
@@ -345,22 +530,53 @@ if COMB_RESULTS in st.session_state:
             intent_cvr = r["intent_cvr"]
             base_cvr = r["cvr"]
             base_aov = r["aov"]
+            metrics_df = r.get("metrics_df")
+            intent_cvr_series = r.get("intent_cvr_series")
 
-            rev_df = forecast_df.copy()
+            rev_df = forecast_df.reset_index(drop=True).copy()
 
-            # Baseline revenue: use GA4 revenue-per-session if available
-            if rev_per_session and rev_per_session > 0:
-                rev_df["baseline_revenue"] = (rev_df["baseline"] * rev_per_session).round(2)
+            if metrics_df is not None and not metrics_df.empty:
+                # Dynamic: trend-aware + seasonality-aware per-month revenue
+                rev_df["baseline_revenue"] = metrics_df["revenue"].values
+
+                aov_series_vals = metrics_df["aov"].tolist()
+                cvr_vals = (
+                    intent_cvr_series
+                    if intent_cvr_series is not None
+                    else metrics_df["cvr"].tolist()
+                )
+                uplift_traffic = (
+                    rev_df["positional_uplift"] + rev_df["new_content_uplift"]
+                )
+                rev_df["uplift_revenue"] = [
+                    round(
+                        float(uplift_traffic.iloc[i]) * cvr_vals[i] / 100.0
+                        * aov_series_vals[i],
+                        2,
+                    )
+                    for i in range(len(rev_df))
+                ]
+                revenue_method = "dynamic (GA4 trend + seasonal CVR/AOV per month)"
             else:
-                rev_df["baseline_revenue"] = (
-                    rev_df["baseline"] * (base_cvr / 100) * base_aov
+                # Fallback: static scalar CVR/AOV
+                if rev_per_session and rev_per_session > 0:
+                    rev_df["baseline_revenue"] = (
+                        rev_df["baseline"] * rev_per_session
+                    ).round(2)
+                    revenue_method = f"GA4 revenue/session ({sym}{rev_per_session:.2f})"
+                else:
+                    rev_df["baseline_revenue"] = (
+                        rev_df["baseline"] * (base_cvr / 100) * base_aov
+                    ).round(2)
+                    revenue_method = (
+                        f"CVR ({base_cvr:.2f}%) x AOV ({sym}{base_aov:,.2f})"
+                    )
+                uplift_traffic = (
+                    rev_df["positional_uplift"] + rev_df["new_content_uplift"]
+                )
+                rev_df["uplift_revenue"] = (
+                    uplift_traffic * (intent_cvr / 100) * base_aov
                 ).round(2)
-
-            # Uplift revenue: intent-weighted CVR
-            uplift_traffic = rev_df["positional_uplift"] + rev_df["new_content_uplift"]
-            rev_df["uplift_revenue"] = (
-                uplift_traffic * (intent_cvr / 100) * base_aov
-            ).round(2)
 
             rev_df["combined_revenue"] = (
                 rev_df["baseline_revenue"] + rev_df["uplift_revenue"]
@@ -392,16 +608,12 @@ if COMB_RESULTS in st.session_state:
                 st.dataframe(breakdown, use_container_width=True, hide_index=True)
 
             st.divider()
-            method_baseline = (
-                f"GA4 revenue/session ({sym}{rev_per_session:.2f})"
-                if rev_per_session
-                else f"CVR ({base_cvr:.2f}%) x AOV ({sym}{base_aov:,.2f})"
-            )
             st.info(
                 f"**How revenue is calculated:**\n\n"
-                f"- **Baseline revenue**: {method_baseline}\n"
-                f"- **Uplift revenue**: Intent-weighted CVR ({intent_cvr:.2f}%) "
-                f"x AOV ({sym}{base_aov:,.2f})\n"
+                f"- **Baseline revenue**: {revenue_method}\n"
+                f"- **Uplift revenue**: Intent-weighted CVR "
+                f"({'per-month trend' if metrics_df is not None else f'{intent_cvr:.2f}%'}) "
+                f"x {'per-month AOV' if metrics_df is not None else f'{sym}{base_aov:,.2f}'}\n"
                 f"- Commercial/transactional keywords convert at 1.5–2x; "
                 f"informational at 0.3x"
             )
@@ -432,3 +644,11 @@ if COMB_RESULTS in st.session_state:
                 "text/html",
                 key="comb_dl_html",
             )
+
+st.divider()
+st.caption(
+    "**Looking for the three-scenario comparison?** "
+    "The Strategy page runs Conservative / Moderate / Aggressive in one click and "
+    "produces a four-sheet xlsx ready for client presentations. "
+    "This deep-dive page is best for analysts tuning a single forecast configuration."
+)

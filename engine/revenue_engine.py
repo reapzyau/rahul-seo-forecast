@@ -178,6 +178,25 @@ def compute_intent_weighted_cvr(
     return round(base_cvr * blended, 2)
 
 
+def compute_intent_weighted_cvr_per_month(
+    keyword_df: pd.DataFrame,
+    base_cvr_series: list[float],
+) -> list[float]:
+    """Return per-month intent-weighted CVR values.
+
+    Applies the same traffic-weighted intent blending as
+    compute_intent_weighted_cvr() to each value in base_cvr_series.
+
+    Args:
+        keyword_df: Keyword DataFrame with 'intent' and a traffic column.
+        base_cvr_series: Per-month base CVR% values.
+
+    Returns:
+        List of intent-weighted CVR% values, same length as base_cvr_series.
+    """
+    return [compute_intent_weighted_cvr(keyword_df, base_cvr) for base_cvr in base_cvr_series]
+
+
 def intent_revenue_breakdown(
     keyword_df: pd.DataFrame,
     base_cvr: float,

@@ -124,6 +124,20 @@ ASSUMPTIONS: dict[str, Assumption] = {
         min_val=0.0,
         max_val=1.0,
     ),
+    "decay_multiplier_informational_non_branded": Assumption(
+        key="decay_multiplier_informational_non_branded",
+        label="Decay Multiplier: Non-Branded Informational",
+        default=1.5,
+        unit="×",
+        min_val=1.0,
+        max_val=3.0,
+    ),
+    "decay_intent_aware_enabled": Assumption(
+        key="decay_intent_aware_enabled",
+        label="Intent-Aware Decay Enabled",
+        default=True,
+        unit="",
+    ),
     "brand_terms": Assumption(
         key="brand_terms",
         label="Brand Terms",

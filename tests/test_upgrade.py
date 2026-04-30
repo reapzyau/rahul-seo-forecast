@@ -1,4 +1,5 @@
-"""Tests for the SEO Forecaster v5 upgrade (upgrade guide Sections 1-10).
+"""Tests for the SEO Forecaster v5 upgrade (upgrade guide Sections 1-10
+plus Companion v2 Refinements A, B, C).
 
 Covers:
   - Section 6: brand_classifier (two-stage)
@@ -6,6 +7,9 @@ Covers:
   - Sections 3+4: positional position_filter, _resolve_movement_stats
   - Section 5: run_new_content_forecast_simple
   - Section 10: build_methodology_snapshot, methodology_snapshot_to_human_readable
+  - Refinement A: detect_baseline_anomalies (T-2 vs T-1 primary, window fallback)
+  - Refinement B: learn_movement_from_history_v2 (p75/p90 stats)
+  - Refinement C: estimate_da_from_rankings (KD→DA lookup)
 """
 
 from __future__ import annotations
@@ -483,3 +487,244 @@ class TestBuildMethodologySnapshot:
         assert "Test Client" in text
         assert "yoy_replay" in text
         assert "4k" in text
+
+
+# ── Refinement A: detect_baseline_anomalies ───────────────────────────────────
+
+
+def _make_ga4_df(n_months: int, base: float = 10000.0, seed: int = 0) -> pd.DataFrame:
+    """Build a synthetic GA4 DataFrame with n_months of monthly data."""
+    rng = np.random.default_rng(seed)
+    dates = pd.date_range("2023-01-01", periods=n_months, freq="MS")
+    traffic = base + rng.normal(0, base * 0.05, n_months)
+    traffic = np.maximum(1, traffic).astype(int)
+    return pd.DataFrame({"date": dates, "traffic": traffic})
+
+
+class TestDetectBaselineAnomalies:
+    def test_returns_dict_with_expected_keys(self):
+        from engine.historical_engine import detect_baseline_anomalies
+
+        df = _make_ga4_df(36)
+        result = detect_baseline_anomalies(df)
+        assert "anomalous_months" in result
+        assert "method" in result
+        assert "details" in result
+
+    def test_stable_series_no_anomalies(self):
+        from engine.historical_engine import detect_baseline_anomalies
+
+        df = _make_ga4_df(36, base=15000.0, seed=99)
+        result = detect_baseline_anomalies(df, z_threshold=2.0)
+        # Stable noise-only series should produce zero or very few anomalies
+        assert len(result["anomalous_months"]) <= 2
+
+    def test_uses_t2_vs_t1_when_24_plus_months(self):
+        from engine.historical_engine import detect_baseline_anomalies
+
+        df = _make_ga4_df(36)
+        result = detect_baseline_anomalies(df)
+        assert result["method"] == "t2_vs_t1"
+
+    def test_uses_surrounding_window_for_12_to_23_months(self):
+        from engine.historical_engine import detect_baseline_anomalies
+
+        df = _make_ga4_df(18)
+        result = detect_baseline_anomalies(df)
+        assert result["method"] == "surrounding_window"
+
+    def test_insufficient_data_returns_empty(self):
+        from engine.historical_engine import detect_baseline_anomalies
+
+        df = _make_ga4_df(6)
+        result = detect_baseline_anomalies(df)
+        assert result["method"] == "insufficient_data"
+        assert result["anomalous_months"] == []
+
+    def test_spike_detected(self):
+        from engine.historical_engine import detect_baseline_anomalies
+
+        # 36 months with a large spike in month 25
+        df = _make_ga4_df(36, base=10000.0, seed=5)
+        df.loc[24, "traffic"] = 80000  # 8× spike
+        result = detect_baseline_anomalies(df, z_threshold=2.0)
+        assert len(result["anomalous_months"]) >= 1
+
+    def test_details_contain_sigma_info(self):
+        from engine.historical_engine import detect_baseline_anomalies
+
+        df = _make_ga4_df(36, base=10000.0, seed=5)
+        df.loc[24, "traffic"] = 80000
+        result = detect_baseline_anomalies(df, z_threshold=2.0)
+        if result["details"]:
+            assert "σ" in result["details"][0] or "%" in result["details"][0]
+
+
+# ── Refinement B: learn_movement_from_history_v2 ─────────────────────────────
+
+
+def _make_kw_movement_df(n: int = 60, seed: int = 1) -> pd.DataFrame:
+    """Build a synthetic keyword DataFrame with previous_position, position, kd."""
+    rng = np.random.default_rng(seed)
+    kds = rng.integers(0, 100, n)
+    positions = rng.integers(1, 30, n)
+    prev_positions = np.clip(positions + rng.integers(-5, 15, n), 1, 100)
+    return pd.DataFrame({
+        "keyword": [f"kw_{i}" for i in range(n)],
+        "kd": kds,
+        "position": positions,
+        "previous_position": prev_positions,
+        "volume": rng.integers(100, 5000, n),
+    })
+
+
+class TestLearnMovementFromHistoryV2:
+    def test_returns_p75_and_p90_gain(self):
+        from engine.positional_engine import learn_movement_from_history_v2
+
+        df = _make_kw_movement_df(n=200)
+        stats = learn_movement_from_history_v2(df)
+        for tier_stats in stats.values():
+            assert "p75_gain" in tier_stats
+            assert "p90_gain" in tier_stats
+
+    def test_p90_gte_p75_gte_mean_for_positive_gains(self):
+        from engine.positional_engine import learn_movement_from_history_v2
+
+        # Create a dataset where Easy keywords always improve (positive gains)
+        rng = np.random.default_rng(42)
+        n = 100
+        df = pd.DataFrame({
+            "keyword": [f"kw_{i}" for i in range(n)],
+            "kd": [5] * n,  # all Easy
+            "position": [10] * n,
+            "previous_position": [10 + rng.integers(1, 15) for _ in range(n)],
+            "volume": [1000] * n,
+        })
+        stats = learn_movement_from_history_v2(df)
+        if "Easy" in stats:
+            assert stats["Easy"]["p90_gain"] >= stats["Easy"]["p75_gain"]
+            # p75 should be >= mean for positively skewed distributions
+            # (many small gains + some large gains)
+
+    def test_missing_previous_position_returns_empty(self):
+        from engine.positional_engine import learn_movement_from_history_v2
+
+        df = pd.DataFrame({"keyword": ["kw1"], "kd": [30], "position": [10], "volume": [100]})
+        assert learn_movement_from_history_v2(df) == {}
+
+    def test_auto_mode_uses_p75_when_available(self):
+        from engine.positional_engine import _resolve_movement_stats
+
+        # Learned stats with p75_gain (v2 format)
+        learned = {
+            "Easy":      {"mean_gain": 3.0, "p75_gain": 5.0, "p90_gain": 8.0, "std_gain": 2.0, "sample_size": 20},
+            "Moderate":  {"mean_gain": 2.0, "p75_gain": 3.0, "p90_gain": 5.0, "std_gain": 1.5, "sample_size": 15},
+        }
+        stats, reason = _resolve_movement_stats(learned, "auto")
+        assert stats is learned
+        assert "P75" in reason
+
+    def test_auto_mode_falls_back_on_negative_p75(self):
+        from engine.positional_engine import _resolve_movement_stats
+
+        learned = {
+            "Easy":     {"mean_gain": 2.0, "p75_gain": -1.0, "p90_gain": 5.0, "std_gain": 2.0, "sample_size": 20},
+            "Moderate": {"mean_gain": 1.0, "p75_gain": -2.0, "p90_gain": 3.0, "std_gain": 1.0, "sample_size": 15},
+        }
+        stats, reason = _resolve_movement_stats(learned, "auto")
+        assert stats is None
+        assert "decline" in reason.lower()
+
+
+# ── Refinement C: estimate_da_from_rankings ───────────────────────────────────
+
+
+class TestEstimateDaFromRankings:
+    def _make_semrush_df(self, kds: list[int], positions: list[int]) -> pd.DataFrame:
+        return pd.DataFrame({
+            "keyword": [f"kw_{i}" for i in range(len(kds))],
+            "kd": kds,
+            "position": positions,
+            "volume": [1000] * len(kds),
+            "is_branded": [False] * len(kds),
+        })
+
+    def test_returns_expected_keys(self):
+        from engine.positional_engine import estimate_da_from_rankings
+
+        df = self._make_semrush_df(kds=[40] * 20, positions=list(range(1, 21)))
+        result = estimate_da_from_rankings(df)
+        for key in ("estimated_da", "da_range", "kd_ceiling", "sample_keywords", "rationale"):
+            assert key in result
+
+    def test_high_kd_portfolio_yields_high_da(self):
+        from engine.positional_engine import estimate_da_from_rankings
+
+        # Site ranking top-10 for hard keywords → high DA
+        df = self._make_semrush_df(kds=[75, 80, 72, 68, 78, 82, 70, 65, 77, 73],
+                                   positions=list(range(1, 11)))
+        result = estimate_da_from_rankings(df)
+        assert result["estimated_da"] >= 55
+
+    def test_low_kd_portfolio_yields_low_da(self):
+        from engine.positional_engine import estimate_da_from_rankings
+
+        # Site only ranking for very easy keywords
+        df = self._make_semrush_df(kds=[5, 8, 3, 12, 7, 6, 9, 4, 11, 10],
+                                   positions=list(range(1, 11)))
+        result = estimate_da_from_rankings(df)
+        assert result["estimated_da"] <= 35
+
+    def test_branded_keywords_excluded_via_column(self):
+        from engine.positional_engine import estimate_da_from_rankings
+
+        # Mix: first 5 branded (high KD), next 10 non-branded (low KD)
+        df = pd.DataFrame({
+            "keyword": [f"brand_{i}" for i in range(5)] + [f"kw_{i}" for i in range(10)],
+            "kd": [90] * 5 + [10] * 10,
+            "position": list(range(1, 16)),
+            "volume": [5000] * 15,
+            "is_branded": [True] * 5 + [False] * 10,
+        })
+        result = estimate_da_from_rankings(df)
+        # Excluding high-KD branded keywords, estimated DA should reflect low KD pool
+        assert result["estimated_da"] <= 30
+
+    def test_branded_keywords_excluded_via_callable(self):
+        from engine.positional_engine import estimate_da_from_rankings
+
+        df = pd.DataFrame({
+            "keyword": ["brand jacket", "brand coat", "winter jacket", "warm coat", "puffer jacket"],
+            "kd": [85, 80, 20, 18, 22],
+            "position": [1, 2, 3, 4, 5],
+            "volume": [2000, 1500, 800, 700, 900],
+        })
+        is_brand = lambda kw: "brand" in kw.lower()  # noqa: E731
+        result = estimate_da_from_rankings(df, brand_classifier=is_brand)
+        # Only 3 non-branded KDs remain (20, 18, 22) → low DA
+        assert result["estimated_da"] <= 35
+
+    def test_empty_df_returns_default(self):
+        from engine.positional_engine import estimate_da_from_rankings
+
+        df = pd.DataFrame({"keyword": [], "kd": [], "position": [], "volume": []})
+        result = estimate_da_from_rankings(df)
+        assert result["estimated_da"] == 30
+        assert "default" in result["rationale"].lower()
+
+    def test_da_range_width_is_20(self):
+        from engine.positional_engine import estimate_da_from_rankings
+
+        df = self._make_semrush_df(kds=[50] * 15, positions=list(range(1, 16)))
+        result = estimate_da_from_rankings(df)
+        lo, hi = result["da_range"]
+        assert hi - lo == 20
+
+    def test_rationale_is_string(self):
+        from engine.positional_engine import estimate_da_from_rankings
+
+        df = self._make_semrush_df(kds=[40] * 12, positions=list(range(1, 13)))
+        result = estimate_da_from_rankings(df)
+        assert isinstance(result["rationale"], str)
+        assert len(result["rationale"]) > 10

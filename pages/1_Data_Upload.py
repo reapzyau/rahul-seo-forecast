@@ -1,3 +1,4 @@
+import io
 import json
 import os
 
@@ -12,8 +13,10 @@ from engine.assumptions import (
     run_detection,
 )
 from engine.brand_classifier import (
-    brand_match_preview,
-    classify_keywords_with_two_stage,
+    BrandConfig,
+    build_classifier,
+    detect_collisions,
+    suggest_branded_candidates,
 )
 from engine.roadmap_ai_engine import (
     ROADMAP_BUNDLE_SCHEMA,
@@ -26,6 +29,8 @@ from engine.seasonality_engine import (
     learn_seasonality_from_ga4,
     seasonality_for_portfolio,
 )
+from engine.v5.da_estimator import compare_da_estimate_to_supplied, estimate_da_from_rankings
+from engine.v5.ga4_extractor import extract_organic_metrics, summarize_for_methodology
 from utils.assumptions_panel import render_assumptions_banner, render_assumptions_panel
 from utils.chart_builder import _apply_layout
 from utils.ga4_loader import load_ga4_organic
@@ -74,13 +79,17 @@ with tab_ga4:
     use_ga4_sample = st.checkbox("Use sample data (Cable Melbourne)", key="ga4_sample")
 
     ga4_df = None
+    ga4_metrics = None
     if uploaded_ga4 is not None:
-        ga4_df = load_ga4_organic(uploaded_ga4)
+        raw_bytes = uploaded_ga4.read()
+        ga4_df = load_ga4_organic(io.BytesIO(raw_bytes))
+        ga4_metrics = extract_organic_metrics(io.BytesIO(raw_bytes))
     elif use_ga4_sample:
         sample_path = os.path.join(
             os.path.dirname(os.path.dirname(__file__)), "assets", "sample-ga4-organic.xlsx"
         )
         ga4_df = load_ga4_organic(sample_path)
+        ga4_metrics = extract_organic_metrics(sample_path)
 
     if ga4_df is not None:
         st.session_state[GA4_DF] = ga4_df
@@ -145,6 +154,73 @@ with tab_ga4:
         )
         fig = _apply_layout(fig, "Monthly Organic Traffic", "Date", "Sessions")
         st.plotly_chart(fig, use_container_width=True)
+
+        # ── Channel-level CR / AOV from v5 extractor ─────────────────
+        st.divider()
+        st.subheader("Organic Search Metrics")
+
+        if ga4_metrics is not None and not ga4_metrics.get("warnings"):
+            cr_organic = ga4_metrics["cr_organic"]
+            cr_blended = ga4_metrics["cr_blended"]
+            aov_organic = ga4_metrics["aov_organic"]
+            aov_blended = ga4_metrics["aov_blended"]
+            cr_ratio = ga4_metrics.get("cr_ratio")
+
+            m1, m2, m3 = st.columns(3)
+            m1.metric(
+                "Organic Search CR",
+                f"{cr_organic * 100:.2f}%",
+                delta=f"{(cr_organic - cr_blended) * 100:+.2f}% vs blended",
+            )
+            m2.metric(
+                "Organic AOV",
+                f"${aov_organic:,.2f}",
+                delta=f"${aov_organic - aov_blended:+,.2f} vs blended",
+            )
+            m3.metric(
+                "CR Ratio (organic / blended)",
+                f"{cr_ratio:.2f}x" if cr_ratio is not None else "—",
+                help="< 1 means organic converts below blended average; > 1 means above.",
+            )
+
+            st.session_state["cr_organic"] = cr_organic
+            st.session_state["cr_blended"] = cr_blended
+            st.session_state["aov_organic"] = aov_organic
+            st.session_state["aov_blended"] = aov_blended
+            st.session_state["ga4_metrics_summary"] = summarize_for_methodology(ga4_metrics)
+
+            with st.expander("Monthly CR breakdown"):
+                cbm = ga4_metrics.get("cr_by_month")
+                if cbm is not None and not cbm.empty:
+                    display_cbm = cbm.copy()
+                    for col in ["cr_organic", "cr_blended"]:
+                        if col in display_cbm.columns:
+                            display_cbm[col] = (display_cbm[col] * 100).round(3).astype(str) + "%"
+                    st.dataframe(display_cbm, use_container_width=True)
+
+        else:
+            if ga4_metrics is not None and ga4_metrics.get("warnings"):
+                st.warning(
+                    "Channel breakdown not found in this GA4 export — "
+                    "the 'Session default channel group' column is missing. "
+                    "Enter Organic CR and AOV manually below."
+                )
+            else:
+                st.info("Upload a GA4 export to auto-detect Organic Search CR and AOV.")
+
+            col_a, col_b = st.columns(2)
+            manual_cr = col_a.number_input(
+                "Organic Conversion Rate (%)", min_value=0.01, max_value=100.0,
+                value=float(st.session_state.get("cr_organic", 0.0) * 100 or 1.5),
+                step=0.01, key="ga4_manual_cr",
+            )
+            manual_aov = col_b.number_input(
+                "Organic AOV ($)", min_value=1.0, max_value=1_000_000.0,
+                value=float(st.session_state.get("aov_organic") or 100.0),
+                step=1.0, key="ga4_manual_aov",
+            )
+            st.session_state["cr_organic"] = manual_cr / 100.0
+            st.session_state["aov_organic"] = manual_aov
 
     elif uploaded_ga4 is not None:
         st.error("Could not parse the uploaded GA4 file. Please check the format.")
@@ -224,6 +300,62 @@ with tab_semrush:
         st.divider()
         st.subheader("Brand Classification")
 
+        # Seed text-area session-state defaults once (preserves edits across reruns)
+        if "brand_terms_area" not in st.session_state:
+            st.session_state["brand_terms_area"] = "\n".join(
+                get_assumption(store, "brand_terms") or []
+            )
+        if "brand_wb_terms" not in st.session_state:
+            st.session_state["brand_wb_terms"] = ""
+        if "brand_excl_terms" not in st.session_state:
+            st.session_state["brand_excl_terms"] = ""
+
+        # ── Stage 1: auto-suggest ─────────────────────────────────────
+        with st.expander("Stage 1 — Brand candidate auto-detection", expanded=True):
+            st.caption(
+                "Keywords scored by 4 brand-pattern signals: position 1 + low KD, "
+                "short keyword, URL match, high CTR proxy. "
+                "Check the rows you want to include, then click **Apply to text areas**."
+            )
+            candidates = suggest_branded_candidates(kw_df, top_n_by_volume=100, min_volume=100)
+            if not candidates.empty:
+                candidates_display = candidates.copy()
+                candidates_display.insert(0, "include", candidates_display["brand_score"] >= 0.6)
+                edited_candidates = st.data_editor(
+                    candidates_display,
+                    key="brand_candidates_editor",
+                    hide_index=True,
+                    column_config={
+                        "include": st.column_config.CheckboxColumn("Include", default=False),
+                        "brand_score": st.column_config.NumberColumn("Score", format="%.2f"),
+                    },
+                    use_container_width=True,
+                )
+                if st.button("Apply selected to text areas below", key="apply_brand_suggestions"):
+                    included = edited_candidates[edited_candidates["include"]]
+                    new_sub, new_wb = [], []
+                    for _, row in included.iterrows():
+                        kw = str(row["keyword"])
+                        if row.get("suggested_classification") == "word_boundary":
+                            new_wb.append(kw)
+                        else:
+                            new_sub.append(kw)
+                    existing_sub = [
+                        t.strip() for t in st.session_state["brand_terms_area"].split("\n") if t.strip()
+                    ]
+                    existing_wb = [
+                        t.strip() for t in st.session_state["brand_wb_terms"].split("\n") if t.strip()
+                    ]
+                    st.session_state["brand_terms_area"] = "\n".join(
+                        list(dict.fromkeys(existing_sub + new_sub))
+                    )
+                    st.session_state["brand_wb_terms"] = "\n".join(
+                        list(dict.fromkeys(existing_wb + new_wb))
+                    )
+                    st.rerun()
+            else:
+                st.info("No brand candidates found — fill in the text areas below manually.")
+
         # Detect domain from URL column if present
         detected_domain = ""
         url_cols = [c for c in kw_df.columns if "url" in c.lower() or "page" in c.lower()]
@@ -241,10 +373,9 @@ with tab_semrush:
             help="Used to give the AI context for brand detection.",
         )
 
-        current_terms = get_assumption(store, "brand_terms") or []
+        # Text areas read from / write to session state; no value= so edits persist
         terms_text = st.text_area(
             "Brand substrings — always match (one per line)",
-            value="\n".join(current_terms),
             key="brand_terms_area",
             height=100,
             help=(
@@ -260,18 +391,62 @@ with tab_semrush:
             )
             wb_terms_text = st.text_area(
                 "Brand whole-words (matched as whole words only, one per line)",
-                value="",
                 key="brand_wb_terms",
                 height=60,
                 help="e.g. 'cable' — matches 'cable' but not 'cable knit' if 'knit' is in exclusions.",
             )
             excl_terms_text = st.text_area(
                 "Excluded followers (one per line) — prevent whole-word false positives",
-                value="",
                 key="brand_excl_terms",
                 height=60,
                 help="e.g. 'knit', 'car', 'tie' — if any of these appear adjacent to the brand word, keyword is NOT branded.",
             )
+
+        # ── Stage 2: collision detection ──────────────────────────────
+        wb_list_current = [t.strip() for t in st.session_state.get("brand_wb_terms", "").split("\n") if t.strip()]
+        if wb_list_current:
+            with st.expander(
+                f"Stage 2 — Collision detection for {len(wb_list_current)} whole-word term(s)",
+                expanded=False,
+            ):
+                st.caption(
+                    "Tokens that frequently appear adjacent to your whole-word brand terms. "
+                    "Check the ones that indicate a non-brand category — they become **excluded followers**."
+                )
+                all_new_exclusions: list[str] = []
+                for wb_term in wb_list_current:
+                    st.markdown(f"**`{wb_term}`** — adjacent tokens:")
+                    collisions = detect_collisions(
+                        kw_df, wb_term, min_follower_count=3, min_volume_share=0.01
+                    )
+                    if not collisions.empty:
+                        collisions_display = collisions.copy()
+                        collisions_display.insert(
+                            0, "exclude", collisions_display["collision_score"] >= 5
+                        )
+                        edited_coll = st.data_editor(
+                            collisions_display,
+                            key=f"collisions_{wb_term}",
+                            hide_index=True,
+                            column_config={
+                                "exclude": st.column_config.CheckboxColumn("Exclude", default=False),
+                                "collision_score": st.column_config.NumberColumn("Score", format="%.2f"),
+                                "volume_share": st.column_config.NumberColumn("Vol share", format="%.1%"),
+                            },
+                            use_container_width=True,
+                        )
+                        selected = edited_coll[edited_coll["exclude"]]["follower"].tolist()
+                        all_new_exclusions.extend(selected)
+                    else:
+                        st.caption(f"No significant collisions found for '{wb_term}'.")
+
+                if st.button("Apply selected exclusions to text area", key="apply_exclusions"):
+                    existing_excl = [
+                        t.strip() for t in st.session_state.get("brand_excl_terms", "").split("\n") if t.strip()
+                    ]
+                    merged_excl = list(dict.fromkeys(existing_excl + all_new_exclusions))
+                    st.session_state["brand_excl_terms"] = "\n".join(merged_excl)
+                    st.rerun()
 
         ai_key = st.session_state.get(BIFROST_API_KEY)
         ai_model = st.session_state.get(BIFROST_MODEL, get_default_model())
@@ -298,7 +473,7 @@ with tab_semrush:
             elif not ai_key:
                 st.caption("Add your Bi Frost API key in the AI Settings panel to enable auto-detection.")
 
-        # Merge auto-detected with manual
+        # Merge AI-detected terms into substring text before saving
         if DETECTED_BRAND_TERMS in st.session_state:
             existing_manual = [t.strip() for t in terms_text.split("\n") if t.strip()]
             merged = list(dict.fromkeys(existing_manual + st.session_state[DETECTED_BRAND_TERMS]))
@@ -311,37 +486,93 @@ with tab_semrush:
                 saved_excl = [t.strip() for t in st.session_state.get("brand_excl_terms", "").split("\n") if t.strip()]
                 prov = "AI-detected" if DETECTED_BRAND_TERMS in st.session_state else "user-overridden"
                 override_assumption(store, "brand_terms", saved_terms, prov)
-                # Two-stage classification
-                updated_kw = classify_keywords_with_two_stage(
-                    st.session_state[KW_DF],
+
+                # Build v5 BrandConfig and store for downstream pages
+                brand_config = BrandConfig(
                     substring_terms=saved_terms,
-                    word_boundary_terms=saved_wb or None,
-                    excluded_followers=saved_excl or None,
+                    word_boundary_terms=saved_wb,
+                    excluded_followers=saved_excl,
                 )
+                st.session_state["brand_config"] = brand_config
+                classifier = build_classifier(brand_config)
+
+                # Apply to kw_df and kw_existing
+                updated_kw = st.session_state[KW_DF].copy()
+                updated_kw["is_branded"] = updated_kw["keyword"].map(classifier)
                 st.session_state[KW_DF] = updated_kw
                 if KW_EXISTING in st.session_state:
-                    st.session_state[KW_EXISTING] = classify_keywords_with_two_stage(
-                        st.session_state[KW_EXISTING],
-                        substring_terms=saved_terms,
-                        word_boundary_terms=saved_wb or None,
-                        excluded_followers=saved_excl or None,
-                    )
-                n_branded = updated_kw["is_branded"].sum()
+                    upd_ex = st.session_state[KW_EXISTING].copy()
+                    upd_ex["is_branded"] = upd_ex["keyword"].map(classifier)
+                    st.session_state[KW_EXISTING] = upd_ex
+
+                n_branded = int(updated_kw["is_branded"].sum())
                 n_total = len(updated_kw)
                 st.success(
                     f"Saved. {n_branded} branded / {n_total} total keywords "
-                    f"({n_branded / n_total * 100:.1f}%)."
+                    f"({n_branded / n_total * 100:.1f}%). "
+                    f"Config stored in session for downstream pages."
                 )
-                # Brand match preview
+
+                # Stage 3: final preview
                 if n_branded > 0:
-                    preview_df = brand_match_preview(
-                        updated_kw,
-                        substring_terms=saved_terms,
-                        word_boundary_terms=saved_wb or None,
-                        excluded_followers=saved_excl or None,
-                    )
-                    with st.expander(f"Brand match preview — top {len(preview_df)} by volume"):
-                        st.dataframe(preview_df[["keyword", "volume", "is_branded"]].head(50), use_container_width=True)
+                    preview_df = updated_kw[updated_kw["is_branded"]].copy()
+                    if "volume" in preview_df.columns:
+                        preview_df = preview_df.sort_values("volume", ascending=False)
+                    preview_cols = [c for c in ["keyword", "volume", "position", "is_branded"] if c in preview_df.columns]
+                    with st.expander(f"Stage 3 — Brand match preview (top {min(20, n_branded)} by volume)"):
+                        st.write(f"Brand classifier will match **{n_branded}** keywords.")
+                        st.dataframe(preview_df[preview_cols].head(20), use_container_width=True, hide_index=True)
+
+        # ── Domain Authority Auto-Derivation ─────────────────────────
+        st.divider()
+        st.subheader("Domain Authority")
+
+        _brand_config = st.session_state.get("brand_config")
+        _brand_fn = build_classifier(_brand_config) if _brand_config is not None else None
+        da_auto, da_rationale_auto = estimate_da_from_rankings(kw_df, brand_classifier=_brand_fn)
+
+        if da_auto is not None:
+            st.success(f"Auto-detected: **DA = {da_auto}**")
+            st.caption(da_rationale_auto)
+            use_override = st.checkbox("Override with manual value", value=False, key="da_override_checkbox")
+            if use_override:
+                da_val = st.number_input(
+                    "Manual DA", min_value=1, max_value=100,
+                    value=st.session_state.get("da_override", da_auto),
+                    key="da_manual_input",
+                )
+                st.session_state["da_override"] = int(da_val)
+                comparison = compare_da_estimate_to_supplied(da_auto, int(da_val), tolerance=10)
+                st.info(comparison)
+                da_final = int(da_val)
+                da_rationale_final = f"User-supplied: {da_final} (auto-estimate was {da_auto})"
+            else:
+                st.session_state.pop("da_override", None)
+                da_final = da_auto
+                da_rationale_final = da_rationale_auto
+        else:
+            st.warning(
+                "Auto-estimation needs more non-branded top-10 rankings than this site has. "
+                f"_{da_rationale_auto}_"
+            )
+            da_val = st.number_input(
+                "DA (manual)", min_value=1, max_value=100,
+                value=st.session_state.get("da", 40),
+                key="da_manual_input_fallback",
+            )
+            da_final = int(da_val)
+            da_rationale_final = f"User-supplied: {da_final}"
+
+        st.session_state["da"] = da_final
+        st.session_state["da_rationale"] = da_rationale_final
+
+        with st.expander("Sensitivity: DA at different KD percentiles"):
+            st.caption("Shows how the DA estimate changes across different percentile thresholds.")
+            for pct in [0.50, 0.75, 0.90, 0.95, 0.99]:
+                pct_da, _ = estimate_da_from_rankings(kw_df, brand_classifier=_brand_fn, percentile=pct)
+                label = f"p{int(pct * 100):02d}"
+                val_str = str(pct_da) if pct_da is not None else "n/a"
+                st.write(f"  **{label}** → DA = {val_str}")
 
     elif uploaded_semrush is not None:
         st.error("Could not parse the uploaded SEMrush file. Please check the format.")
@@ -402,14 +633,33 @@ with tab_roadmap:
                             st.session_state[ROADMAP_BUNDLE] = _bundle
                             st.session_state[ROADMAP_CONTENT_PLAN] = _bundle.get("content_plan", [])
                             st.session_state[ROADMAP_USED_MODEL] = _used_model
-                        except Exception as _e:
-                            st.error(f"Roadmap ingestion failed: {_e}. Falling back to legacy loader.")
+                        except ValueError as _ve:
+                            st.error("Roadmap parsed but failed validation:")
+                            st.code(str(_ve), language="text")
+                            st.warning(
+                                "This usually means the file structure differs from expected. "
+                                "Try re-uploading after correcting the highlighted rows, "
+                                "or fall back to the legacy loader below."
+                            )
                             try:
                                 _legacy = load_roadmap(_raw_bytes)
                                 if _legacy:
                                     run_detection(store, roadmap_data=_legacy)
                                     st.session_state[ROADMAP_DATA] = _legacy
-                                    st.warning("Legacy extraction used — upload AI key for rich extraction.")
+                                    st.info("Legacy fallback succeeded with reduced fidelity (3 scalars only).")
+                            except Exception as _e2:
+                                st.error(f"Legacy fallback also failed: {_e2}")
+                        except Exception as _e:
+                            import traceback
+                            st.error(f"Roadmap ingestion failed: {_e}")
+                            with st.expander("Show error details"):
+                                st.code(traceback.format_exc(), language="text")
+                            st.warning("Falling back to legacy loader — extraction will be limited to three scalars.")
+                            try:
+                                _legacy = load_roadmap(_raw_bytes)
+                                if _legacy:
+                                    run_detection(store, roadmap_data=_legacy)
+                                    st.session_state[ROADMAP_DATA] = _legacy
                             except Exception as _e2:
                                 st.error(f"Legacy fallback also failed: {_e2}")
 
@@ -426,9 +676,41 @@ with tab_roadmap:
                         "before applying to assumptions."
                     )
 
+                # ── Strategy at a glance ─────────────────────────────────
+                _strategy_summary = _bundle.get("strategy_summary", "")
+                _primary_domain = _bundle.get("primary_domain", "")
+                _loc_domains = _bundle.get("localisation_domains", [])
+                _client_name = _bundle.get("client_metadata", {}).get("client_name", "")
+
+                if _strategy_summary or _primary_domain:
+                    with st.container(border=True):
+                        st.markdown("**Strategy at a Glance**")
+                        if _client_name:
+                            st.caption(f"Client: {_client_name}")
+                        if _strategy_summary:
+                            st.markdown(_strategy_summary)
+                        _domain_cols = st.columns(2)
+                        with _domain_cols[0]:
+                            if _primary_domain:
+                                st.markdown(f"**Primary domain:** `{_primary_domain}`")
+                        with _domain_cols[1]:
+                            if _loc_domains:
+                                _loc_list = ", ".join(f"`{d}`" for d in _loc_domains)
+                                st.markdown(f"**Localisation:** {_loc_list}")
+
+                # ── Validation warnings (tiered — not errors) ───────────
+                _warnings = _bundle.get("validation_warnings", [])
+                if _warnings:
+                    with st.expander(f"⚠ {len(_warnings)} data-quality warning(s)", expanded=False):
+                        for _w in _warnings:
+                            st.markdown(f"- {_w}")
+
                 # KPI cards
                 k1, k2, k3, k4 = st.columns(4)
-                k1.metric("Tasks Detected", _ss.get("total_tasks_detected", "—"))
+                k1.metric("Items Detected", _ss.get("total_tasks_detected", "—"))
+                _launches = _ss.get("content_launches_detected", 0)
+                if _launches:
+                    k1.caption(f"({_launches} content launches)")
                 k2.metric("Focus Areas", len(_ss.get("focus_areas_detected", [])))
                 k3.metric("Timeline", f"{_ss.get('timeline_months_covered', '—')} months")
                 k4.metric("Confidence", f"{_conf:.0%}")
@@ -445,13 +727,6 @@ with tab_roadmap:
                             st.warning(_msg)
                         else:
                             st.info(_msg)
-
-                # Gaps
-                _gaps = _bundle.get("gaps", [])
-                if _gaps:
-                    with st.expander(f"{len(_gaps)} gap(s) detected"):
-                        for _g in _gaps:
-                            st.markdown(f"- **{_g.get('focus_area', '?')}**: {_g.get('note', '')}")
 
                 # Per-focus breakdown table
                 st.subheader("Per-Focus Breakdown")

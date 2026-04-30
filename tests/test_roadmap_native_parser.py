@@ -237,6 +237,28 @@ class TestRealPatternSOW:
         # Client Detail doesn't have CMS; Technical sheet row 4 has 'CMS:' / 'Shopify'
         assert bundle["client_metadata"].get("cms") == "Shopify"
 
+    def test_primary_domain_is_com_au(self, bundle):
+        assert bundle["primary_domain"] == "helenkaminski.com.au"
+
+    def test_localisation_domain_detected(self, bundle):
+        assert "helenkaminski.com" in bundle["localisation_domains"]
+
+    def test_tooltip_text_not_stored_as_metadata(self, bundle):
+        """Template instruction text should never land in client_metadata values."""
+        for key, value in bundle["client_metadata"].items():
+            if not isinstance(value, str):
+                continue
+            lower = value.lower()
+            assert "to be provided" not in lower, (
+                f"Tooltip text leaked into client_metadata.{key}: {value!r}"
+            )
+            assert "double click" not in lower, (
+                f"Tooltip text leaked into client_metadata.{key}: {value!r}"
+            )
+            assert "click to add" not in lower, (
+                f"Tooltip text leaked into client_metadata.{key}: {value!r}"
+            )
+
 
 class TestLoadRoadmapV2:
     def test_load_roadmap_v2_dispatches_correctly(self, xlsx_bytes, task_csv_bytes, param_csv_bytes):
@@ -251,3 +273,60 @@ class TestLoadRoadmapV2:
         b3, m3 = load_roadmap_v2(None, param_csv_bytes, "params.csv")
         assert b3["format_detected"] == "param_table"
         assert m3 == "deterministic"
+
+
+def test_is_tooltip_value_catches_common_patterns():
+    from engine.roadmap_native_parser import _is_tooltip_value
+
+    assert _is_tooltip_value("To be provided by the client")
+    assert _is_tooltip_value("Double click & select")
+    assert _is_tooltip_value("TBC: awaiting brand review")
+    assert _is_tooltip_value(None)
+    assert _is_tooltip_value("")
+    assert _is_tooltip_value("   ")
+    # Real values pass through
+    assert not _is_tooltip_value("Helen Kaminski")
+    assert not _is_tooltip_value("Shopify")
+    assert not _is_tooltip_value(4906)
+
+
+class TestMidDraftSOW:
+    """Regression: SOW started but not fully filled in.
+
+    Represents the common state where strategist has listed URLs but content
+    team hasn't supplied titles, word counts, or per-item SEO hours yet.
+    Bundle should load successfully with warnings, not raise.
+    """
+
+    @pytest.fixture(scope="class")
+    def bundle(self):
+        path = FIXTURE_DIR / "sample_mid_draft_roadmap.xlsx"
+        if not path.exists():
+            pytest.skip("Mid-draft fixture not built — run tests/fixtures/build_mid_draft_fixture.py")
+        return parse_pattern_native(path.read_bytes())
+
+    def test_bundle_loads_without_raising(self, bundle):
+        assert bundle["schema_version"] == "2.0"
+
+    def test_client_metadata_extracted(self, bundle):
+        assert bundle["client_metadata"]["client_name"] == "Draft Co"
+
+    def test_content_plan_urls_parsed(self, bundle):
+        assert len(bundle["content_plan"]) == 25
+
+    def test_validation_warnings_populated(self, bundle):
+        assert "validation_warnings" in bundle
+        warnings = bundle["validation_warnings"]
+        assert len(warnings) > 0
+
+    def test_warnings_flag_zero_word_counts(self, bundle):
+        warnings = " ".join(bundle["validation_warnings"]).lower()
+        assert "word_count" in warnings or "word count" in warnings
+
+    def test_warnings_flag_zero_seo_hours(self, bundle):
+        warnings = " ".join(bundle["validation_warnings"]).lower()
+        assert "seo_hours" in warnings or "hours" in warnings
+
+    def test_warnings_flag_missing_titles(self, bundle):
+        warnings = " ".join(bundle["validation_warnings"]).lower()
+        assert "title" in warnings
