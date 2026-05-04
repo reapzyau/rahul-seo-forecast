@@ -16,6 +16,7 @@ from engine.snapshot_engine import (
     summarise_variance,
 )
 from utils.chart_builder import _apply_layout
+from utils.cvr_aov_resolver import resolve_aov, resolve_cvr
 from utils.forecast_grid import build_seo_forecast_grid
 from utils.page_base import setup_page
 from utils.session import (
@@ -228,21 +229,23 @@ def _render_variance(snapshot: dict, ga4_df: pd.DataFrame) -> None:
 store = setup_page(
     "Deliverables",
     "Export the forecast grid, grade past forecasts, and review methodology.",
+    data_requirements=["comb_results:optional"],
 )
 
 # ── Sidebar: Grid Export Settings ─────────────────────────────────────────────
 st.sidebar.header("Grid Export Settings")
 
-default_cvr = float(get_assumption(store, "blended_cr_pct"))
-default_aov = float(get_assumption(store, "aov"))
+_cvr_val, _cvr_src, _cvr_lbl = resolve_cvr(store)
+_aov_val, _aov_src, _aov_lbl = resolve_aov(store)
 default_cur = str(get_assumption(store, "currency"))
 
 cvr = st.sidebar.number_input(
-    "Conversion Rate (%)", 0.1, 100.0, default_cvr, step=0.1, key="grid_cvr"
+    "Conversion Rate (%)", 0.1, 100.0, _cvr_val, step=0.1, key="grid_cvr"
 )
 aov = st.sidebar.number_input(
-    "Average Order Value", 1.0, 100000.0, default_aov, step=10.0, key="grid_aov"
+    "Average Order Value", 1.0, 100000.0, _aov_val, step=10.0, key="grid_aov"
 )
+st.sidebar.caption(f"CVR: {_cvr_lbl} · AOV: {_aov_lbl}")
 _cur_options = list(CURRENCY_SYMBOLS.keys())
 _cur_idx = _cur_options.index(default_cur) if default_cur in _cur_options else 0
 currency = st.sidebar.selectbox("Currency", _cur_options, index=_cur_idx, key="grid_currency")

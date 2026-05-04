@@ -22,6 +22,7 @@ from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
 from engine.new_content_engine import get_ctr
+from exporters.charts import add_charts_sheet
 
 # ---------------------------------------------------------------------------
 # Style constants
@@ -461,6 +462,17 @@ def build_seo_forecast_grid(
     _auto_width(ws)
     ws.column_dimensions[get_column_letter(ass_col)].width = 30
 
+    # ── Charts sheet ─────────────────────────────────────────────────────────
+    month_names = [name for name, _, _, _ in col_ranges]
+    _chart_df = pd.DataFrame({
+        "month_name": month_names,
+        "baseline_traffic": [0] * months,
+        "combined_p50": monthly_traffic[:months],
+    })
+    add_charts_sheet(wb, {"SEO Forecast": _chart_df}, month_names)
+    if "Charts" in wb.sheetnames:
+        wb["Charts"].sheet_properties.tabColor = "0F172A"
+
     buf = io.BytesIO()
     wb.save(buf)
     buf.seek(0)
@@ -879,6 +891,25 @@ def build_three_scenario_grid(
             cell.alignment = Alignment(horizontal="right")
 
     _auto_width(comp_ws)
+
+    # ── Charts sheet ─────────────────────────────────────────────────────────
+    _chart_tiers: dict[str, pd.DataFrame] = {}
+    for _sname in ("Conservative", "Moderate", "Aggressive"):
+        _sdf = scenario_dfs.get(_sname, pd.DataFrame())
+        if not _sdf.empty and "Month Label" in _sdf.columns:
+            _chart_tiers[_sname] = _sdf[["Month Label", "Baseline Traffic", "Traffic P50"]].rename(
+                columns={
+                    "Month Label": "month_name",
+                    "Baseline Traffic": "baseline_traffic",
+                    "Traffic P50": "combined_p50",
+                }
+            )
+
+    if _chart_tiers:
+        _month_labels = list(next(iter(_chart_tiers.values()))["month_name"])
+        add_charts_sheet(wb, _chart_tiers, _month_labels)
+        if "Charts" in wb.sheetnames:
+            wb["Charts"].sheet_properties.tabColor = "0F172A"
 
     buf = io.BytesIO()
     wb.save(buf)

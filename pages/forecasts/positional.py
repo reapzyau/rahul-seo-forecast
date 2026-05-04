@@ -18,10 +18,15 @@ from engine.v5.movement_stats import (
 )
 from utils.chart_builder import positional_uplift_chart, revenue_projection_chart
 from utils.export import to_csv, to_html_report
+from utils.metric_cards import render_forecast_kpis
 from utils.page_base import setup_page
 from utils.session import GA4_DF, KW_EXISTING, POS_RESULT, SCENARIO_RESULTS
 
-store = setup_page("Positional Forecast", "Project uplift from moving existing keywords up the SERP.")
+store = setup_page(
+    "Positional Forecast",
+    "Project uplift from moving existing keywords up the SERP.",
+    data_requirements=["kw_existing", "ga4:optional"],
+)
 
 if SCENARIO_RESULTS not in st.session_state:
     st.info(
@@ -326,13 +331,16 @@ if POS_RESULT in st.session_state:
         uplift_p10 = monthly["uplift_p10"].iloc[-1]
         uplift_p90 = monthly["uplift_p90"].iloc[-1]
 
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Baseline Traffic", f"{baseline:,.0f}")
-        c2.metric("Projected End Traffic", f"{projected_end:,.0f}")
-        c3.metric("P50 M12 Uplift", f"{total_uplift:,.0f}")
-        if show_bands:
-            c3.caption(f"(P10\u2013P90: {uplift_p10:,.0f}\u2013{uplift_p90:,.0f})")
-        c4.metric("Uplift %", f"{uplift_pct:.1f}%")
+        render_forecast_kpis(
+            baseline_traffic=int(baseline),
+            forecast_end_traffic=int(projected_end),
+            total_uplift=int(total_uplift),
+            uplift_pct=uplift_pct,
+            uplift_p10=int(uplift_p10) if show_bands else None,
+            uplift_p90=int(uplift_p90) if show_bands else None,
+            forecast_label="Projected End (P50)",
+            uplift_label="Total Uplift (P50)",
+        )
 
         fig = positional_uplift_chart(monthly)
 

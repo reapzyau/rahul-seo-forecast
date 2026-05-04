@@ -7,10 +7,16 @@ from engine.assumptions import get_assumption
 from engine.historical_engine import calculate_growth_rates, run_historical_forecast_v4
 from engine.new_content_engine import get_ctr
 from engine.scenario_engine import build_scenario_presets, run_three_scenarios, summarise_scenarios
-from utils.chart_builder import _apply_layout, combined_three_stream_chart
+from utils.chart_builder import (
+    _apply_layout,
+    combined_three_stream_chart,
+    traffic_streams_by_scenario_chart,
+)
+from utils.design_tokens import PRIMARY, SLATE_400, SLATE_900, SUCCESS
 from utils.page_base import setup_page
 from utils.session import (
     GA4_DF,
+    HIST_RESULTS,
     KW_DF,
     KW_EXISTING,
     ROADMAP_BUNDLE,
@@ -25,6 +31,7 @@ store = setup_page(
     "Strategy",
     "Diagnose the portfolio, pick from three scenario presets, and run all forecasts in one click.",
     show_assumptions_banner=True,
+    data_requirements=["ga4", "kw_existing", "roadmap:optional"],
 )
 
 ga4 = st.session_state.get(GA4_DF)
@@ -131,7 +138,7 @@ else:
                     x=top10["opp_score"],
                     y=top10["keyword"],
                     orientation="h",
-                    marker_color="#2563EB",
+                    marker_color=PRIMARY,
                     hovertemplate="%{y}: %{x:,} opp. sessions<extra></extra>",
                 ))
                 fig_bar = _apply_layout(fig_bar, "Top 10 Quick Wins (pos 5–20)",
@@ -225,17 +232,18 @@ else:
                 value=float(p["retainer_aud_monthly"]), step=500.0,
                 key=f"strat_retainer_{scenario_name}",
             )
-            pr_low, pr_high = p["position_range"]
-            pr_low = st.number_input(
-                "Position range (low)", min_value=1, max_value=100,
-                value=int(pr_low), step=1,
-                key=f"strat_pr_low_{scenario_name}",
-            )
-            pr_high = st.number_input(
-                "Position range (high)", min_value=1, max_value=100,
-                value=int(pr_high), step=1,
-                key=f"strat_pr_high_{scenario_name}",
-            )
+            with st.expander("Advanced: Position range"):
+                pr_low, pr_high = p["position_range"]
+                pr_low = st.number_input(
+                    "Target positions — from", min_value=1, max_value=100,
+                    value=int(pr_low), step=1,
+                    key=f"strat_pr_low_{scenario_name}",
+                )
+                pr_high = st.number_input(
+                    "Target positions — to", min_value=1, max_value=100,
+                    value=int(pr_high), step=1,
+                    key=f"strat_pr_high_{scenario_name}",
+                )
             p["position_range"] = (pr_low, pr_high)
 
     st.session_state[SCENARIO_PRESETS_EDITED] = edited
@@ -246,6 +254,12 @@ else:
 
     months = st.slider("Forecast horizon (months)", 6, 36, 12, key="strat_months")
 
+    if HIST_RESULTS not in st.session_state:
+        st.caption(
+            "Tip: run the **Historical** forecast page first — Strategy will reuse "
+            "that baseline instead of computing a fresh one."
+        )
+
     if st.button("Run All Forecasts", type="primary", key="strat_run_all"):
         seasonality = st.session_state.get(SEASONALITY)
         forecast_start_month = pd.Timestamp.now().month
@@ -255,7 +269,12 @@ else:
         active_presets = st.session_state.get(SCENARIO_PRESETS_EDITED) or presets
 
         with st.spinner("Running three scenarios — Conservative, Moderate, Aggressive..."):
-            hist_forecast = run_historical_forecast_v4(ga4, months=months)
+            _hist_cached = st.session_state.get(HIST_RESULTS)
+            if _hist_cached and "result" in _hist_cached:
+                hist_forecast = _hist_cached["result"]
+                st.info("Reusing historical baseline from the Historical page.")
+            else:
+                hist_forecast = run_historical_forecast_v4(ga4, months=months)
             results = run_three_scenarios(
                 ga4_df=ga4,
                 kw_df=kw_df if kw_df is not None else kw_existing,
@@ -300,13 +319,18 @@ else:
 
         # Three-line comparison chart
         SCENARIO_COLORS = {
-            "Conservative": "#94A3B8",
-            "Moderate": "#2563EB",
-            "Aggressive": "#10B981",
+            "Conservative": SLATE_400,
+            "Moderate": PRIMARY,
+            "Aggressive": SUCCESS,
         }
         SCENARIO_ORDER_RESULTS = ["Conservative", "Moderate", "Aggressive"]
 
         st.subheader("Combined Traffic — All Scenarios")
+        st.caption(
+            "Bands represent Monte Carlo uncertainty: "
+            "**P10** = pessimistic, **P50** = median, **P90** = optimistic. "
+            "Solid lines show P50. Run individual forecast pages for full band charts."
+        )
         fig_cmp = go.Figure()
         baseline_plotted = False
         for scenario_name in SCENARIO_ORDER_RESULTS:
@@ -319,13 +343,13 @@ else:
                 fig_cmp.add_trace(go.Scatter(
                     x=cdf.loc[fmask, "date"], y=cdf.loc[fmask, "baseline"],
                     mode="lines", name="Baseline (do nothing)",
-                    line=dict(color="#CBD5E1", dash="dash", width=2),
+                    line=dict(color=SLATE_400, dash="dash", width=2),
                 ))
                 amask = cdf["actual"].notna()
                 fig_cmp.add_trace(go.Scatter(
                     x=cdf.loc[amask, "date"], y=cdf.loc[amask, "actual"],
                     mode="lines+markers", name="Historical",
-                    line=dict(color="#0F172A", width=2),
+                    line=dict(color=SLATE_900, width=2),
                 ))
                 baseline_plotted = True
             p50_col = "combined_p50" if "combined_p50" in cdf.columns else "combined"
@@ -338,6 +362,19 @@ else:
             fig_cmp, "Scenario Comparison (Combined P50)", "Date", "Monthly Organic Sessions"
         )
         st.plotly_chart(fig_cmp, use_container_width=True)
+
+        # Stream-composition chart
+        st.subheader("End-of-Horizon Traffic Breakdown")
+        st.caption(
+            "How the final forecast month is composed: Baseline + Positional Uplift + "
+            "New Content − Decay.  Taller bars mean more uplift; deeper decay bars "
+            "indicate unmaintained keyword risk."
+        )
+        st.plotly_chart(
+            traffic_streams_by_scenario_chart(results),
+            use_container_width=True,
+            key="strat_stream_composition_chart",
+        )
 
         # Per-scenario drill-downs
         st.subheader("Per-Scenario Detail")
@@ -380,7 +417,11 @@ else:
                 if "positional_uplift" not in cdf.columns and "positional_uplift_p50" in cdf.columns:
                     cdf = cdf.copy()
                     cdf["positional_uplift"] = cdf["positional_uplift_p50"]
-                st.plotly_chart(combined_three_stream_chart(cdf), use_container_width=True)
+                st.plotly_chart(
+                    combined_three_stream_chart(cdf),
+                    use_container_width=True,
+                    key=f"strat_combined_chart_{scenario_name}",
+                )
                 st.caption(
                     f"Effort: **{preset.get('effort_level', '—')}** | "
                     f"Cadence: **{preset.get('content_cadence', 0)} posts/mo** | "

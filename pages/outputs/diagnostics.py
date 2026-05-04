@@ -20,6 +20,7 @@ setup_page(
     "Diagnostics",
     "Diagnostic views into your keyword portfolio. Traffic impact is already baked into Forecast.",
     show_assumptions_banner=False,
+    data_requirements=["kw_existing:optional", "comb_results:optional"],
 )
 
 st.info(

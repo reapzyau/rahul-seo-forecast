@@ -16,6 +16,7 @@ from engine.v5.anomaly_detector import apply_overrides, detect_baseline_anomalie
 from utils.chart_builder import historical_comparison_chart, revenue_projection_chart
 from utils.data_loader import load_traffic
 from utils.export import to_csv, to_html_report, traffic_template_csv
+from utils.metric_cards import KPICard, render_kpi_row
 from utils.page_base import setup_page
 from utils.session import HIST_N_MONTHS, HIST_RESULTS, SCENARIO_RESULTS, SEASONALITY
 
@@ -23,6 +24,7 @@ setup_page(
     "Historical Forecast",
     "Project traffic from your past organic data using statistical models.",
     show_assumptions_banner=False,
+    data_requirements=["ga4"],
 )
 
 if SCENARIO_RESULTS not in st.session_state:
@@ -405,14 +407,23 @@ if HIST_RESULTS in st.session_state:
         else:
             end_traffic = current_traffic
 
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Current Monthly Traffic", f"{current_traffic:,}")
-        c2.metric("Projected (End of Horizon)", f"{int(end_traffic):,}")
-        c3.metric("Avg MoM Growth", f"{growth['avg_mom']:.1f}%")
-        c4.metric(
-            "Latest YoY Growth",
-            f"{growth['latest_yoy']:.1f}%" if growth['latest_yoy'] != 0 else "N/A",
-        )
+        yoy_val = growth['latest_yoy']
+        render_kpi_row([
+            KPICard("Current Monthly Traffic", f"{current_traffic:,}"),
+            KPICard("Projected End of Horizon", f"{int(end_traffic):,}"),
+            KPICard(
+                "Avg MoM Growth",
+                f"{growth['avg_mom']:+.1f}%",
+                delta=f"{growth['avg_mom']:+.1f}%",
+                delta_color="normal",
+            ),
+            KPICard(
+                "Latest YoY Growth",
+                f"{yoy_val:+.1f}%" if yoy_val != 0 else "N/A",
+                delta=f"{yoy_val:+.1f}%" if yoy_val != 0 else None,
+                delta_color="normal",
+            ),
+        ])
 
         # Extra KPI cards for extended metrics
         if has_extended:

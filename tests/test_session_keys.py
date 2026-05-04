@@ -45,7 +45,7 @@ def _import_page(page_file: pathlib.Path) -> None:
 def test_all_pages_importable():
     """All page files must import without NameError or ImportError."""
     pages_dir = pathlib.Path(__file__).parent.parent / "pages"
-    page_files = sorted(pages_dir.glob("*.py"))
+    page_files = sorted(pages_dir.rglob("*.py"))
     page_files = [p for p in page_files if not p.name.startswith("__")]
     assert page_files, "No page files found — check the pages/ directory"
     for page_file in page_files:

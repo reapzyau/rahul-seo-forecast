@@ -12,7 +12,9 @@ from engine.revenue_engine import (
     intent_revenue_breakdown,
 )
 from utils.chart_builder import combined_revenue_chart, combined_three_stream_chart
+from utils.cvr_aov_resolver import resolve_aov, resolve_cvr
 from utils.export import to_csv, to_html_report
+from utils.metric_cards import render_forecast_kpis
 from utils.page_base import setup_page
 from utils.session import (
     COMB_RESULTS,
@@ -25,7 +27,11 @@ from utils.session import (
     SEASONALITY,
 )
 
-store = setup_page("Combined Forecast", "Layer multiple forecast streams into a single projection with intent-weighted revenue.")
+store = setup_page(
+    "Combined Forecast",
+    "Layer multiple forecast streams into a single projection with intent-weighted revenue.",
+    data_requirements=["pos_result|nc_result|hist_results:optional"],
+)
 
 if SCENARIO_RESULTS not in st.session_state:
     st.info(
@@ -135,37 +141,18 @@ st.sidebar.divider()
 st.sidebar.subheader("Revenue Settings")
 enable_revenue = st.sidebar.checkbox("Enable Revenue Projection", value=True, key="comb_rev")
 
-# Pre-populate CVR and AOV — organic channel takes priority over blended GA4 columns
-default_cvr = 2.5
-default_aov = 100.0
-default_cur_idx = 0
-
-if st.session_state.get("cr_organic"):
-    default_cvr = round(float(st.session_state["cr_organic"]) * 100, 2)
-elif has_ga4:
-    if "cr" in ga4_df.columns:
-        avg_cr = ga4_df["cr"].dropna().mean()
-        if avg_cr > 0:
-            default_cvr = round(float(avg_cr), 2)
-
-if st.session_state.get("aov_organic"):
-    default_aov = round(float(st.session_state["aov_organic"]), 2)
-elif has_ga4:
-    if "aov" in ga4_df.columns:
-        avg_aov = ga4_df["aov"].dropna().mean()
-        if avg_aov > 0:
-            default_aov = round(float(avg_aov), 2)
+_cvr_val, _cvr_src, _cvr_lbl = resolve_cvr(store)
+_aov_val, _aov_src, _aov_lbl = resolve_aov(store)
 
 currency_keys = list(CURRENCY_SYMBOLS.keys())
-if "AUD" in currency_keys:
-    default_cur_idx = currency_keys.index("AUD")
+default_cur_idx = currency_keys.index("AUD") if "AUD" in currency_keys else 0
 
 cvr = st.sidebar.number_input(
-    "Base Conversion Rate (%)", 0.1, 100.0, default_cvr, step=0.1,
+    "Base Conversion Rate (%)", 0.1, 100.0, _cvr_val, step=0.1,
     key="comb_cvr", disabled=not enable_revenue,
 )
 aov = st.sidebar.number_input(
-    "Average Order Value", 1.0, 100000.0, default_aov, step=10.0,
+    "Average Order Value", 1.0, 100000.0, _aov_val, step=10.0,
     key="comb_aov", disabled=not enable_revenue,
 )
 currency = st.sidebar.selectbox(
@@ -174,10 +161,7 @@ currency = st.sidebar.selectbox(
 )
 
 if enable_revenue:
-    if st.session_state.get("cr_organic"):
-        st.sidebar.caption("CVR and AOV pre-populated from GA4 Organic Search channel (Data Upload).")
-    elif ga4_has_revenue:
-        st.sidebar.caption("CVR and AOV pre-populated from blended GA4 actuals.")
+    st.sidebar.caption(f"CVR: {_cvr_lbl} · AOV: {_aov_lbl}")
     st.sidebar.caption(
         "Revenue uses intent-weighted conversion: "
         "commercial/transactional keywords convert higher than informational."
@@ -345,11 +329,16 @@ if COMB_RESULTS in st.session_state:
     with tabs[tab_idx]:
         tab_idx += 1
 
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Baseline (End)", f"{baseline_end:,}")
-        c2.metric("Combined (End)", f"{combined_end:,}")
-        c3.metric("Positional Uplift", f"{pos_total:,}")
-        c4.metric("Uplift at End", f"{uplift_end}%")
+        render_forecast_kpis(
+            baseline_traffic=baseline_end,
+            forecast_end_traffic=combined_end,
+            total_uplift=pos_total,
+            uplift_pct=float(uplift_end),
+            baseline_label="Baseline (End)",
+            forecast_label="Combined (End)",
+            uplift_label="Total Uplift",
+            pct_label="Uplift at End",
+        )
 
         _baseline_method = r.get("baseline_method")
         if _baseline_method:

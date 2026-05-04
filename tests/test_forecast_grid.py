@@ -80,7 +80,7 @@ class TestBuildThreeScenarioGrid:
             cvr=2.5, aov=100.0, start_month=7,
         )
         wb = openpyxl.load_workbook(buf)
-        assert set(wb.sheetnames) == {"Conservative", "Moderate", "Aggressive", "Comparison"}
+        assert {"Conservative", "Moderate", "Aggressive", "Comparison"}.issubset(set(wb.sheetnames))
 
     def test_comparison_sheet_has_three_scenario_columns(self, fake_scenario_results):
         from utils.forecast_grid import build_three_scenario_grid
