@@ -7,6 +7,7 @@ from urllib.parse import urlparse
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
+from utils.design_tokens import PRIMARY, SLATE_400
 
 from engine.ai_engine import get_bifrost_client, get_default_model
 from engine.assumptions import (
@@ -150,7 +151,7 @@ with tab_ga4:
                 y=ga4_df["traffic"],
                 mode="lines+markers",
                 name="Organic Traffic",
-                line=dict(color="#2563EB", width=3),
+                line=dict(color=PRIMARY, width=3),
                 hovertemplate="%{x|%b %Y}<br>Traffic: %{y:,.0f}<extra></extra>",
             )
         )
@@ -227,6 +228,38 @@ with tab_ga4:
     elif uploaded_ga4 is not None:
         st.error("Could not parse the uploaded GA4 file. Please check the format.")
 
+    # ── Seasonality Tuning ────────────────────────────────────────────────────
+    st.divider()
+    st.subheader("Seasonality Tuning")
+    st.caption(
+        "Monthly modifiers applied to all forecast streams. "
+        "Auto-detected from GA4 when ≥12 months available; "
+        "falls back to AU retail defaults otherwise."
+    )
+
+    seasonality = st.session_state.get(SEASONALITY, DEFAULT_SEASONALITY)
+    learned_seasonality = st.session_state.get(LEARNED_SEASONALITY)
+    source = get_assumption(store, "seasonality_source")
+    blend_weight = get_assumption(store, "seasonality_blend_weight")
+
+    if source == "learned":
+        st.success(f"Seasonality fully learned from GA4 data (blend weight: {blend_weight:.0%}).")
+    elif source == "blended":
+        st.info(f"Seasonality blended: {blend_weight:.0%} GA4 data + {1-blend_weight:.0%} AU retail defaults.")
+    else:
+        st.info("Seasonality using AU retail defaults (upload ≥12 months of GA4 data to learn from your data).")
+
+    if learned_seasonality:
+        with st.expander("Compare learned vs. AU retail defaults"):
+            months_labels = [seasonality[m]["label"].split(" ")[0] for m in range(1, 13)]
+            learned_vals = [learned_seasonality[m]["traffic_mod"] * 100 for m in range(1, 13)]
+            default_vals = [DEFAULT_SEASONALITY[m]["traffic_mod"] * 100 for m in range(1, 13)]
+            fig_s = go.Figure()
+            fig_s.add_trace(go.Bar(name="Learned from GA4", x=months_labels, y=learned_vals, marker_color=PRIMARY))
+            fig_s.add_trace(go.Bar(name="AU Retail Default", x=months_labels, y=default_vals, marker_color=SLATE_400))
+            fig_s = _apply_layout(fig_s, "Seasonality: Learned vs Default", "Month", "Traffic Modifier (%)")
+            st.plotly_chart(fig_s, use_container_width=True)
+
 # ── SEMrush Tab ──────────────────────────────────────────────────────────────
 with tab_semrush:
     uploaded_semrush = st.file_uploader(
@@ -285,7 +318,7 @@ with tab_semrush:
                 go.Bar(
                     x=bucket_labels,
                     y=bucket_counts,
-                    marker_color="#2563EB",
+                    marker_color=PRIMARY,
                     hovertemplate="Position %{x}<br>Keywords: %{y}<extra></extra>",
                 )
             )
@@ -852,39 +885,6 @@ with tab_roadmap:
             f"effort={_rd.get('effort_level', '—')}, "
             f"maintenance={_rd.get('maintenance_coverage', '—')}"
         )
-
-# ── Seasonality Tuning ────────────────────────────────────────────────────────
-st.divider()
-st.subheader("Seasonality Tuning")
-st.caption(
-    "Monthly modifiers applied to all forecast streams. "
-    "Auto-detected from GA4 when ≥12 months available; "
-    "falls back to AU retail defaults otherwise."
-)
-
-seasonality = st.session_state.get(SEASONALITY, DEFAULT_SEASONALITY)
-learned_seasonality = st.session_state.get(LEARNED_SEASONALITY)
-source = get_assumption(store, "seasonality_source")
-blend_weight = get_assumption(store, "seasonality_blend_weight")
-
-if source == "learned":
-    st.success(f"Seasonality fully learned from GA4 data (blend weight: {blend_weight:.0%}).")
-elif source == "blended":
-    st.info(f"Seasonality blended: {blend_weight:.0%} GA4 data + {1-blend_weight:.0%} AU retail defaults.")
-else:
-    st.info("Seasonality using AU retail defaults (upload ≥12 months of GA4 data to learn from your data).")
-
-if learned_seasonality:
-    with st.expander("Compare learned vs. AU retail defaults"):
-        import plotly.graph_objects as go_s
-        months_labels = [seasonality[m]["label"].split(" ")[0] for m in range(1, 13)]
-        learned_vals = [learned_seasonality[m]["traffic_mod"] * 100 for m in range(1, 13)]
-        default_vals = [DEFAULT_SEASONALITY[m]["traffic_mod"] * 100 for m in range(1, 13)]
-        fig_s = go_s.Figure()
-        fig_s.add_trace(go_s.Bar(name="Learned from GA4", x=months_labels, y=learned_vals, marker_color="#2563EB"))
-        fig_s.add_trace(go_s.Bar(name="AU Retail Default", x=months_labels, y=default_vals, marker_color="#9CA3AF"))
-        fig_s = _apply_layout(fig_s, "Seasonality: Learned vs Default", "Month", "Traffic Modifier (%)")
-        st.plotly_chart(fig_s, use_container_width=True)
 
 # ── Data Status Footer ────────────────────────────────────────────────────────
 st.divider()
