@@ -116,6 +116,18 @@ def render_assumptions_banner(store: dict | None = None) -> None:
     else:
         st.info(msg)
 
+    # Show CVR / AOV source as a secondary caption
+    try:
+        from utils.cvr_aov_resolver import resolve_aov, resolve_cvr  # noqa: PLC0415
+        cvr_val, _, cvr_lbl = resolve_cvr(store)
+        aov_val, _, aov_lbl = resolve_aov(store)
+        st.caption(
+            f"CVR: **{cvr_val:.2f}%** ({cvr_lbl}) · "
+            f"AOV: **${aov_val:,.0f}** ({aov_lbl})"
+        )
+    except Exception:  # noqa: BLE001
+        pass
+
 
 def render_assumptions_panel(store: dict | None = None, *, expandable: bool = True) -> None:
     """Render the full assumptions table grouped by category with override controls."""

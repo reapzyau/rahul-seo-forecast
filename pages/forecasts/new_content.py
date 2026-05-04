@@ -26,6 +26,7 @@ from utils.chart_builder import (
     scenario_comparison_chart,
     traffic_projection_chart,
 )
+from utils.cvr_aov_resolver import resolve_aov, resolve_cvr
 from utils.data_loader import load_keywords
 from utils.export import keyword_template_csv, to_csv, to_html_report
 from utils.metric_cards import KPICard, render_kpi_row
@@ -146,12 +147,12 @@ if filter_informational:
 st.sidebar.divider()
 st.sidebar.subheader("Revenue Settings")
 enable_revenue = st.sidebar.checkbox("Enable Revenue Projection", key="kw_rev")
-_cvr_default = round(float(st.session_state.get("cr_organic", 0.025)) * 100, 2)
-_aov_default = float(st.session_state.get("aov_organic") or 100.0)
-cvr = st.sidebar.number_input("Conversion Rate (%)", 0.1, 100.0, _cvr_default, step=0.1, key="kw_cvr", disabled=not enable_revenue)
-aov = st.sidebar.number_input("Average Order Value", 1.0, 100000.0, _aov_default, step=10.0, key="kw_aov", disabled=not enable_revenue)
-if st.session_state.get("cr_organic") and enable_revenue:
-    st.sidebar.caption("CVR and AOV pre-set from GA4 Organic Search channel (Data Upload).")
+_cvr_val, _cvr_src, _cvr_lbl = resolve_cvr(_nc_store)
+_aov_val, _aov_src, _aov_lbl = resolve_aov(_nc_store)
+cvr = st.sidebar.number_input("Conversion Rate (%)", 0.1, 100.0, _cvr_val, step=0.1, key="kw_cvr", disabled=not enable_revenue)
+aov = st.sidebar.number_input("Average Order Value", 1.0, 100000.0, _aov_val, step=10.0, key="kw_aov", disabled=not enable_revenue)
+if enable_revenue:
+    st.sidebar.caption(f"CVR: {_cvr_lbl} · AOV: {_aov_lbl}")
 currency = st.sidebar.selectbox("Currency", list(CURRENCY_SYMBOLS.keys()), key="kw_cur", disabled=not enable_revenue)
 
 st.sidebar.divider()
