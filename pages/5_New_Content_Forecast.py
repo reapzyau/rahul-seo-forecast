@@ -27,6 +27,7 @@ from utils.chart_builder import (
 )
 from utils.data_loader import load_keywords
 from utils.export import keyword_template_csv, to_csv, to_html_report
+from utils.metric_cards import KPICard, render_kpi_row
 from utils.page_base import setup_page
 from utils.roadmap_to_keywords import build_keyword_df_from_roadmap, summarise_roadmap_extraction
 from utils.session import (
@@ -496,14 +497,17 @@ if NC_RESULT in st.session_state:
         n_ranking = keyword_df["will_rank"].sum()
         n_total = len(keyword_df)
 
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Total Projected Visits", f"{total_visits:,}")
-        c2.metric("Peak Monthly Traffic", f"{peak_traffic:,}")
-        c3.metric("Month of Peak", f"Month {peak_month}")
-        if _has_clusters:
-            c4.metric("Cadence", f"{r.get('months', 12)} mo horizon")
-        else:
-            c4.metric("Keywords Ranking", f"{n_ranking} / {n_total}")
+        fourth_card = (
+            KPICard("Forecast Horizon", f"{r.get('months', 12)} months")
+            if _has_clusters
+            else KPICard("Keywords Ranking", f"{n_ranking} / {n_total}")
+        )
+        render_kpi_row([
+            KPICard("Total Projected Visits", f"{total_visits:,}"),
+            KPICard("Peak Monthly Traffic", f"{peak_traffic:,}"),
+            KPICard("Month of Peak", f"Month {peak_month}"),
+            fourth_card,
+        ])
 
         fig = traffic_projection_chart(monthly_df)
         st.plotly_chart(fig, use_container_width=True)
