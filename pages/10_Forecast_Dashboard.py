@@ -22,6 +22,13 @@ section[data-testid="stSidebar"] > div { padding-top: 1rem; }
 
 _HTML_PATH = pathlib.Path("assets/Forecast System.html")
 
+if not _HTML_PATH.exists():
+    st.error(
+        f"Dashboard file not found at `{_HTML_PATH}`. "
+        "Make sure the file is present in the `assets/` directory."
+    )
+    st.stop()
+
 
 @st.cache_data
 def _load_html(mtime: float) -> str:

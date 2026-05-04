@@ -22,6 +22,7 @@ from engine.assumptions import (
     initialise_assumptions,
     override_assumption,
 )
+from engine.revenue_engine import CURRENCY_SYMBOLS
 
 _PROVENANCE_BADGE = {
     "defaulted": ":gray-badge[defaulted]",
@@ -80,6 +81,14 @@ def _get_store() -> dict:
     return store
 
 
+def _apply_override_button(store: dict, key: str, label: str, new_val, current_val) -> None:
+    """Render a labelled Apply button and trigger an override when clicked."""
+    if st.button(f"Apply {label}", key=f"apply_{key}", use_container_width=True):
+        if new_val != current_val:
+            override_assumption(store, key, new_val, source="manual override")
+            st.rerun()
+
+
 def render_assumptions_banner(store: dict | None = None) -> None:
     """Render a compact one-line status bar showing provenance counts."""
     if store is None:
@@ -133,7 +142,6 @@ def render_assumptions_panel(store: dict | None = None, *, expandable: bool = Tr
                 _render_assumption_row(store, row)
             st.divider()
 
-        # Ungrouped assumptions (catch-all)
         ungrouped = [r for k, r in summary_by_key.items() if k not in seen_keys]
         if ungrouped:
             st.markdown("**Other**")
@@ -171,10 +179,10 @@ def _render_assumption_row(store: dict, row: dict) -> None:
 
 def _render_override_widget(store: dict, key: str, meta, provenance: str, current_value) -> None:
     widget_key = f"assumption_override_{key}"
-    clear_key = f"assumption_clear_{key}"
+    label = getattr(meta, "label", key.replace("_", " ").title())
 
     if provenance == "overridden":
-        if st.button("Clear override", key=clear_key, use_container_width=True):
+        if st.button("Clear override", key=f"assumption_clear_{key}", use_container_width=True):
             clear_override(store, key)
             st.rerun()
         return
@@ -185,24 +193,23 @@ def _render_override_widget(store: dict, key: str, meta, provenance: str, curren
     if key == "brand_terms":
         terms_text = "\n".join(default_val) if isinstance(default_val, list) else str(default_val or "")
         new_text = st.text_area(
-            "Override (one per line)", value=terms_text, key=widget_key,
-            label_visibility="collapsed", height=80,
+            f"Override {label} (one per line)",
+            value=terms_text,
+            key=widget_key,
+            height=80,
         )
-        if st.button("Apply", key=f"apply_{key}", use_container_width=True):
-            new_list = [t.strip() for t in new_text.splitlines() if t.strip()]
-            if new_list != default_val:
-                override_assumption(store, key, new_list, source="manual override")
-                st.rerun()
+        _apply_override_button(
+            store, key, label,
+            [t.strip() for t in new_text.splitlines() if t.strip()],
+            default_val,
+        )
         return
 
     if key == "industry":
         options = _KNOWN_INDUSTRIES
         idx = options.index(str(default_val)) if str(default_val) in options else 0
-        new_val = st.selectbox("Override", options, index=idx, key=widget_key, label_visibility="collapsed")
-        if st.button("Apply", key=f"apply_{key}", use_container_width=True):
-            if new_val != default_val:
-                override_assumption(store, key, new_val, source="manual override")
-                st.rerun()
+        new_val = st.selectbox(f"Override {label}", options, index=idx, key=widget_key)
+        _apply_override_button(store, key, label, new_val, default_val)
         return
 
     if key == "strategy_restart_month":
@@ -211,70 +218,54 @@ def _render_override_widget(store: dict, key: str, meta, provenance: str, curren
         cur_str = none_opt if default_val is None else str(int(default_val))
         if cur_str not in month_opts:
             cur_str = none_opt
-        new_str = st.selectbox("Override", month_opts, index=month_opts.index(cur_str), key=widget_key, label_visibility="collapsed")
-        if st.button("Apply", key=f"apply_{key}", use_container_width=True):
-            new_val = None if new_str == none_opt else int(new_str)
-            if new_val != default_val:
-                override_assumption(store, key, new_val, source="manual override")
-                st.rerun()
+        new_str = st.selectbox(
+            f"Override {label}", month_opts, index=month_opts.index(cur_str), key=widget_key
+        )
+        new_val = None if new_str == none_opt else int(new_str)
+        _apply_override_button(store, key, label, new_val, default_val)
         return
 
     # ── Effort-level dropdowns ─────────────────────────────────────────────────
     if key in ("effort_level", "positional_effort_level") or key.endswith("_effort_level"):
         options = ["light", "moderate", "aggressive"]
         idx = options.index(str(default_val)) if str(default_val) in options else 1
-        new_val = st.selectbox("Override", options, index=idx, key=widget_key, label_visibility="collapsed")
-        if st.button("Apply", key=f"apply_{key}", use_container_width=True):
-            if new_val != default_val:
-                override_assumption(store, key, new_val, source="manual override")
-                st.rerun()
+        new_val = st.selectbox(f"Override {label}", options, index=idx, key=widget_key)
+        _apply_override_button(store, key, label, new_val, default_val)
         return
 
     if key == "currency":
-        from engine.revenue_engine import CURRENCY_SYMBOLS
         options = list(CURRENCY_SYMBOLS.keys())
         idx = options.index(str(default_val)) if str(default_val) in options else 0
-        new_val = st.selectbox("Override", options, index=idx, key=widget_key, label_visibility="collapsed")
-        if st.button("Apply", key=f"apply_{key}", use_container_width=True):
-            if new_val != default_val:
-                override_assumption(store, key, new_val, source="manual override")
-                st.rerun()
+        new_val = st.selectbox(f"Override {label}", options, index=idx, key=widget_key)
+        _apply_override_button(store, key, label, new_val, default_val)
         return
 
-    # ── Numeric widgets ────────────────────────────────────────────────────────
+    # ── Numeric and boolean widgets ────────────────────────────────────────────
     if isinstance(default_val, bool):
-        new_val = st.checkbox("Enable", value=bool(default_val), key=widget_key, label_visibility="collapsed")
-        if st.button("Apply", key=f"apply_{key}", use_container_width=True):
-            if new_val != default_val:
-                override_assumption(store, key, new_val, source="manual override")
-                st.rerun()
+        new_val = st.checkbox(f"Enable {label}", value=bool(default_val), key=widget_key)
+        _apply_override_button(store, key, label, new_val, default_val)
         return
 
     if isinstance(default_val, float):
         step = 0.01 if meta.max_val is not None and meta.max_val <= 1.0 else 0.1
         new_val = st.number_input(
-            "Override",
+            f"Override {label}",
             min_value=float(meta.min_val) if meta.min_val is not None else 0.0,
             max_value=float(meta.max_val) if meta.max_val is not None else 1e9,
             value=float(default_val),
             step=step,
             key=widget_key,
-            label_visibility="collapsed",
         )
     elif isinstance(default_val, int):
         new_val = st.number_input(
-            "Override",
+            f"Override {label}",
             min_value=int(meta.min_val) if meta.min_val is not None else 0,
             max_value=int(meta.max_val) if meta.max_val is not None else 1000,
             value=int(default_val),
             step=1,
             key=widget_key,
-            label_visibility="collapsed",
         )
     else:
-        new_val = st.text_input("Override", value=str(default_val), key=widget_key, label_visibility="collapsed")
+        new_val = st.text_input(f"Override {label}", value=str(default_val), key=widget_key)
 
-    if st.button("Apply", key=f"apply_{key}", use_container_width=True):
-        if new_val != default_val:
-            override_assumption(store, key, new_val, source="manual override")
-            st.rerun()
+    _apply_override_button(store, key, label, new_val, default_val)

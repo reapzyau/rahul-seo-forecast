@@ -58,7 +58,7 @@ else:
     )
 
 # ── Sidebar ──────────────────────────────────────────────────────────────────
-st.sidebar.header("Keyword Forecast Settings")
+st.sidebar.header("New Content Forecast Settings")
 
 # Site Profile Presets
 st.sidebar.subheader("Site Profile")
