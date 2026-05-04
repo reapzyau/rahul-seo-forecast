@@ -45,6 +45,7 @@ _nc_store = setup_page(
     "New Content Forecast",
     "Project traffic from new content targeting keywords you don't yet rank for.",
     show_assumptions_banner=False,
+    data_requirements=["kw_df|roadmap_content_plan:optional"],
 )
 
 if SCENARIO_RESULTS not in st.session_state:

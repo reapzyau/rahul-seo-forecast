@@ -31,6 +31,7 @@ store = setup_page(
     "Strategy",
     "Diagnose the portfolio, pick from three scenario presets, and run all forecasts in one click.",
     show_assumptions_banner=True,
+    data_requirements=["ga4", "kw_existing", "roadmap:optional"],
 )
 
 ga4 = st.session_state.get(GA4_DF)

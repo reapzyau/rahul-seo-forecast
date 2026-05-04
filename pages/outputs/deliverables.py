@@ -229,6 +229,7 @@ def _render_variance(snapshot: dict, ga4_df: pd.DataFrame) -> None:
 store = setup_page(
     "Deliverables",
     "Export the forecast grid, grade past forecasts, and review methodology.",
+    data_requirements=["comb_results:optional"],
 )
 
 # ── Sidebar: Grid Export Settings ─────────────────────────────────────────────

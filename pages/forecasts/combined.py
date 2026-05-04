@@ -27,7 +27,11 @@ from utils.session import (
     SEASONALITY,
 )
 
-store = setup_page("Combined Forecast", "Layer multiple forecast streams into a single projection with intent-weighted revenue.")
+store = setup_page(
+    "Combined Forecast",
+    "Layer multiple forecast streams into a single projection with intent-weighted revenue.",
+    data_requirements=["pos_result|nc_result|hist_results:optional"],
+)
 
 if SCENARIO_RESULTS not in st.session_state:
     st.info(
