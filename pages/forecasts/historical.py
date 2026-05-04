@@ -24,6 +24,7 @@ setup_page(
     "Historical Forecast",
     "Project traffic from your past organic data using statistical models.",
     show_assumptions_banner=False,
+    data_requirements=["ga4"],
 )
 
 if SCENARIO_RESULTS not in st.session_state:

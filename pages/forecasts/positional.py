@@ -22,7 +22,11 @@ from utils.metric_cards import render_forecast_kpis
 from utils.page_base import setup_page
 from utils.session import GA4_DF, KW_EXISTING, POS_RESULT, SCENARIO_RESULTS
 
-store = setup_page("Positional Forecast", "Project uplift from moving existing keywords up the SERP.")
+store = setup_page(
+    "Positional Forecast",
+    "Project uplift from moving existing keywords up the SERP.",
+    data_requirements=["kw_existing", "ga4:optional"],
+)
 
 if SCENARIO_RESULTS not in st.session_state:
     st.info(

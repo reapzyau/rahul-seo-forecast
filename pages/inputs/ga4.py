@@ -32,6 +32,30 @@ store = setup_page(
     show_assumptions_banner=False,
 )
 
+# ── Data readiness checklist ───────────────────────────────────────────────────
+_has_ga4 = GA4_DF in st.session_state
+_has_semrush = KW_EXISTING in st.session_state
+_has_roadmap = ROADMAP_BUNDLE in st.session_state
+_has_kw = KW_DF in st.session_state
+
+def _check(loaded: bool, label: str) -> str:
+    return f"✅ {label}" if loaded else f"☐ {label}"
+
+with st.expander("📋 Data Readiness", expanded=not (_has_ga4 and _has_semrush)):
+    col_a, col_b, col_c = st.columns(3)
+    with col_a:
+        st.markdown(_check(_has_ga4, "GA4 organic") + ("  \n✅ Brand classification" if _has_kw else "  \n☐ Brand classification"))
+    with col_b:
+        st.markdown(_check(_has_semrush, "SEMrush keywords"))
+        if not _has_semrush:
+            st.page_link("pages/inputs/semrush.py", label="→ Upload SEMrush", icon="🔑")
+    with col_c:
+        st.markdown(_check(_has_roadmap, "Roadmap") + " *(optional)*")
+        if not _has_roadmap:
+            st.page_link("pages/inputs/roadmap.py", label="→ Upload Roadmap", icon="🗺️")
+    if _has_ga4 and _has_semrush:
+        st.success("✓ Ready — [go to Strategy →](strategy)", icon="🎯")
+
 uploaded_ga4 = st.file_uploader(
     "Upload GA4 organic export",
     type=["xlsx", "xls"],
