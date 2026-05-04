@@ -13,6 +13,7 @@ from engine.revenue_engine import (
 )
 from utils.chart_builder import combined_revenue_chart, combined_three_stream_chart
 from utils.export import to_csv, to_html_report
+from utils.metric_cards import render_forecast_kpis
 from utils.page_base import setup_page
 from utils.session import (
     COMB_RESULTS,
@@ -345,11 +346,16 @@ if COMB_RESULTS in st.session_state:
     with tabs[tab_idx]:
         tab_idx += 1
 
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Baseline (End)", f"{baseline_end:,}")
-        c2.metric("Combined (End)", f"{combined_end:,}")
-        c3.metric("Positional Uplift", f"{pos_total:,}")
-        c4.metric("Uplift at End", f"{uplift_end}%")
+        render_forecast_kpis(
+            baseline_traffic=baseline_end,
+            forecast_end_traffic=combined_end,
+            total_uplift=pos_total,
+            uplift_pct=float(uplift_end),
+            baseline_label="Baseline (End)",
+            forecast_label="Combined (End)",
+            uplift_label="Total Uplift",
+            pct_label="Uplift at End",
+        )
 
         _baseline_method = r.get("baseline_method")
         if _baseline_method:
