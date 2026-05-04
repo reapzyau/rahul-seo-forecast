@@ -28,7 +28,7 @@ Choose a page from the sidebar:
 
 **Outputs & Diagnostics**
 - **7. Diagnostics** — AIO exposure, keyword pipeline, decay projection
-- **8. Roadmap** — AI content roadmap + GAZMAN SEO task hours
+- **8. Roadmap** — AI content roadmap + SEO task hours
 - **9. Deliverables** — Forecast grid XLSX, variance grading, methodology
 """)
 
@@ -37,10 +37,14 @@ st.divider()
 st.markdown("""
 ### Getting Started
 
-1. **Upload a CSV** with your keyword or traffic data (or use the built-in sample data)
-2. **Configure settings** in the sidebar (domain authority, forecast horizon, etc.)
-3. **Click Generate Forecast** to see your projections
-4. **Export results** as CSV or an interactive HTML report
+1. **Data Upload (page 1)** — Upload your GA4 organic export (xlsx), SEMrush keyword positions
+   (csv/xlsx), and an optional roadmap file. Use the sample data checkboxes to try the tool
+   without your own files.
+2. **Strategy (page 2)** — Review the auto-generated portfolio diagnosis, adjust the three
+   scenario presets (Conservative / Moderate / Aggressive), then click **Run All Forecasts**.
+3. **Deliverables (page 9)** — Download the three-scenario forecast grid XLSX, ready to paste
+   into your multi-channel plan.
 
-Each mode is designed around a different use case — explore the sidebar to get started.
+Deep-dive pages (3–8) are available for per-stream analysis, diagnostics, and roadmap planning.
+The **Methodology** tab on page 9 documents all forecast assumptions and engine logic.
 """)

@@ -307,6 +307,11 @@ else:
         SCENARIO_ORDER_RESULTS = ["Conservative", "Moderate", "Aggressive"]
 
         st.subheader("Combined Traffic — All Scenarios")
+        st.caption(
+            "Bands represent Monte Carlo uncertainty: "
+            "**P10** = pessimistic, **P50** = median, **P90** = optimistic. "
+            "Solid lines show P50. Run individual forecast pages for full band charts."
+        )
         fig_cmp = go.Figure()
         baseline_plotted = False
         for scenario_name in SCENARIO_ORDER_RESULTS:

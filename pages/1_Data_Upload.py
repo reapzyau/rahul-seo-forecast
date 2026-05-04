@@ -1,6 +1,8 @@
 import io
 import json
 import os
+from collections import Counter
+from urllib.parse import urlparse
 
 import pandas as pd
 import plotly.graph_objects as go
@@ -361,11 +363,9 @@ with tab_semrush:
         url_cols = [c for c in kw_df.columns if "url" in c.lower() or "page" in c.lower()]
         if url_cols:
             sample_urls = kw_df[url_cols[0]].dropna().head(50)
-            from urllib.parse import urlparse
             domains = [urlparse(str(u)).netloc for u in sample_urls if u]
             domains = [d for d in domains if d]
             if domains:
-                from collections import Counter
                 detected_domain = Counter(domains).most_common(1)[0][0]
 
         domain_input = st.text_input(
