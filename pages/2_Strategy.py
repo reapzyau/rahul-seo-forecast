@@ -387,7 +387,11 @@ else:
                 if "positional_uplift" not in cdf.columns and "positional_uplift_p50" in cdf.columns:
                     cdf = cdf.copy()
                     cdf["positional_uplift"] = cdf["positional_uplift_p50"]
-                st.plotly_chart(combined_three_stream_chart(cdf), use_container_width=True)
+                st.plotly_chart(
+                    combined_three_stream_chart(cdf),
+                    use_container_width=True,
+                    key=f"strat_combined_chart_{scenario_name}",
+                )
                 st.caption(
                     f"Effort: **{preset.get('effort_level', '—')}** | "
                     f"Cadence: **{preset.get('content_cadence', 0)} posts/mo** | "

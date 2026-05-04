@@ -11,6 +11,7 @@ from engine.ai_engine import (
     get_default_model,
 )
 from engine.assumptions import get_assumption, get_provenance
+from engine.brand_classifier import build_classifier
 from engine.constants import CTR_MODELS, FORECAST_SCENARIOS, SITE_PRESETS, TIER_COLORS
 from engine.new_content_engine import run_new_content_forecast, run_new_content_forecast_simple
 from engine.revenue_engine import CURRENCY_SYMBOLS, add_revenue, keyword_revenue_table
@@ -346,7 +347,7 @@ if can_run_det or can_run_kw or can_run_cluster:
             if use_cluster:
                 # ── Auto-cluster path ─────────────────────────────────────
                 _brand_config = st.session_state.get("brand_config")
-                _brand_fn = _brand_config.classifier if _brand_config is not None else None
+                _brand_fn = build_classifier(_brand_config) if _brand_config is not None else None
                 _seasonality = st.session_state.get("seasonality")
                 _fsm = st.session_state.get("forecast_start_month")
 
