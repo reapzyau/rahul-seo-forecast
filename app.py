@@ -10,7 +10,7 @@ st.set_page_config(
 inputs = [
     st.Page("pages/inputs/ga4.py", title="GA4 Organic", icon="📊"),
     st.Page("pages/inputs/semrush.py", title="SEMrush Keywords", icon="🔑"),
-    st.Page("pages/inputs/roadmap.py", title="Roadmap", icon="🗺️"),
+    st.Page("pages/inputs/roadmap.py", title="Roadmap", icon="🗺️", url_path="roadmap-upload"),
 ]
 forecasts = [
     st.Page("pages/forecasts/strategy.py", title="Strategy", icon="🎯", default=True),
@@ -21,7 +21,7 @@ forecasts = [
 ]
 outputs = [
     st.Page("pages/outputs/diagnostics.py", title="Diagnostics", icon="🔍"),
-    st.Page("pages/outputs/roadmap.py", title="Content Roadmap", icon="📅"),
+    st.Page("pages/outputs/roadmap.py", title="Content Roadmap", icon="📅", url_path="content-roadmap"),
     st.Page("pages/outputs/deliverables.py", title="Deliverables", icon="📥"),
 ]
 
