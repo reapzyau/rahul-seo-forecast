@@ -7,7 +7,6 @@ from urllib.parse import urlparse
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
-from utils.design_tokens import PRIMARY, SLATE_400
 
 from engine.ai_engine import get_bifrost_client, get_default_model
 from engine.assumptions import (
@@ -36,6 +35,7 @@ from engine.v5.da_estimator import compare_da_estimate_to_supplied, estimate_da_
 from engine.v5.ga4_extractor import extract_organic_metrics, summarize_for_methodology
 from utils.assumptions_panel import render_assumptions_banner, render_assumptions_panel
 from utils.chart_builder import _apply_layout
+from utils.design_tokens import PRIMARY, SLATE_400
 from utils.ga4_loader import load_ga4_organic
 from utils.keyword_loader import load_keyword_portfolio, split_existing_vs_new
 from utils.page_base import setup_page
