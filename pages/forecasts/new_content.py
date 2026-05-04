@@ -496,7 +496,8 @@ if NC_RESULT in st.session_state:
         total_visits = monthly_df["traffic"].sum()
         peak_traffic = monthly_df["traffic"].max()
         peak_month = int(monthly_df.loc[monthly_df["traffic"].idxmax(), "month"])
-        n_ranking = keyword_df["will_rank"].sum()
+        _has_kw_cols = not keyword_df.empty and "will_rank" in keyword_df.columns
+        n_ranking = int(keyword_df["will_rank"].sum()) if _has_kw_cols else 0
         n_total = len(keyword_df)
 
         fourth_card = (
@@ -650,99 +651,100 @@ if NC_RESULT in st.session_state:
             st.plotly_chart(fig_sc, use_container_width=True)
             st.caption("Traffic projection under different content production cadences.")
 
-    # ── Tab: AI Insights ────────────────────────────────────────────────
-    with tabs[tab_idx]:
-        tab_idx += 1
+    # ── Tab: AI Insights (keyword mode only) ────────────────────────────
+    if not _has_clusters:
+        with tabs[tab_idx]:
+            tab_idx += 1
 
-        client = get_bifrost_client(st.session_state.get(BIFROST_API_KEY))
-        ai_model = st.session_state.get(BIFROST_MODEL, get_default_model())
+            client = get_bifrost_client(st.session_state.get(BIFROST_API_KEY))
+            ai_model = st.session_state.get(BIFROST_MODEL, get_default_model())
 
-        if client is None:
-            st.info("Set your Bi Frost API key in the sidebar (AI Settings) to enable AI-powered insights.")
-        else:
-            ai_col1, ai_col2 = st.columns(2)
+            if client is None:
+                st.info("Set your Bi Frost API key in the sidebar (AI Settings) to enable AI-powered insights.")
+            else:
+                ai_col1, ai_col2 = st.columns(2)
 
-            with ai_col1:
-                st.subheader("Keyword Clusters")
-                if st.button("Generate Clusters", key="kw_cluster_btn"):
-                    with st.spinner("Clustering keywords..."):
-                        try:
-                            result, used_model = cluster_keywords(client, keyword_df["keyword"].tolist(), ai_model)
-                            if used_model != ai_model:
-                                st.info(f"Fell back to {used_model} — selected model was unavailable")
-                            clusters = result.get("clusters", [])
-                            for cluster in clusters:
-                                with st.expander(f"**{cluster.get('name', 'Cluster')}** — {cluster.get('suggested_title', '')}"):
-                                    for kw in cluster.get("keywords", []):
-                                        st.markdown(f"- {kw}")
-                        except Exception as e:
-                            st.error(f"Clustering failed: {e}")
-
-            with ai_col2:
-                st.subheader("Cannibalization Check")
-                existing_urls = st.text_area(
-                    "Paste existing URLs (one per line)",
-                    height=150,
-                    key="kw_existing_urls",
-                    placeholder="https://example.com/seo-guide\nhttps://example.com/keyword-research",
-                )
-                if st.button("Check Cannibalization", key="kw_cannibal_btn"):
-                    urls = [u.strip() for u in existing_urls.strip().split("\n") if u.strip()]
-                    if not urls:
-                        st.warning("Paste at least one existing URL to check against.")
-                    else:
-                        with st.spinner("Checking cannibalization..."):
+                with ai_col1:
+                    st.subheader("Keyword Clusters")
+                    if st.button("Generate Clusters", key="kw_cluster_btn"):
+                        with st.spinner("Clustering keywords..."):
                             try:
-                                results, used_model = check_cannibalization(
-                                    client, keyword_df["keyword"].tolist(), urls, ai_model
-                                )
+                                result, used_model = cluster_keywords(client, keyword_df["keyword"].tolist(), ai_model)
                                 if used_model != ai_model:
                                     st.info(f"Fell back to {used_model} — selected model was unavailable")
-                                risk_colors = {"high": "#EF4444", "medium": "#F97316", "low": "#EAB308", "none": "#22C55E"}
-                                risk_df = pd.DataFrame(results)
-                                st.dataframe(
-                                    risk_df.style.apply(
-                                        lambda row: [
-                                            f"background-color: {risk_colors.get(row.get('risk', ''), '')}20"
-                                            if col == "risk" else ""
-                                            for col in row.index
-                                        ],
-                                        axis=1,
-                                    ),
-                                    use_container_width=True,
-                                    hide_index=True,
-                                )
+                                clusters = result.get("clusters", [])
+                                for cluster in clusters:
+                                    with st.expander(f"**{cluster.get('name', 'Cluster')}** — {cluster.get('suggested_title', '')}"):
+                                        for kw in cluster.get("keywords", []):
+                                            st.markdown(f"- {kw}")
                             except Exception as e:
-                                st.error(f"Cannibalization check failed: {e}")
+                                st.error(f"Clustering failed: {e}")
 
-            st.divider()
-            st.subheader("AI Content Roadmap")
-            if st.button("Generate Roadmap", key="kw_roadmap_btn"):
-                with st.spinner("Generating content roadmap..."):
-                    try:
-                        months_val = r.get("months", 12)
-                        roadmap, used_model = generate_content_roadmap(client, keyword_df, months_val, ai_model)
-                        if used_model != ai_model:
-                            st.info(f"Fell back to {used_model} — selected model was unavailable")
-                        for month_plan in roadmap:
-                            month_num = month_plan.get("month", "?")
-                            pieces = month_plan.get("content_pieces", [])
-                            with st.expander(f"**Month {month_num}** — {len(pieces)} content pieces"):
-                                for piece in pieces:
-                                    priority = piece.get("priority", "medium")
-                                    icon = {"high": "🔴", "medium": "🟡", "low": "🟢"}.get(priority, "⚪")
-                                    st.markdown(
-                                        f"{icon} **{piece.get('title', 'Untitled')}** "
-                                        f"(~{piece.get('estimated_traffic', 0):,} visits/mo)"
+                with ai_col2:
+                    st.subheader("Cannibalization Check")
+                    existing_urls = st.text_area(
+                        "Paste existing URLs (one per line)",
+                        height=150,
+                        key="kw_existing_urls",
+                        placeholder="https://example.com/seo-guide\nhttps://example.com/keyword-research",
+                    )
+                    if st.button("Check Cannibalization", key="kw_cannibal_btn"):
+                        urls = [u.strip() for u in existing_urls.strip().split("\n") if u.strip()]
+                        if not urls:
+                            st.warning("Paste at least one existing URL to check against.")
+                        else:
+                            with st.spinner("Checking cannibalization..."):
+                                try:
+                                    results, used_model = check_cannibalization(
+                                        client, keyword_df["keyword"].tolist(), urls, ai_model
                                     )
-                                    kws = piece.get("target_keywords", [])
-                                    if kws:
-                                        st.caption(f"Keywords: {', '.join(kws)}")
-                                    notes = piece.get("notes")
-                                    if notes:
-                                        st.caption(f"Note: {notes}")
-                    except Exception as e:
-                        st.error(f"Roadmap generation failed: {e}")
+                                    if used_model != ai_model:
+                                        st.info(f"Fell back to {used_model} — selected model was unavailable")
+                                    risk_colors = {"high": "#EF4444", "medium": "#F97316", "low": "#EAB308", "none": "#22C55E"}
+                                    risk_df = pd.DataFrame(results)
+                                    st.dataframe(
+                                        risk_df.style.apply(
+                                            lambda row: [
+                                                f"background-color: {risk_colors.get(row.get('risk', ''), '')}20"
+                                                if col == "risk" else ""
+                                                for col in row.index
+                                            ],
+                                            axis=1,
+                                        ),
+                                        use_container_width=True,
+                                        hide_index=True,
+                                    )
+                                except Exception as e:
+                                    st.error(f"Cannibalization check failed: {e}")
+
+                st.divider()
+                st.subheader("AI Content Roadmap")
+                if st.button("Generate Roadmap", key="kw_roadmap_btn"):
+                    with st.spinner("Generating content roadmap..."):
+                        try:
+                            months_val = r.get("months", 12)
+                            roadmap, used_model = generate_content_roadmap(client, keyword_df, months_val, ai_model)
+                            if used_model != ai_model:
+                                st.info(f"Fell back to {used_model} — selected model was unavailable")
+                            for month_plan in roadmap:
+                                month_num = month_plan.get("month", "?")
+                                pieces = month_plan.get("content_pieces", [])
+                                with st.expander(f"**Month {month_num}** — {len(pieces)} content pieces"):
+                                    for piece in pieces:
+                                        priority = piece.get("priority", "medium")
+                                        icon = {"high": "🔴", "medium": "🟡", "low": "🟢"}.get(priority, "⚪")
+                                        st.markdown(
+                                            f"{icon} **{piece.get('title', 'Untitled')}** "
+                                            f"(~{piece.get('estimated_traffic', 0):,} visits/mo)"
+                                        )
+                                        kws = piece.get("target_keywords", [])
+                                        if kws:
+                                            st.caption(f"Keywords: {', '.join(kws)}")
+                                        notes = piece.get("notes")
+                                        if notes:
+                                            st.caption(f"Note: {notes}")
+                        except Exception as e:
+                            st.error(f"Roadmap generation failed: {e}")
 
     # ── Tab: Export ──────────────────────────────────────────────────────
     with tabs[tab_idx]:
@@ -763,12 +765,18 @@ if NC_RESULT in st.session_state:
                 "text/csv",
             )
         with ec3:
+            _has_kw_export = not keyword_df.empty and "will_rank" in keyword_df.columns
             summary = {
                 "Total Visits": f"{monthly_df['traffic'].sum():,}",
                 "Peak Traffic": f"{monthly_df['traffic'].max():,}",
-                "Keywords Ranking": f"{keyword_df['will_rank'].sum()} / {len(keyword_df)}",
+                "Keywords Ranking": (
+                    f"{int(keyword_df['will_rank'].sum())} / {len(keyword_df)}"
+                    if _has_kw_export else "—"
+                ),
             }
-            figs = [traffic_projection_chart(monthly_df), keyword_schedule_chart(keyword_df)]
+            figs = [traffic_projection_chart(monthly_df)]
+            if _has_kw_export:
+                figs.append(keyword_schedule_chart(keyword_df))
             html = to_html_report(figs, summary, "Keyword Forecast Report")
             st.download_button(
                 "Download HTML Report",
