@@ -8,6 +8,7 @@ from engine.historical_engine import calculate_growth_rates, run_historical_fore
 from engine.new_content_engine import get_ctr
 from engine.scenario_engine import build_scenario_presets, run_three_scenarios, summarise_scenarios
 from utils.chart_builder import _apply_layout, combined_three_stream_chart
+from utils.design_tokens import PRIMARY, SLATE_400, SLATE_900, SUCCESS
 from utils.page_base import setup_page
 from utils.session import (
     GA4_DF,
@@ -131,7 +132,7 @@ else:
                     x=top10["opp_score"],
                     y=top10["keyword"],
                     orientation="h",
-                    marker_color="#2563EB",
+                    marker_color=PRIMARY,
                     hovertemplate="%{y}: %{x:,} opp. sessions<extra></extra>",
                 ))
                 fig_bar = _apply_layout(fig_bar, "Top 10 Quick Wins (pos 5–20)",
@@ -225,17 +226,18 @@ else:
                 value=float(p["retainer_aud_monthly"]), step=500.0,
                 key=f"strat_retainer_{scenario_name}",
             )
-            pr_low, pr_high = p["position_range"]
-            pr_low = st.number_input(
-                "Position range (low)", min_value=1, max_value=100,
-                value=int(pr_low), step=1,
-                key=f"strat_pr_low_{scenario_name}",
-            )
-            pr_high = st.number_input(
-                "Position range (high)", min_value=1, max_value=100,
-                value=int(pr_high), step=1,
-                key=f"strat_pr_high_{scenario_name}",
-            )
+            with st.expander("Advanced: Position range"):
+                pr_low, pr_high = p["position_range"]
+                pr_low = st.number_input(
+                    "Target positions — from", min_value=1, max_value=100,
+                    value=int(pr_low), step=1,
+                    key=f"strat_pr_low_{scenario_name}",
+                )
+                pr_high = st.number_input(
+                    "Target positions — to", min_value=1, max_value=100,
+                    value=int(pr_high), step=1,
+                    key=f"strat_pr_high_{scenario_name}",
+                )
             p["position_range"] = (pr_low, pr_high)
 
     st.session_state[SCENARIO_PRESETS_EDITED] = edited
@@ -300,9 +302,9 @@ else:
 
         # Three-line comparison chart
         SCENARIO_COLORS = {
-            "Conservative": "#94A3B8",
-            "Moderate": "#2563EB",
-            "Aggressive": "#10B981",
+            "Conservative": SLATE_400,
+            "Moderate": PRIMARY,
+            "Aggressive": SUCCESS,
         }
         SCENARIO_ORDER_RESULTS = ["Conservative", "Moderate", "Aggressive"]
 
@@ -324,13 +326,13 @@ else:
                 fig_cmp.add_trace(go.Scatter(
                     x=cdf.loc[fmask, "date"], y=cdf.loc[fmask, "baseline"],
                     mode="lines", name="Baseline (do nothing)",
-                    line=dict(color="#CBD5E1", dash="dash", width=2),
+                    line=dict(color=SLATE_400, dash="dash", width=2),
                 ))
                 amask = cdf["actual"].notna()
                 fig_cmp.add_trace(go.Scatter(
                     x=cdf.loc[amask, "date"], y=cdf.loc[amask, "actual"],
                     mode="lines+markers", name="Historical",
-                    line=dict(color="#0F172A", width=2),
+                    line=dict(color=SLATE_900, width=2),
                 ))
                 baseline_plotted = True
             p50_col = "combined_p50" if "combined_p50" in cdf.columns else "combined"
