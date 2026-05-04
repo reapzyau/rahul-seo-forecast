@@ -3,50 +3,69 @@
 ## Module layout
 
 ```
-app.py                  # Streamlit home page + shared sidebar (AI settings)
-pages/                  # One file per page (numbered for sidebar order)
-  1_Data_Upload.py      # Upload, brand filtering, seasonality tuning, assumptions
-  2_Strategy.py         # Portfolio diagnosis + 3 scenario presets + run-all forecasts
-  3_Historical_Forecast.py   # Holt / Prophet baseline from GA4 history
-  4_Positional_Forecast.py   # MC uplift for existing keywords (P10/P50/P90)
-  5_New_Content_Forecast.py  # Probabilistic ranking for net-new keywords
-  6_Combined_Forecast.py     # Canonical hub: baseline + streams − decay
-  7_Diagnostics.py      # AIO risk | keyword pipeline | decay projection (tabs)
-  8_Roadmap.py          # AI content roadmap | GAZMAN SEO task hours (tabs)
-  9_Deliverables.py     # Forecast grid XLSX | variance analysis | methodology (tabs)
-engine/                 # Pure-Python computation — no Streamlit imports
-utils/                  # Shared helpers (charts, export, data loading, sidebar)
-  page_base.py          # setup_page() — shared header/assumptions scaffold
-config/                 # models.json — model catalogue and fallback chain
-prompts/                # Prompt templates (system + user) for AI features
-assets/                 # Sample CSV files
-tests/                  # pytest unit tests (engine logic only, no Streamlit)
+app.py                       # st.navigation entry point — three sidebar groups
+streamlit_app.py             # Streamlit Cloud entry point — delegates to app.py
+pages/
+  inputs/
+    ga4.py                   # GA4 upload, seasonality tuning, CR/AOV metrics
+    semrush.py               # SEMrush upload, brand classification, DA estimation
+    roadmap.py               # Roadmap upload + AI extraction
+  forecasts/
+    strategy.py              # Portfolio diagnosis + 3 scenarios + run-all (DEFAULT page)
+    historical.py            # Holt / Prophet baseline from GA4 history
+    positional.py            # MC uplift for existing keywords (P10/P50/P90)
+    new_content.py           # Probabilistic ranking for net-new keywords
+    combined.py              # Canonical hub: baseline + streams − decay
+  outputs/
+    diagnostics.py           # AIO risk | keyword pipeline | decay projection (tabs)
+    roadmap.py               # AI content roadmap | SEO task hours (tabs)
+    deliverables.py          # Forecast grid XLSX | variance analysis | methodology (tabs)
+engine/                      # Pure-Python computation — no Streamlit imports
+utils/                       # Shared helpers (charts, export, data loading, sidebar)
+  page_base.py               # setup_page() — shared header/assumptions scaffold
+  design_tokens.py           # Colour palette, opacities, line weights (single source)
+  metric_cards.py            # KPICard dataclass + render_kpi_row / render_forecast_kpis
+config/                      # models.json — model catalogue and fallback chain
+prompts/                     # Prompt templates (system + user) for AI features
+assets/                      # Sample xlsx/csv files
+tests/                       # pytest unit tests (engine logic only, no Streamlit)
 ```
 
 Pages import from `engine/` and `utils/`. Engine modules never import from pages or utils.
+`app.py` uses `st.navigation` (Streamlit ≥1.36) — `st.set_page_config` is called only there.
+Page files must NOT call `st.set_page_config`.
 
 ## Strategy page orchestration
 
-The Strategy page (page 2) is the canonical entry point after Data Upload. It
-orchestrates three scenario forecasts via `engine.scenario_engine.run_three_scenarios`
-and stores results in `st.session_state["scenario_results"]` keyed by scenario
-name. The Deliverables page reads from this when building the three-sheet
-forecast grid export.
+`pages/forecasts/strategy.py` is the canonical entry point and the default page
+(loads on first visit). It orchestrates three scenario forecasts via
+`engine.scenario_engine.run_three_scenarios` and stores results in
+`st.session_state["scenario_results"]` keyed by scenario name. The Deliverables
+page reads from this when building the three-sheet forecast grid export.
 
 Individual forecast pages (Historical / Positional / New Content / Combined)
-remain available for deep-dive analysis but the common flow is Data Upload →
-Strategy → Deliverables.
+remain available for deep-dive analysis but the common flow is
+Inputs → Strategy → Outputs / Deliverables.
 
 ## Session state wiring
 
-The Data Upload page (1_Data_Upload.py) is the single source for uploaded data. It populates:
+The Input pages are the single source for uploaded data:
 
-- `st.session_state["ga4_df"]` — post-filter GA4 monthly traffic frame
-- `st.session_state["kw_df"]` — full SEMrush portfolio
-- `st.session_state["kw_existing"]` — keywords with position <= 100 (ranking)
-- `st.session_state["kw_new"]` — keywords not ranking (typically empty for SEMrush exports)
+- `pages/inputs/ga4.py` populates:
+  - `st.session_state["ga4_df"]` — post-filter GA4 monthly traffic frame
+  - `st.session_state["seasonality"]` — learned or blended monthly modifiers
+  - `st.session_state["learned_seasonality"]` — raw GA4-learned modifiers
 
-The Strategy page (2_Strategy.py) populates after "Run All Forecasts":
+- `pages/inputs/semrush.py` populates:
+  - `st.session_state["kw_df"]` — full SEMrush portfolio
+  - `st.session_state["kw_existing"]` — keywords with position <= 100 (ranking)
+  - `st.session_state["kw_new"]` — keywords not ranking
+
+- `pages/inputs/roadmap.py` populates:
+  - `st.session_state["roadmap_bundle"]` — AI-extracted roadmap v2 bundle
+  - `st.session_state["roadmap_content_plan"]` — content plan array
+
+`pages/forecasts/strategy.py` populates after "Run All Forecasts":
 
 - `st.session_state["scenario_presets"]` — Three scenario preset dicts (unedited defaults)
 - `st.session_state["scenario_presets_edited"]` — User-modified presets from the Strategy page UI
@@ -180,10 +199,12 @@ CI runs all three on every push: ruff lint → page-import smoke → pytest.
 
 ## Adding a new page
 
-1. Create `pages/N_Name.py`
+1. Create `pages/inputs/`, `pages/forecasts/`, or `pages/outputs/` — pick the right group
 2. Call `setup_page(title, caption, show_assumptions_banner=...)` from `utils.page_base` at the top — this handles the header, AI settings sidebar, and assumptions initialisation
-3. Gate any heavy computation behind `st.button` + `st.session_state`
-4. Add at least one test in `tests/test_engines.py` for any new engine logic
+3. Register the page in `app.py` by adding a `st.Page(...)` entry to the appropriate group list
+4. Do NOT call `st.set_page_config()` in the page file — only `app.py` does this
+5. Gate any heavy computation behind `st.button` + `st.session_state`
+6. Add at least one test in `tests/test_engines.py` for any new engine logic
 
 ## Adding a new engine module
 

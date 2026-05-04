@@ -367,6 +367,71 @@ def combined_revenue_chart(rev_df: pd.DataFrame, currency_symbol: str = "$") -> 
     return _apply_layout(fig, "Combined Revenue Projection", "Date", f"Revenue ({currency_symbol})")
 
 
+def traffic_streams_by_scenario_chart(scenario_results: dict) -> go.Figure:
+    """Stacked bar showing end-of-horizon traffic composition per scenario.
+
+    Shows how the final forecast month breaks down into Baseline, Positional
+    Uplift, New Content, and Decay for each scenario (Conservative / Moderate /
+    Aggressive).  Uses ``barmode='relative'`` so decay bars extend below zero.
+    """
+    scenario_order = ["Conservative", "Moderate", "Aggressive"]
+    scenarios: list[str] = []
+    baselines: list[int] = []
+    positional_uplifts: list[int] = []
+    nc_uplifts: list[int] = []
+    decays: list[int] = []
+
+    for name in scenario_order:
+        scenario = scenario_results.get(name, {})
+        if "error" in scenario or "combined_df" not in scenario:
+            continue
+        cdf = scenario["combined_df"]
+        fmask = cdf["is_forecast"]
+        if not fmask.any():
+            continue
+        last = cdf[fmask].iloc[-1]
+        pos_col = "positional_uplift_p50" if "positional_uplift_p50" in last.index else "positional_uplift"
+
+        scenarios.append(name)
+        baselines.append(int(last.get("baseline", 0) or 0))
+        positional_uplifts.append(int(last.get(pos_col, 0) or 0))
+        nc_uplifts.append(int(last.get("new_content_uplift", 0) or 0))
+        decays.append(-abs(int(last.get("decay", 0) or 0)))
+
+    fig = go.Figure()
+    fig.add_trace(go.Bar(
+        name="Baseline",
+        x=scenarios, y=baselines,
+        marker_color=SLATE_400,
+        hovertemplate="%{x}<br>Baseline: %{y:,.0f}<extra></extra>",
+    ))
+    fig.add_trace(go.Bar(
+        name="Positional Uplift",
+        x=scenarios, y=positional_uplifts,
+        marker_color=PRIMARY,
+        hovertemplate="%{x}<br>Positional: +%{y:,.0f}<extra></extra>",
+    ))
+    fig.add_trace(go.Bar(
+        name="New Content",
+        x=scenarios, y=nc_uplifts,
+        marker_color=SUCCESS,
+        hovertemplate="%{x}<br>New Content: +%{y:,.0f}<extra></extra>",
+    ))
+    fig.add_trace(go.Bar(
+        name="Decay",
+        x=scenarios, y=decays,
+        marker_color=DANGER,
+        hovertemplate="%{x}<br>Decay: %{y:,.0f}<extra></extra>",
+    ))
+    fig.update_layout(barmode="relative")
+    return _apply_layout(
+        fig,
+        "End-of-Horizon Traffic Composition by Scenario",
+        "Scenario",
+        "Monthly Organic Sessions",
+    )
+
+
 def aio_risk_chart(intent_breakdown: pd.DataFrame, ctr_penalty: float) -> go.Figure:
     """Grouped bar: traffic at risk vs projected loss by intent."""
     fig = go.Figure()
