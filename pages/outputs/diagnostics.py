@@ -12,6 +12,15 @@ from engine.keyword_pipeline_engine import (
     build_pipeline_snapshot,
 )
 from utils.chart_builder import _apply_layout, aio_risk_chart
+from utils.design_tokens import (
+    DANGER,
+    DANGER_ALT,
+    FILL_SUBTLE,
+    SLATE_400,
+    SUCCESS,
+    WARNING_COLOR,
+    rgba,
+)
 from utils.export import to_csv
 from utils.page_base import setup_page
 from utils.session import COMB_RESULTS, KW_DF, NC_RESULT
@@ -126,13 +135,13 @@ with tab_aio:
             fig_erosion.add_trace(go.Scatter(
                 x=erosion_df["month"], y=erosion_df["cumulative_erosion"],
                 mode="lines+markers", name="Cumulative Erosion",
-                line=dict(color="#EF4444", width=3),
-                fill="tozeroy", fillcolor="rgba(239,68,68,0.1)",
+                line=dict(color=DANGER, width=3),
+                fill="tozeroy", fillcolor=rgba(DANGER, FILL_SUBTLE),
             ))
             fig_erosion.add_trace(go.Scatter(
                 x=erosion_df["month"], y=erosion_df["monthly_erosion"],
                 mode="lines", name="Monthly Erosion",
-                line=dict(color="#F97316", width=2, dash="dash"),
+                line=dict(color=DANGER_ALT, width=2, dash="dash"),
             ))
             fig_erosion = _apply_layout(
                 fig_erosion, "Projected AIO Traffic Erosion", "Month", "Sessions Lost"
@@ -202,7 +211,7 @@ with tab_pipeline:
             labels=list(snapshot.keys()),
             values=list(snapshot.values()),
             hole=0.5,
-            marker_colors=["#22C55E", "#EAB308", "#F97316", "#94A3B8", "#EF4444"],
+            marker_colors=[SUCCESS, WARNING_COLOR, DANGER_ALT, SLATE_400, DANGER],
             textinfo="label+value",
         )])
         fig_donut.update_layout(title="Keyword Distribution by SERP Page", height=350)
@@ -227,8 +236,8 @@ with tab_pipeline:
             with pipe_tab1:
                 fig = go.Figure()
                 colors = {
-                    "page_1": "#22C55E", "page_2": "#EAB308",
-                    "page_3": "#F97316", "pages_4_10": "#94A3B8",
+                    "page_1": SUCCESS, "page_2": WARNING_COLOR,
+                    "page_3": DANGER_ALT, "pages_4_10": SLATE_400,
                 }
                 names = {
                     "page_1": "Page 1", "page_2": "Page 2",
@@ -302,16 +311,16 @@ with tab_decay:
                 y=decay_df["cumulative_decay"],
                 mode="lines+markers",
                 name="Cumulative Decay",
-                line=dict(color="#EF4444", width=3),
+                line=dict(color=DANGER, width=3),
                 fill="tozeroy",
-                fillcolor="rgba(239,68,68,0.1)",
+                fillcolor=rgba(DANGER, FILL_SUBTLE),
             ))
             fig_decay.add_trace(go.Scatter(
                 x=decay_df["month"],
                 y=decay_df["decay_loss"],
                 mode="lines",
                 name="Monthly Decay Loss",
-                line=dict(color="#F97316", width=2, dash="dash"),
+                line=dict(color=DANGER_ALT, width=2, dash="dash"),
             ))
             fig_decay = _apply_layout(
                 fig_decay, "Portfolio Decay Projection", "Month", "Sessions Lost to Decay"

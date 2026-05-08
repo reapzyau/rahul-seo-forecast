@@ -483,3 +483,4 @@ else:
         "analysis, or use the **Deliverables** page for full export options including "
         "variance grading and methodology."
     )
+    st.page_link("pages/outputs/deliverables.py", label="Go to Deliverables", icon="📥")
