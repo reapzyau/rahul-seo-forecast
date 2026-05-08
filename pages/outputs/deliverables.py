@@ -17,6 +17,7 @@ from engine.snapshot_engine import (
 )
 from utils.chart_builder import _apply_layout
 from utils.cvr_aov_resolver import resolve_aov, resolve_cvr
+from utils.design_tokens import FILL_SUBTLE, PRIMARY, SLATE_900, rgba
 from utils.forecast_grid import build_seo_forecast_grid
 from utils.page_base import setup_page
 from utils.session import (
@@ -120,19 +121,19 @@ def _render_variance(snapshot: dict, ga4_df: pd.DataFrame) -> None:
         fig.add_trace(go.Scatter(
             x=comparison["date"], y=comparison["forecast_p10"],
             mode="lines", line=dict(width=0),
-            fill="tonexty", fillcolor="rgba(37, 99, 235, 0.10)",
+            fill="tonexty", fillcolor=rgba(PRIMARY, FILL_SUBTLE),
             name="P10-P90 Band", hoverinfo="skip",
         ))
     fig.add_trace(go.Scatter(
         x=comparison["date"], y=comparison["forecast_p50"],
         mode="lines", name=f"Forecast P50 ({metric_label})",
-        line=dict(color="#2563EB", width=2, dash="dash"),
+        line=dict(color=PRIMARY, width=2, dash="dash"),
         hovertemplate="%{x|%b %Y}<br>Forecast: %{y:,.2f}<extra></extra>",
     ))
     fig.add_trace(go.Scatter(
         x=comparison["date"], y=comparison["actual"],
         mode="lines+markers", name=f"Actual {metric_label}",
-        line=dict(color="#0F172A", width=3),
+        line=dict(color=SLATE_900, width=3),
         hovertemplate="%{x|%b %Y}<br>Actual: %{y:,.2f}<extra></extra>",
     ))
     fig = _apply_layout(fig, f"Forecast vs Actual {metric_label}", "Date", metric_label)
