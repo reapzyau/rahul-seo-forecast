@@ -1,4 +1,8 @@
 """Entry point for Streamlit Cloud — delegates to app.py."""
-import streamlit as st
+import os
+import runpy
 
-st.switch_page("app.py")
+runpy.run_path(
+    os.path.join(os.path.dirname(__file__), "app.py"),
+    run_name="__main__",
+)
